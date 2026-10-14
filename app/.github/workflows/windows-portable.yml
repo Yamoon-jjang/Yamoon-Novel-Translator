@@ -1,0 +1,37 @@
+name: Build Windows Portable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+      - name: Install build dependencies
+        shell: cmd
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
+      - name: Build and run all gates
+        shell: cmd
+        run: build_windows.bat
+      - name: Create portable ZIP
+        shell: powershell
+        run: |
+          if (Test-Path NovelTranslator_Windows_Portable.zip) { Remove-Item NovelTranslator_Windows_Portable.zip -Force }
+          Compress-Archive -Path dist\NovelTranslator\* -DestinationPath NovelTranslator_Windows_Portable.zip -CompressionLevel Optimal
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelTranslator-v2.1-Windows-Portable
+          path: NovelTranslator_Windows_Portable.zip
+          if-no-files-found: error
+          retention-days: 14

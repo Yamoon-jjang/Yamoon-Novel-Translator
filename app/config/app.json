@@ -1,0 +1,82 @@
+{
+  "translation_mode": "balanced",
+  "modes": {
+    "quality": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "작은 청크와 긴 문맥",
+      "thinking_level": "medium",
+      "chunk_factor": 0.75,
+      "max_retries": 4,
+      "timeout_seconds": 120,
+      "context_chars": 5000
+    },
+    "balanced": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "권장 균형 설정 · 생각 단계 low(비용 절약)",
+      "thinking_level": "low",
+      "chunk_factor": 1.0,
+      "max_retries": 3,
+      "timeout_seconds": 90,
+      "context_chars": 3000
+    },
+    "speed": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "큰 청크로 요청 수 감소 · 생각 단계 최소(빠름·저비용)",
+      "thinking_level": "minimal",
+      "chunk_factor": 1.25,
+      "max_retries": 2,
+      "timeout_seconds": 75,
+      "context_chars": 1800
+    }
+  },
+  "refusal_recovery": {
+    "reframe_once": true,
+    "split_chunk": true,
+    "fallback_provider": true,
+    "note": "Gemini 키 풀/프로젝트 복구를 우선함. 차단·거부 시 이전 문맥 없이 1회 재요청 → 문단(거부는 문장)까지 분할해 문제 구간만 격리 → 성공한 문단은 보존하고 격리된 문단만 원문 유지(PARTIAL). fallback_on_policy가 true이면 단일 문단으로 격리된 PROHIBITED_CONTENT 차단 문단만 사용자가 설정한 OpenAI 보조 공급자로 보냄. 차단 문단을 문장 단위로 쪼개거나 단어를 치환해 필터를 우회하지 않음.",
+    "fallback_on_policy": true,
+    "max_requests_per_chunk": 16,
+    "gemini_probe_every_chunks": 10
+  },
+  "local_llm": {
+    "max_paragraphs_per_request": 12,
+    "structured_output": true,
+    "sampling": "recommended",
+    "note": "max_paragraphs_per_request: 로컬 LLM 한 번 요청에 넣는 문단(ID) 수 상한(0이면 제한 없음, 청크 구성·이어 번역·번역 기억은 바뀌지 않음). structured_output: Ollama에 JSON 형식을 강제해 모든 문단 ID를 빠짐없이 받음(서버가 지원하지 않으면 자동으로 끔). sampling: recommended면 Gemma 모델에 Google 권장값(temperature 1.0, top_p 0.95, top_k 64), 그 외 모델은 기존 0.2 / fixed면 모든 모델 0.2."
+  },
+  "rate_limiter": {
+    "mode": "adaptive",
+    "start_rpm": 10,
+    "min_rpm": 2,
+    "max_rpm": 30,
+    "successes_before_step_up": 5
+  },
+  "prevent_sleep_while_running": true,
+  "mixed_language_passthrough": {
+    "enabled": true,
+    "target_language": "ko",
+    "note": "이미 한국어인 문단은 API에 보내지 않고 그대로 보존합니다. 애매한 짧은 문구는 보존을 우선합니다."
+  },
+  "protected_literals": {
+    "enabled": true,
+    "note": "URL, 이메일, 경로, 태그, 코드 리터럴 등 구조 문자열을 임시 보호 후 정확히 복원합니다. 콘텐츠 필터 회피용 치환에는 사용하지 않습니다."
+  },
+  "content_kind": "novel",
+  "unattended": {
+    "auto_resume": true,
+    "rate_limit_wait_seconds": 60,
+    "network_wait_seconds": 120,
+    "quota_wait_seconds": 900,
+    "max_auto_resumes_per_file": 40,
+    "note": "무인 진행: 속도 제한·네트워크·한도 소진으로 일시정지되면 대기 후 같은 파일을 자동으로 이어 번역(파일당 최대 횟수). 설정 오류·키 오류·파일 읽기 오류는 그 파일만 건너뛰고 다음 파일로 진행. 사용자 중지만 진행을 멈춤."
+  },
+  "auto_extract_terms": true,
+  "auto_speech_table": true,
+  "common_terms": true,
+  "korean_punctuation": true,
+  "quote_style": "straight",
+  "repair_leftover_script": true
+}

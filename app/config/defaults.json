@@ -1,0 +1,76 @@
+{
+  "translation_mode": "balanced",
+  "modes": {
+    "quality": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "작은 청크와 긴 문맥",
+      "thinking_level": "medium",
+      "chunk_factor": 0.75,
+      "max_retries": 4,
+      "timeout_seconds": 120,
+      "context_chars": 5000
+    },
+    "balanced": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "권장 균형 설정 · 생각 단계 low(비용 절약)",
+      "thinking_level": "low",
+      "chunk_factor": 1.0,
+      "max_retries": 3,
+      "timeout_seconds": 90,
+      "context_chars": 3000
+    },
+    "speed": {
+      "file_concurrency": 1,
+      "request_concurrency": 1,
+      "description": "큰 청크로 요청 수 감소 · 생각 단계 최소(빠름·저비용)",
+      "thinking_level": "minimal",
+      "chunk_factor": 1.25,
+      "max_retries": 2,
+      "timeout_seconds": 75,
+      "context_chars": 1800
+    }
+  },
+  "refusal_recovery": {
+    "reframe_once": true,
+    "split_chunk": true,
+    "fallback_provider": true,
+    "note": "Gemini 키 풀/프로젝트 복구를 우선하고, core POLICY가 아닌 실패에 한해 사용자가 활성화한 OpenAI fallback을 마지막 단계로 사용함.",
+    "max_requests_per_chunk": 16,
+    "gemini_probe_every_chunks": 10,
+    "fallback_on_policy": true
+  },
+  "rate_limiter": {
+    "mode": "adaptive",
+    "start_rpm": 10,
+    "min_rpm": 2,
+    "max_rpm": 30,
+    "successes_before_step_up": 5
+  },
+  "prevent_sleep_while_running": true,
+  "mixed_language_passthrough": {
+    "enabled": true,
+    "target_language": "ko",
+    "note": "이미 한국어인 문단은 API에 보내지 않고 그대로 보존합니다. 애매한 짧은 문구는 보존을 우선합니다."
+  },
+  "protected_literals": {
+    "enabled": true,
+    "note": "URL, 이메일, 경로, 태그, 코드 리터럴 등 구조 문자열을 임시 보호 후 정확히 복원합니다. 콘텐츠 필터 회피용 치환에는 사용하지 않습니다."
+  },
+  "content_kind": "novel",
+  "unattended": {
+    "auto_resume": true,
+    "rate_limit_wait_seconds": 60,
+    "network_wait_seconds": 120,
+    "quota_wait_seconds": 900,
+    "max_auto_resumes_per_file": 40,
+    "note": "무인 진행: 속도 제한·네트워크·한도 소진으로 일시정지되면 대기 후 같은 파일을 자동으로 이어 번역(파일당 최대 횟수). 설정 오류·키 오류·파일 읽기 오류는 그 파일만 건너뛰고 다음 파일로 진행. 사용자 중지만 진행을 멈춤."
+  },
+  "auto_extract_terms": true,
+  "auto_speech_table": true,
+  "common_terms": true,
+  "korean_punctuation": true,
+  "quote_style": "straight",
+  "repair_leftover_script": true
+}

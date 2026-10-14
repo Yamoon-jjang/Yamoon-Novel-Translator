@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>야문 Novel Translator v2.1 사용 설명서</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fb; --line:#e5e7eb; --text:#1f2937; --muted:#4b5563;
+    --accent:#2563eb; --accent-soft:#eaf1ff; --warn:#b45309; --warn-soft:#fff7e6; --ok:#047857; --ok-soft:#ecfdf5;
+    --code:#f3f4f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#111418; --panel:#181c22; --line:#2a3039; --text:#e6e8eb; --muted:#a7afba;
+      --accent:#6ea0ff; --accent-soft:#1b2a44; --warn:#f0b35a; --warn-soft:#2c2416; --ok:#5fd3a6; --ok-soft:#14261f; --code:#1f242c;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+       font-size:17px;line-height:1.75;word-break:keep-all;overflow-wrap:anywhere}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px;display:grid;grid-template-columns:250px 1fr;gap:40px}
+  header{background:var(--panel);border-bottom:1px solid var(--line)}
+  header .in{max-width:1180px;margin:0 auto;padding:34px 20px;display:flex;gap:26px;align-items:center}
+  header h1{margin:0;font-size:30px;line-height:1.3}
+  header p{margin:6px 0 0;color:var(--muted)}
+  .logo{width:72px;height:72px;flex:none}
+  nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:26px 0}
+  nav b{display:block;font-size:14px;color:var(--muted);margin:14px 0 6px}
+  nav b:first-child{margin-top:0}
+  nav a{display:block;color:var(--text);text-decoration:none;padding:4px 10px;border-radius:6px;font-size:15px}
+  nav a.sub{padding-left:22px;font-size:14px;color:var(--muted)}
+  nav a:hover{background:var(--accent-soft);color:var(--accent)}
+  main{padding:20px 0 80px;min-width:0}
+  .part{margin:56px 0 0;padding:14px 18px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-size:15px;font-weight:700;letter-spacing:.02em}
+  .part:first-child{margin-top:10px}
+  .part span{display:block;font-weight:400;color:var(--muted);font-size:14px;margin-top:2px}
+  h2{font-size:24px;margin:46px 0 12px;padding-top:10px;border-top:1px solid var(--line)}
+  .part + h2{border-top:none;margin-top:18px}
+  h3{font-size:19px;margin:28px 0 8px}
+  h4{font-size:17px;margin:20px 0 6px}
+  p{margin:10px 0}
+  ol,ul{padding-left:24px} li{margin:5px 0}
+  .btn{display:inline-block;padding:1px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font-size:15px;white-space:nowrap}
+  .tab{display:inline-block;padding:1px 9px;border-bottom:2px solid var(--accent);font-size:15px;white-space:nowrap}
+  code{background:var(--code);padding:1px 6px;border-radius:5px;font-family:Consolas,"D2Coding",monospace;font-size:15px}
+  .box{border-radius:10px;padding:14px 18px;margin:16px 0;border:1px solid var(--line);background:var(--panel)}
+  .box > :first-child{margin-top:0} .box > :last-child{margin-bottom:0}
+  .tip{background:var(--ok-soft);border-color:transparent}
+  .tip > b:first-child{color:var(--ok)}
+  .warn{background:var(--warn-soft);border-color:transparent}
+  .warn > b:first-child{color:var(--warn)}
+  .info > b:first-child{color:var(--accent)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:16px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel)}
+  .table-wrap{overflow-x:auto}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .flow span{background:var(--accent-soft);color:var(--accent);padding:4px 10px;border-radius:999px;font-size:15px}
+  .flow i{font-style:normal;color:var(--muted)}
+  .log{display:block;background:var(--code);border-radius:8px;padding:10px 14px;margin:10px 0;font-family:Consolas,"D2Coding",monospace;font-size:14.5px;line-height:1.7;white-space:pre-wrap}
+  .why{color:var(--muted)}
+  .bar{display:flex;height:26px;border-radius:6px;overflow:hidden;margin:8px 0 4px;font-size:13px;color:#fff}
+  .bar div{display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
+  .legend{font-size:14px;color:var(--muted)}
+  footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px;padding:24px 20px;text-align:center}
+  @media (max-width:860px){
+    .wrap{grid-template-columns:1fr;gap:0}
+    nav{position:static;max-height:none;border-bottom:1px solid var(--line);padding:16px 0}
+    nav a,nav a.sub{display:inline-block;padding-left:10px}
+    header .in{padding:24px 16px} .wrap{padding:0 16px}
+  }
+  @media print{nav{display:none}.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="in">
+  <svg class="logo" viewBox="0 0 128 128" aria-hidden="true">
+    <rect x="20" y="10" width="76" height="104" rx="10" fill="#fff" stroke="#2f5aa8" stroke-width="7"/>
+    <g fill="#2f5aa8"><rect x="33" y="30" width="52" height="6" rx="3"/><rect x="33" y="45" width="52" height="6" rx="3"/><rect x="33" y="60" width="40" height="6" rx="3"/><rect x="33" y="75" width="52" height="6" rx="3"/><rect x="33" y="90" width="30" height="6" rx="3"/></g>
+    <circle cx="92" cy="92" r="27" fill="#2563eb" stroke="#fff" stroke-width="4"/>
+    <text x="92" y="103" text-anchor="middle" font-size="30" font-weight="700" fill="#fff" font-family="Malgun Gothic,sans-serif">가</text>
+  </svg>
+  <div>
+    <h1>야문 Novel Translator v2.1 사용 설명서</h1>
+    <p>중국어 · 일본어 · 영어 소설과 문서를 한국어로 번역 · 2026년 10월</p>
+  </div>
+</div></header>
+
+<div class="wrap">
+<nav>
+  <b>처음 쓰기</b>
+  <a href="#intro">1. 이 프로그램은</a>
+  <a href="#start">2. 설치와 첫 실행</a>
+  <a href="#api">3. 번역 엔진 준비 (API 설정)</a>
+  <a href="#keys" class="sub">Gemini 키는 이렇게 쓰입니다</a>
+  <a href="#translate">4. 번역하기</a>
+  <a href="#screen">5. 화면 안내</a>
+  <b>더 잘 쓰기</b>
+  <a href="#names">6. 이름 · 용어 · 말투 · 지침</a>
+  <a href="#term-conflicts" class="sub">용어 충돌 일괄 검토 · 고정</a>
+  <a href="#refinement">한국어 소설 재정비</a>
+  <a href="#style" class="sub">문장 스타일 (보통 / 자연스럽게)</a>
+  <a href="#retry">7. 번역 안 된 부분 다시 번역하기</a>
+  <a href="#resume">8. 멈추기 · 이어서 번역</a>
+  <a href="#results">9. 결과 파일</a>
+  <a href="#cost">10. 비용 · 한도 · 속도</a>
+  <a href="#local">11. 로컬 LLM (Ollama)</a>
+  <a href="#local-setup" class="sub">Ollama 설치 · 12B GGUF · Modelfile</a>
+  <a href="#local-only" class="sub">API 키 없이 로컬 번역</a>
+  <a href="#faq">12. 자주 묻는 질문</a>
+  <a href="#data">13. 저장 위치 · 보안</a>
+  <b>기술 부록</b>
+  <a href="#tech">개요 — 한 문단이 지나는 길</a>
+  <a href="#tech-rate" class="sub">A. 번역률</a>
+  <a href="#tech-speed" class="sub">B. 속도</a>
+  <a href="#tech-keys" class="sub">C. 키 · 한도 · 엔진 전환</a>
+  <a href="#tech-reuse" class="sub">D. 재사용과 비용 보호</a>
+  <a href="#tech-quality" class="sub">E. 품질 장치</a>
+  <a href="#tech-local" class="sub">F. 로컬 LLM</a>
+  <a href="#tech-limits" class="sub">G. 한계</a>
+  <a href="#tech-check" class="sub">H. 증상별 점검표</a>
+</nav>
+
+<main>
+
+<div class="part">처음 쓰기<span>설치부터 첫 번역까지, 순서대로 따라 하면 됩니다.</span></div>
+
+<h2 id="intro">1. 이 프로그램은</h2>
+<p>중국어 · 일본어 · 영어로 된 TXT 소설이나 문서를 한국어로 번역합니다. 원문을 새로 쓰거나 순화하지 않고, 뜻과 수위와 문체를 그대로 옮기는 <b>번역</b>을 목표로 합니다. 미성년자가 관련된 성적 내용만 번역에서 제외합니다.</p>
+<ul>
+  <li><b>빠짐없이</b> — 문단마다 번호를 붙여 보내고 같은 번호가 그대로 돌아왔는지 확인합니다. 순서가 바뀌거나 문단이 사라지지 않습니다.</li>
+  <li><b>여러 번역 엔진</b> — Gemini, OpenAI, 내 PC의 로컬 LLM 중 1~3개를 골라 순서를 정합니다. 앞 엔진이 거부하거나 막은 문단은 다음 엔진이 이어서 번역합니다.</li>
+  <li><b>같은 이름으로</b> — 인명·지명을 책 전체에서 같은 한국어 표기로 유지합니다. 번역을 시작할 때 자동으로 뽑아 둘 수도 있습니다.</li>
+  <li><b>끊겨도 이어서</b> — 조금씩 저장하면서 번역하므로, 중간에 멈추거나 PC가 꺼져도 번역한 곳부터 이어집니다.</li>
+  <li><b>폴더 통째로</b> — 폴더 안의 TXT 파일들을 순서대로 끝까지 번역합니다.</li>
+  <li><b>원본 보호</b> — 원본 파일은 바꾸지 않고, 결과를 <code>.ko.txt</code> 파일로 따로 저장합니다.</li>
+</ul>
+<div class="box tip"><b>3분 요약</b>
+<ol>
+  <li><code>NovelTranslator.exe</code> 실행 → <span class="btn">API 설정</span>에서 Gemini 키 등록 (<a href="#api">3장</a>)</li>
+  <li>TXT 파일을 창에 끌어다 놓기 (<a href="#translate">4장</a>)</li>
+  <li><span class="btn">번역 시작 / 계속</span> → 원본 옆에 <code>파일이름.ko.txt</code>가 생김</li>
+  <li>미번역 부분이 남으면 "재시도할까요?"에서 <b>재시도</b> (<a href="#retry">7장</a>)</li>
+</ol></div>
+
+<h2 id="start">2. 설치와 첫 실행</h2>
+<ol>
+  <li>내려받은 압축 파일을 원하는 폴더에 풉니다. (설치 과정은 없습니다)</li>
+  <li>폴더 안의 <code>NovelTranslator.exe</code>를 실행합니다.</li>
+  <li>처음 실행할 때 Windows가 "PC 보호" 창을 띄우면 <span class="btn">추가 정보</span> → <span class="btn">실행</span>을 누릅니다. 서명하지 않은 개인 제작 프로그램이라 나오는 안내입니다. 압축을 풀기 전에 zip 파일을 오른쪽 클릭 → <b>속성</b> → <b>차단 해제</b>에 체크하면 이 창이 나오지 않습니다.</li>
+  <li>바탕화면·작업 표시줄 바로가기는 <b>처음 한 번 <code>NovelTranslator.exe</code>를 직접 실행한 뒤</b>에 만드세요. 첫 실행 때 프로그램이 자기 폴더 파일의 "웹에서 받은 파일" 표시를 지워, 이후 바로가기로도 열립니다(Windows 스마트 앱 컨트롤 대응).</li>
+  <li>오른쪽 위 <span class="btn">API 설정</span>에서 번역 엔진을 준비합니다. (다음 장)</li>
+</ol>
+<div class="box tip"><b>팁</b> · 오른쪽 위 <span class="btn">환경 점검</span>은 설정 파일과 저장 폴더가 정상인지 확인합니다. 실제 번역 요청은 보내지 않습니다.</div>
+<p>새 버전으로 바꿀 때는 새 폴더에 압축을 풀어 쓰면 됩니다. API 키와 진행 기록은 따로 저장되어 있어 그대로 이어집니다(<a href="#data">13장</a>).</p>
+
+<h2 id="api">3. 번역 엔진 준비 (API 설정)</h2>
+<p><span class="btn">API 설정</span>을 누르면 맨 위에 <b>번역 엔진 순서</b>, 그 아래 Gemini / OpenAI / 로컬 LLM 탭이 있습니다. 위 목록에서 엔진을 누르면 아래에 그 엔진의 탭이 열립니다.</p>
+
+<h3>3-1. 엔진 순서 정하기</h3>
+<ul>
+  <li>쓸 엔진에 체크합니다. 1개만 써도 되고, 2개나 3개를 함께 써도 됩니다.</li>
+  <li><span class="btn">위로 ↑</span> <span class="btn">아래로 ↓</span>로 순서를 정합니다. <b>맨 위가 주 번역 엔진</b>이고, 아래는 순서대로 보조입니다. 보조 엔진은 앞 엔진이 막은 문단을 받아 번역하고, 앞 엔진이 한도 소진·장애로 멈추면 남은 부분을 이어서 번역합니다.</li>
+  <li>메인 화면의 모델 칸은 <b>맨 위 엔진의 모델</b>을 보여 줍니다. OpenAI를 맨 위로 올리면 "OpenAI 모델"과 OpenAI 모델 목록이, 로컬 LLM을 올리면 "로컬 LLM 모델"과 설치된 모델 목록이 나오고, 거기서 바꾼 모델은 API 설정에도 저장됩니다.</li>
+</ul>
+<div class="table-wrap"><table>
+  <tr><th>구성</th><th>이런 경우에</th></tr>
+  <tr><td><b>Gemini → 로컬 LLM → OpenAI</b> (권장)</td><td>Gemini가 대부분을 싸게 번역하고, 막힌 문단만 로컬 LLM(무료)이, 그래도 안 되면 OpenAI가 맡습니다.</td></tr>
+  <tr><td>Gemini만</td><td>평범한 소설. 막히는 문단은 원문으로 남습니다.</td></tr>
+  <tr><td>로컬 LLM만</td><td>요금 없이. 그래픽카드가 좋아야 하고 품질은 모델에 따라 다릅니다.</td></tr>
+  <tr><td>OpenAI → …</td><td>OpenAI를 주 엔진으로. 책 전체라면 가장 싼 gpt-6-luna가 알맞습니다.</td></tr>
+</table></div>
+
+<h3>3-2. 번역·분석·재정비 엔진 설정 구분</h3>
+<p><span class="btn">API 설정</span>에서 모델을 통합 관리합니다. <b>번역 시 사용 엔진 · 우선순위</b>는 Gemini·OpenAI·로컬 LLM의 번역 실행 순서입니다. <b>용어·말투 분석</b>은 이름·호칭·말투표 분석을, <b>문학적 윤문·연속성</b>은 한국어로 번역된 소설의 문장 교정을 담당합니다. 모델은 각각 달라도 됩니다.</p>
+<div class="box warn"><b>한국어 소설 재정비는 로컬 LLM 전용</b><p>온라인 AI는 긴 소설에서 토큰 비용, 출력 길이 제한, 긴 대기 시간, 일부 내용의 교정 거부가 발생할 수 있어 재정비는 <b>용어·말투 분석과 문학적 윤문 엔진을 모두 로컬 LLM</b>으로 설정해야 시작할 수 있습니다. Gemini·OpenAI·자동을 선택한 항목이 하나라도 있으면 재정비 시작이 비활성화되고 API 설정 변경을 안내합니다. 앱이 임의로 모델을 변경하지 않습니다. 로컬 LLM 역시 문맥 길이·메모리·속도의 제한이 있고 결과 품질은 보장되지 않습니다.</p></div>
+<p>재정비 창은 API 설정의 분석 모델과 윤문 모델명을 <b>읽기 전용</b>으로 표시합니다. 재정비 창에서 별도로 엔진을 지정하거나 API 설정을 덮어쓰지 않습니다. 예를 들어 분석에 14B, 윤문에 26B 모델을 사용할 수 있습니다. 번역 시 사용 엔진 순서에는 이 제한이 적용되지 않으며 번역용 Gemini와 OpenAI 키는 그대로 유지됩니다. Ollama 등록은 <a href="#local-setup">11-1절</a>을 참조하세요.</p>
+<h3>3-3. Gemini 키 등록</h3>
+<ol>
+  <li>웹 브라우저에서 <code>aistudio.google.com/apikey</code> 에 Google 계정으로 들어가 <b>API 키 만들기</b>로 키를 받습니다.</li>
+  <li><span class="tab">Gemini</span> 탭에서 <span class="btn">키 추가</span> → 키를 붙여넣기 → 구분용 이름(선택) → 프로젝트 그룹을 입력합니다. 새 키는 자동으로 P1, P2…처럼 따로 잡히니 다른 프로젝트에서 만든 키면 그대로 두고, 이미 등록한 키와 같은 프로젝트의 키일 때만 그 그룹 이름을 적으세요. 이미 등록한 키는 표의 "프로젝트 그룹" 칸을 두 번 클릭해 고칠 수 있습니다.</li>
+  <li>Gemini 키 표의 <b>등급</b>에서 Google AI Studio에서 직접 확인한 <b>무료 / 유료</b>를 선택합니다. 같은 프로젝트 그룹의 키는 같은 등급으로 설정해야 저장할 수 있습니다. <b>미지정</b>은 기존 키와 호환되며 무료 사용을 보장하지 않습니다. 이 등급은 Google로부터 자동으로 조회하는 정보가 아닙니다.</li>
+  <li>키를 선택하고 <span class="btn">선택 키 연결 테스트</span>로 확인합니다.</li>
+  <li>같은 탭의 <b>Gemini 모델 ID</b>에서 모델을 고릅니다(기본 Gemini 3.1 Flash Lite). 메인 화면의 Gemini 모델 칸과 같은 설정이라, Gemini를 보조 엔진으로 둘 때는 여기서 바꾸면 됩니다.</li>
+</ol>
+
+<h3 id="keys">3-3. Gemini 키는 이렇게 쓰입니다</h3>
+<div class="box info"><b>핵심</b> · Google의 한도는 <b>키가 아니라 프로젝트 단위</b>로 계산됩니다. 같은 프로젝트에 키 5개를 만들어도 해당 프로젝트의 할당량이 5배로 늘어나지 않습니다. 보통 <b>프로젝트당 키 1개</b>면 충분합니다. 별개 프로젝트의 제한도 Google 정책에 따라 다른 상위 제한의 영향을 받을 수 있습니다.</div>
+<ul>
+  <li><b>평소에는 맨 위 키 하나만</b> 계속 씁니다. 키를 돌아가며 쓰지 않습니다. 나머지 키는 예비입니다.</li>
+  <li>키가 <b>무효·차단</b>되면 그 키만 끄고 아래의 다음 키로 넘어갑니다.</li>
+  <li>프로젝트가 <b>분당 한도·하루 한도</b>에 걸리면, 같은 프로젝트 그룹의 키를 <b>모두 함께</b> 잠시 쉬게 하고 <b>다른 프로젝트 그룹</b>의 키로 넘어갑니다. 같은 프로젝트의 다른 키로 바꿔도 한도는 그대로이기 때문입니다.</li>
+  <li>다른 프로젝트도 없으면 다음 엔진으로 이어 가거나, 한도가 풀릴 때까지 기다렸다가 자동으로 이어 번역합니다.</li>
+</ul>
+<div class="table-wrap"><table>
+  <tr><th>등록 예</th><th>결과</th></tr>
+  <tr><td>프로젝트 2개 × 키 5개, 그룹 P1 ×5 · P2 ×5</td><td>평소 P1의 첫 키만 사용. P1이 한도에 걸리면 P2의 첫 키로. 실제 한도는 프로젝트 2개 몫.</td></tr>
+  <tr><td>같은 키 구성인데 그룹이 모두 <code>default</code></td><td>10개가 한 프로젝트로 취급되어, 한도에 걸리면 10개가 함께 쉽니다. 다른 프로젝트로 <b>넘어가지 못합니다</b>.</td></tr>
+  <tr><td>프로젝트 2개 × 키 1개씩, 그룹 P1 · P2</td><td>첫 번째 예와 같은 효과. 프로젝트마다 키는 1개면 충분합니다.</td></tr>
+  <tr><td>무료 A → 무료 B → 유료 C, 각각 키 1개</td><td>A를 우선 사용하고, A 프로젝트가 제한되면 B, 모두 제한되면 사용 가능한 C로 자동 전환합니다. 전환 확인 창은 뜨지 않으며 C에서는 유료 사용료가 발생할 수 있습니다.</td></tr>
+</table></div>
+<p>번역 중 API 상태 줄은 선택된 <b>프로젝트 그룹</b>과 사용자가 지정한 <b>무료/유료/등급 미지정</b>을 표시합니다. 전체 API 키 원문은 보여 주지 않습니다. 같은 모델이면 무료와 유료 프로젝트의 기본 번역 품질은 같으며, 속도 차이는 주로 프로젝트 요청 제한과 대기 시간에 생깁니다. 무료 우선을 원하면 무료 키들을 위에, 유료 키를 맨 아래에 배치하세요. <b>유료 프로젝트를 절대로 쓰지 않으려면 유료 키의 사용 체크를 해제하세요.</b></p>
+<div class="box warn"><b>한도 숫자</b> · 분당·하루 요청 한도는 모델, 결제 등록 여부(무료/유료 등급), 계정에 따라 다르고 Google이 바꾸기도 합니다. 정확한 값은 Google AI Studio(<code>aistudio.google.com</code>)에서 자기 프로젝트의 한도 화면으로 확인하세요. 이 프로그램은 요청을 <b>한 번에 하나씩</b> 보내므로 실제 속도가 분당 한도를 넘는 일은 드물고, 넘더라도 스스로 속도를 낮춥니다(<a href="#tech-speed">부록 B</a>).</div>
+
+<h3>3-4. OpenAI (선택)</h3>
+<p><span class="tab">OpenAI</span> 탭에서 모델을 고르고 키를 추가합니다. 모델 목록 아래에 가격과 용도가 나옵니다.</p>
+<div class="table-wrap"><table>
+  <tr><th>모델</th><th>100만 토큰당 가격 (입력 / 출력)</th><th>언제 쓰나</th></tr>
+  <tr><td>gpt-6-luna</td><td>$0.10 / $0.50</td><td>OpenAI를 주 엔진으로 책 전체를 번역할 때 (가장 저렴)</td></tr>
+  <tr><td>gpt-6.1-sol (기본)</td><td>$2 / $10</td><td>막힌 문단만 받는 보조 엔진 — 요청량이 적어 비용 부담이 작음</td></tr>
+  <tr><td>gpt-6-astra</td><td>$10 / $50</td><td>최고 등급 — 번역에는 과함</td></tr>
+</table></div>
+<p class="box">가격은 2026년 10월 OpenAI 공개 가격 기준이며 바뀔 수 있습니다. OpenAI 크레딧은 미리 충전해야 하고, 충전한 크레딧은 1년 뒤 소멸합니다.</p>
+
+<h3>3-5. 로컬 LLM (선택)</h3>
+<p>내 PC에서 돌아가는 무료 번역 엔진입니다. 준비 방법은 <a href="#local">11장</a>을 보세요.</p>
+
+<h2 id="translate">4. 번역하기</h2>
+<div class="box tip"><b>끌어다 놓기</b> · 탐색기에서 TXT 파일이나 폴더를 프로그램 창(원문 창 포함)에 끌어다 놓아도 열립니다.
+<ul>
+  <li><b>TXT 파일 하나</b> → 파일 하나 번역 (4-1)</li>
+  <li><b>폴더 하나</b> → 폴더 번역 (4-3)</li>
+  <li><b>TXT 파일 여러 개</b>(Ctrl·Shift로 골라서) → 폴더 번역처럼 차례로 번역하되, <b>끌어다 놓은 파일만</b> 번역합니다. 결과는 그 파일들이 있는 폴더의 <code>한국어_번역</code>에 저장됩니다.</li>
+</ul>
+번역 중에는 끌어다 놓아도 열리지 않습니다(진행 중인 작업 보호).</div>
+
+<h3>4-1. 파일 하나</h3>
+<ol>
+  <li><span class="btn">TXT 파일 선택</span>으로 파일을 엽니다. 원문이 <span class="tab">원문</span> 탭에 보입니다.</li>
+  <li><b>원문 언어</b>와 <b>번역 방식</b>(기본: 균형)을 확인합니다. 파일을 열면 원문의 문자를 보고 <b>중국어·일본어·영어를 자동으로 맞춥니다</b>(상태 줄에 "원문 언어를 ○○로 자동 설정했습니다"가 표시됨). 판별이 확실하지 않거나, 그 파일에 전에 다른 언어를 직접 골라 둔 적이 있으면 현재 설정을 그대로 둡니다. 다르면 원문 언어 칸에서 바꾸면 됩니다.</li>
+  <li>아래 <span class="btn">번역 시작 / 계속</span>을 누릅니다. 진행 중에는 <span class="btn">번역 결과</span>를 눌러 번역되는 한국어를 실시간으로 볼 수 있습니다.</li>
+</ol>
+<p>번역이 끝나면 원본과 같은 폴더(<span class="btn">출력 폴더 지정</span>으로 폴더를 정했다면 그 폴더)에 <code>파일이름.ko.txt</code>가 생깁니다. <span class="btn">결과 폴더 열기</span>로 바로 열 수 있습니다.</p>
+
+<h3>4-2. 붙여넣은 글</h3>
+<p>파일 없이도 됩니다. <span class="tab">원문</span> 탭의 큰 창에 글을 붙여넣고(Ctrl+V) <span class="btn">번역 시작 / 계속</span>을 누르세요.</p>
+<ul>
+  <li>파일을 연 뒤에 끝에 글을 이어 붙이거나 일부를 고쳐도 됩니다. 원본 파일은 바뀌지 않고, 이미 번역한 부분은 다시 요청하지 않습니다.</li>
+  <li>끝나면 같은 창이 <span class="btn">번역 결과</span> 보기로 바뀝니다. <span class="btn">원문</span> / <span class="btn">번역 결과</span>로 오가고, <span class="btn">결과 복사</span> · <span class="btn">결과 저장</span>을 쓸 수 있습니다.</li>
+  <li>새 파일을 열면 붙여넣은 글은 그 파일 내용으로 바뀝니다.</li>
+  <li>파일 없이 붙여넣은 글의 결과는 지정한 출력 폴더, 지정하지 않았다면 <code>문서\야문 Novel Translator</code> 폴더에 저장됩니다.</li>
+</ul>
+
+<h3>4-3. 폴더 통째로</h3>
+<ol>
+  <li><span class="btn">TXT 폴더 선택</span>으로 폴더를 고릅니다. <span class="tab">작업 목록</span>에 파일이 이름 순서대로 나옵니다.</li>
+  <li><b>폴더 옵션</b>을 고릅니다.
+    <ul>
+      <li><b>하위 폴더 포함</b> — 안쪽 폴더의 TXT까지 번역합니다.</li>
+      <li><b>각 TXT 독립 작품</b> (기본) — 파일마다 다른 작품으로 봅니다.</li>
+      <li><b>한 작품의 연속 파일</b> — 1권, 2권처럼 이어진 작품이면 이것을 고르세요. 앞 파일의 마지막 흐름을 다음 파일에 넘겨줍니다.</li>
+    </ul></li>
+  <li><span class="btn">번역 시작 / 계속</span>을 누르면 파일을 하나씩 끝까지 번역합니다.</li>
+</ol>
+<p>결과는 <code>원본 폴더\한국어_번역\</code>에 같은 하위 폴더 구조로 저장되고, 마지막에 <code>번역_요약.txt</code>가 생깁니다(파일별 결과와 폴더 전체 추정 비용).</p>
+<div class="box tip"><b>무인 진행</b> · 폴더 번역은 확인 창 없이 끝까지 갑니다. 요청 한도나 네트워크 문제로 멈추면 1분 / 2분 / 15분 기다렸다가 같은 파일을 자동으로 이어 번역하고, 읽을 수 없는 파일이나 설정 오류가 난 파일은 건너뛰고 다음 파일로 넘어갑니다. 진행을 멈추는 것은 사용자의 <span class="btn">번역 중지</span>뿐입니다.</div>
+
+<h2 id="screen">5. 화면 안내</h2>
+<div class="table-wrap"><table>
+  <tr><th style="width:30%">위치</th><th>설명</th></tr>
+  <tr><td>오른쪽 위 버튼</td><td><span class="btn">설정 접기</span> 위쪽 설정 영역 숨기기 · <span class="btn">환경 점검</span> · <span class="btn">고급 설정</span> 요청 속도·청크 크기 등 · <span class="btn">API 설정</span> · <span class="btn">사용 설명서</span> 이 문서 · <span class="btn">정보</span> 버전 정보</td></tr>
+  <tr><td>번역할 원문</td><td>파일·폴더 열기, 선택한 원문(파일 크기·인코딩·글자 수, 폴더는 파일 수와 합계 크기), 결과 저장 위치. <span class="btn">출력 폴더 지정</span>으로 폴더를 정하면 <b>모든 결과</b>(파일·폴더 번역, 붙여넣은 글, 한국어 소설 재정비)가 그 폴더에 저장되며, 앱을 다시 켜거나 다른 책을 열어도 유지됩니다. 폴더 번역은 그 안에 원래 하위 폴더 구조를 그대로 만듭니다. <span class="btn">기본값</span>을 누르면 원본 옆에 저장하는 방식으로 돌아갑니다. 지정 폴더에 쓸 수 없을 때는 그 작업만 안전 저장 폴더를 쓰고 알려 줍니다. <span class="btn">설정 초기화</span>는 API 키와 파일은 두고 옵션을 기본값으로 되돌립니다.</td></tr>
+  <tr><td>원문 언어</td><td>중국어 / 일본어 / 영어 → 한국어. 오른쪽 파란 글씨는 지금 적용되는 규칙(예: 중국어 소설)입니다.</td></tr>
+  <tr><td>모델 (맨 위 엔진)</td><td>API 설정의 엔진 순서에서 맨 위에 있는 엔진의 모델을 고릅니다. Gemini면 "Gemini 모델"(기본 Gemini 3.1 Flash Lite), OpenAI면 "OpenAI 모델", 로컬 LLM이면 "로컬 LLM 모델"로 이름과 목록이 바뀝니다. 체크한 엔진이 없으면 "Gemini 모델 (사용 안 함)"으로 표시됩니다.</td></tr>
+  <tr><td>번역 방식</td><td><b>균형(권장)</b> · <b>품질 우선</b>(더 작은 단위, 더 긴 앞 문맥) · <b>속도 우선</b>(더 큰 단위). 차이는 <a href="#tech-speed">부록 B</a>.</td></tr>
+  <tr><td>TXT 인코딩</td><td>보통 "자동 감지". 글자가 깨져 보이면 직접 고르세요(중국어 GB18030/Big5, 일본어 CP932 등).</td></tr>
+  <tr><td><span class="tab">원문</span> 탭</td><td>원문 보기 / 붙여넣기 / 번역 결과 보기. 번역 중에는 <b>번역 결과 (진행 중)</b>을 누르면 방금 번역된 한국어가 청크마다 차례로 붙어 나와, 진행 상황을 실시간으로 볼 수 있습니다(끝나면 전체 결과로 바뀜). 폴더 번역 중에는 자동으로 이 화면이 열립니다.</td></tr>
+  <tr><td><span class="tab">작업 목록</span></td><td>파일별 상태(대기 · 번역 중 · 완료 · 부분 완료 · 오류 · 건너뜀)와 결과 파일</td></tr>
+  <tr><td><span class="tab">상태 / 오류 기록</span></td><td>무슨 일이 있었는지 한 줄씩 남습니다. 막힌 문단을 어느 엔진이 처리했는지, 작업 끝 요약(걸린 시간 · 요청 수 · 비용)도 여기 나옵니다(<a href="#retry">7장</a>).</td></tr>
+  <tr><td><span class="tab">미완료 목록</span></td><td>원문으로 남은 부분의 위치와 이유</td></tr>
+  <tr><td><span class="tab">언어별 설정</span></td><td>인명 표기 방식 같은 언어 옵션, <b>문장 스타일</b>(<a href="#style">6-7</a>), <b>내 번역 지침</b>(<a href="#names">6장</a>), 문장부호·따옴표 정리(<a href="#results">9장</a>)</td></tr>
+  <tr><td><span class="tab">작품 메모</span></td><td>인물 관계, 말투, 세계관 등 모델이 알아야 할 내용(<a href="#names">6장</a>)</td></tr>
+  <tr><td><span class="tab">확정 용어집</span></td><td>반드시 지킬 이름·용어 표기. 탭 제목에 항목 수가 나옵니다(<a href="#names">6장</a>).</td></tr>
+  <tr><td><span class="tab">인물 말투</span></td><td>누가 누구에게 어떤 말투를 쓰는지 정한 표. 번역 시작 때 자동으로 만들어집니다(<a href="#speech">6-4</a>).</td></tr>
+  <tr><td>아래 두 줄</td><td>준비 상태(원문 · 엔진 순서 · 언어 · 방식)와 API 상태(지금 어느 엔진이 무엇을 하는지)</td></tr>
+  <tr><td>맨 아래 시간 표시</td><td>번역 중에는 <b>경과 시간</b>과 <b>남은 예상 시간</b>, 끝나면 <b>걸린 시간</b>을 보여 줍니다(일시정지한 시간은 빼고 계산). 걸린 시간은 완료 창, <span class="tab">상태 / 오류 기록</span>, 폴더 작업의 <code>번역_요약.txt</code>에도 남습니다.</td></tr>
+  <tr><td>맨 아래 버튼</td><td><span class="btn">결과 폴더 열기</span> · <span class="btn">클린리더로 열기</span> · <span class="btn">처음부터 다시</span> · <span class="btn">일시정지</span> · <span class="btn">번역 시작 / 계속</span>(번역 중에는 <span class="btn">번역 중지</span>)</td></tr>
+</table></div>
+
+<div class="part">더 잘 쓰기<span>이름 표기, 남은 부분 다시 번역, 비용과 속도, 로컬 LLM.</span></div>
+
+<h2 id="names">6. 이름 · 용어 · 말투 · 번역 지침</h2>
+<h3>6-1. 확정 용어집</h3>
+<p><span class="tab">확정 용어집</span>에 "원문 → 한국어"를 적어 두면 모든 엔진이 책 전체에서 그 표기를 지킵니다. 엔진이 바뀌어도 같습니다. <span class="btn">용어 추가</span>, <span class="btn">TSV 가져오기</span> / <span class="btn">TSV 내보내기</span>로 관리합니다.</p>
+
+<h4 id="term-conflicts">확정 용어 충돌 일괄 검토와 고정</h4>
+<p>새 분석에서 이미 확정한 원문 용어와 다른 표기가 나오면, <b>아직 고정하지 않은 충돌 용어</b>들을 하나의 검토창에 모읍니다. 예전처럼 모든 용어를 Yes/No 한 번으로 바꾸지 않습니다.</p>
+<ol><li>목록에서 <b>원문, 기존 표기, 새 제안</b>을 비교하세요. 기본 결정은 <b>기존 유지·고정</b>입니다. 바꾸고 싶은 항목만 <b>새 제안·고정</b>을 선택합니다.</li>
+<li>목록이 길면 검색하고 세로 스크롤하세요. 열이 길면 가로 스크롤이나 셀에 마우스를 올려 전체 표기를 확인할 수 있습니다. 창은 화면 사용 가능 영역을 넘지 않도록 제한됩니다.</li>
+<li><b>전체 기존 유지</b> 또는 <b>전체 새 제안</b>은 현재 검색 결과 중 보이는 항목에 적용됩니다. <b>선택 사항 적용</b>으로 저장하고 <b>취소</b>하면 기존 확정 표기는 유지됩니다.</li></ol>
+<div class="box tip"><b>한 번 고정한 표기는 자동 제안으로 바뀌지 않습니다.</b><p>예: <code>単単姐 → 단단 언니</code>를 고정한 다음 다른 엔진이 <code>단단저</code>라고 제안해도 반복해서 묻지 않습니다. <b>고정은 수동 편집 금지가 아닙니다.</b> 용어집의 한국어 표기를 직접 <code>단단 누나</code>로 바꾸면 새 값으로 고정됩니다. 용어를 삭제하면 고정 기록도 정리됩니다. 작품별 고정 기록은 작업 데이터에 저장되며 다른 작품의 공용 용어집까지 자동으로 덮어쓰지는 않습니다.</p></div>
+<p>이름 표기 방식 변경 후 사용자가 <b>새 방식으로 다시 추출</b>을 명시적으로 승인하면 기존 표기를 재추출한 값으로 바꿀 수 있습니다. 자동 재제안과 사용자가 지시한 재추출을 구분합니다.</p>
+<h4 id="common">내 공용 용어집 — 책마다 쌓아 다음 책에도</h4>
+<p><b>"공용 용어집 사용"</b>(기본 켜짐)이면 <b>번역을 시작할 때</b>(그리고 끝날 때) 그 책의 확정 용어 중 <b>공용 용어집에 아직 없는 것만</b> 언어별로 쌓아 둡니다. 번역 전에 미리 쌓고 싶으면 <span class="btn">공용 용어집</span> 창 위쪽의 "새로 쌓일 항목 N개"를 확인하고 <b>지금 추가</b> → <b>저장</b>을 누르세요.</p>
+<ul>
+  <li><b>중복은 쌓지 않습니다.</b> 이미 있는 원문 용어는 처음 쌓인 표기를 그대로 두고 바꾸지 않습니다.</li>
+  <li><b>쓸모없는 것은 쌓지 않습니다.</b> 한자가 남은 표기, 이름이 아닌 일반 단어(公司 → 회사 같은 빨간 항목), 한 글자 원문, 한글이 없는 표기는 걸러 냅니다.</li>
+  <li><b>새 책에서는</b> 인명·용어를 추출할 때 본문에 <b>두 번 이상</b> 나오는 공용 항목을 먼저 확정 용어집으로 가져옵니다(속편·같은 작가의 책에서 이름이 그대로 유지됨). 단 <b>두 글자 항목</b>(左京, 春日 등)은 <b>다섯 번 이상</b> 나와야 가져옵니다 — 다른 책의 짧은 이름이 같은 글자의 일반 단어 자리에 끼어드는 것을 막기 위해서입니다. 나머지는 번역 중 그 덩어리에 나올 때만 참고 힌트로 씁니다.</li>
+  <li>내장 언어팩 힌트는 원문에 그 단어가 <b>따로</b> 나올 때만 보냅니다. 主人公 안의 主人, 在下面 안의 在下처럼 다른 말의 일부일 뿐인 자리는 제외합니다(제외 목록: 프로그램 폴더의 config/lexicon_exclude.json).</li>
+  <li>힌트는 내장 언어팩보다 뒤입니다. 예를 들어 公公처럼 문맥에 따라 시아버지·환관으로 갈리는 말은 언어팩의 안내가 우선합니다.</li>
+  <li><span class="btn">공용 용어집</span>을 누르면 쌓인 목록을 보고, 찾고, 고치고, 지울 수 있습니다. 공용 용어집을 바꿔도 번역 중인 책을 다시 번역하지 않습니다.</li>
+  <li><b>언어별 최대 5,000개</b>까지 쌓입니다. 가득 차면 버튼에 <b>"가득 참"</b>이 붙고, 작업 기록과 공용 용어집 창에 "정리하세요" 안내가 나옵니다. 틀렸거나 더 쓰지 않을 항목을 골라 <b>선택 삭제</b> → <b>저장</b>하면 다시 쌓이기 시작합니다.</li>
+</ul>
+
+<h3>6-2. 이름 표기 방식 (한자독음 / 중국어 발음)</h3>
+<p>중국어 원문은 <span class="tab">확정 용어집</span> 탭 맨 위의 <b>중국 인명 표기</b>에서 고릅니다(<span class="tab">언어별 설정</span>과 같은 설정). 기본은 <b>한국 한자음</b>(左京 → 좌경, 李萱诗 → 이훤시)이고, 현대 중국어 발음(左京 → 쭤징)이나 자동으로 바꿀 수 있습니다. 자동 추출과 번역 모두 이 방식을 따릅니다.</p>
+<p>확정 용어집은 이 설정보다 우선합니다. 그래서 이미 용어집에 이름이 있는 상태에서 표기 방식을 바꾸면 "새 방식으로 다시 추출할까요?"라고 묻고, <b>새 방식으로 다시 추출</b>을 누르면 같은 원문 용어의 표기를 새로 뽑은 것으로 바꿉니다.</p>
+
+<h3>6-3. 인명·용어 자동 추출</h3>
+<ul>
+  <li><span class="btn">인명·용어 자동 추출</span>은 원문에서 자주 나오는 단어 목록만(본문 문장은 보내지 않고) 선택한 분석 엔진에 보내, 이름·지명·고유 용어와 한국어 표기를 제안받습니다. 엔진에 오류가 나거나 유효한 항목이 없으면 다른 준비된 엔진으로 재시도할 수 있어 시간이 더 걸릴 수 있습니다.</li>
+  <li><b>"번역 시작 시 먼저 자동 추출"</b>(기본 켜짐)이면 새 파일이나 붙여넣은 글을 처음 번역할 때 자동으로 한 번 실행하고, 새 항목만 용어집에 더한 뒤 번역을 시작합니다. 더해진 항목은 <span class="tab">상태 / 오류 기록</span>에 표시됩니다.</li>
+  <li>이전에 번역하던 파일을 이어 번역하는데 용어집이 비어 있으면 <b>추출 후 처음부터 번역</b> / <b>용어집 없이 이어서 번역</b> 중에서 고르게 묻습니다. 이미 번역한 적이 있는 파일은 자동 추출을 하지 않습니다(아래 6-8).</li>
+  <li>로컬 LLM 등 일부 모델은 이름 뒤에 동사·명사가 붙은 구절(예: <code>陈屿放 → 진서가 놓다</code>, <code>沈疏影身 → 심소영의 몸</code>)을 용어로 돌려주기도 합니다. 프로그램은 한국어 표기가 "이름 + 띄어쓰기" 또는 "이름 + 조사(가·이·의·를…) + 띄어쓰기" 형태인 항목을 자동으로 빼고, <code>陈屿明 → 진서명</code>, <code>陈家村 → 진가촌</code>처럼 한 단어로 쓰인 진짜 이름·지명은 그대로 둡니다. 이전에 이미 들어간 구절 항목은 인물 말투표의 인물 목록에서도 제외되며, 용어집에서는 직접 골라 <span class="btn">선택 삭제</span>하세요.</li>
+  <li>자동 제안이므로 틀린 표기는 고치거나 지우세요. 한국어 표기에 한자가 남은 항목(예: <code>郝장화</code>)이나 이름이 아닌 일반 단어(예: <code>公司 → 회사</code>)는 <b>연한 빨간색</b>으로 표시되고, 번역을 시작할 때 <span class="tab">상태 / 오류 기록</span>에도 알려 줍니다.</li>
+  <li>번역 중에도 용어집·작품 메모·원문 창은 스크롤해서 볼 수 있습니다(고치기만 막힙니다).</li>
+</ul>
+
+<h3 id="speech">6-4. 인물 말투표</h3>
+<p>중국어·영어에는 존댓말 문법이 거의 없어서, 모델이 덩어리마다 "이 둘은 어떤 사이인가"를 짐작합니다. 그래서 같은 두 사람의 말투가 반말이었다가 존댓말이었다가 흔들리기 쉽습니다. <span class="tab">인물 말투</span> 탭의 표는 <b>누가 누구에게 어떤 말투를 쓰는지</b>를 정해 두고, 매 요청에 함께 보내 그 두 사람의 말투를 책 전체에서 고정합니다.</p>
+<div class="table-wrap"><table>
+  <tr><th>화자</th><th>상대</th><th>말투</th><th>관계·메모</th></tr>
+  <tr><td>좌경</td><td>이훤시</td><td>해요체</td><td>어머니</td></tr>
+  <tr><td>이훤시</td><td>좌경</td><td>반말</td><td>아들</td></tr>
+  <tr><td>제자</td><td>장문인</td><td>합쇼체</td><td>스승</td></tr>
+</table></div>
+<ul>
+  <li><b>자동으로 만들어집니다.</b> "번역 시작 시 자동 생성"(기본 켜짐)이면, 표가 비어 있을 때 번역을 시작하며 한 번 만듭니다. 확정 용어집의 인물 이름과, 책 전체에서 고르게 고른 대사 약 6천 자를 API 설정에서 선택한 말투 분석 엔진에 보내 정합니다(대사 묶음별로 여러 요청이 발생할 수 있음). 생성된 결과는 확인하고 필요한 경우 수정하세요.</li>
+  <li>대사 표본은 호칭(妈·师父·老公·さん 등)이 들어간 대사를 우선 고르고, 세 묶음으로 나눠 보냅니다. 엔진이 어떤 묶음을 거부(성인 장면 등)하면 그 묶음만 <b>엔진 순서대로 다음 엔진</b>(OpenAI·로컬 LLM)이 맡고, 나머지 묶음의 결과는 그대로 씁니다. 대사를 고치거나 가리지는 않습니다.</li>
+  <li>대사에서 관계가 분명한 쌍만 넣고, 모르는 인물이나 엉뚱한 말투는 걸러 냅니다. 확실한 관계를 못 찾거나 모든 엔진이 거부하면 <b>표 없이 그대로 번역을 시작</b>합니다. 성인물이라면 로컬 LLM을 보조 엔진으로 켜 두면 좋습니다.</li>
+  <li>틀린 줄은 말투 칸에서 고르거나 지우면 됩니다. <b>고쳐도 처음부터 다시 번역하지 않고</b> 다음 요청부터 적용됩니다. <span class="btn">말투표 자동 생성</span>으로 언제든 다시 만들 수 있습니다.</li>
+  <li>말투: <b>반말</b>(친구·연인·아랫사람) · <b>해요체</b>(부드러운 존댓말) · <b>합쇼체</b>(격식 존댓말, 윗사람·스승·임금) · <b>하오체</b>·<b>하게체</b>·<b>해라체</b>(무협·사극의 예스러운 말투).</li>
+  <li>대사마다 <b>누가 말하는지</b>는 여전히 모델이 문맥으로 판단합니다. 말하는 사람이 생략된 대사가 많은 글에서는 완벽하지 않지만, 같은 두 사람의 말투가 덩어리마다 바뀌는 일은 크게 줄어듭니다.</li>
+  <li>확정 용어집 및 현재 원문에 반복 등장하는 공용 용어집 항목에서 인물 이름 후보를 둘 이상 확보해야 만들 수 있습니다. 원문에 이름이 있어도 인물 후보로 식별되지 않으면 결과가 비어 있을 수 있습니다.</li>
+</ul>
+
+<h3>6-5. 작품 메모</h3>
+<p>"A와 B는 남매", "주인공은 반말을 쓴다", "무협 세계관" 같은 내용을 적어 두면 모든 요청에 함께 전달됩니다. 앞 문맥(최대 5,000자)보다 먼 내용을 모델에게 기억시키는 방법입니다.</p>
+
+<h3>6-6. 내 번역 지침</h3>
+<p><span class="tab">언어별 설정</span> 탭의 <b>내 번역 지침</b> 칸에 원하는 번역 방식을 한국어로 적어 두면(예: "대사는 자연스러운 구어체", "남자 주인공은 반말"), 그 언어의 모든 책에서 매 요청에 함께 보냅니다. <code>profiles</code> 폴더의 파일을 직접 고칠 필요가 없습니다.</p>
+<ul>
+  <li>자동 저장되고(최대 3,000자), 번역 중이어도 다음 요청부터 적용됩니다. 칸이 좁으면 <b>크게 편집</b>을 눌러 큰 창에서 고치세요.</li>
+  <li>원문을 빠짐없이 그대로 옮기기, 문단 번호, 확정 용어집, 미성년자 관련 성적 내용 제외 같은 기본 규칙이 지침보다 우선합니다.</li>
+  <li>지침을 얼마나 잘 따르는지는 모델에 따라 다릅니다. Flash Lite 같은 저가 모델은 긴 지침을 세밀하게 따르지 못하는 일이 많습니다.</li>
+</ul>
+
+<h3 id="style">6-7. 문장 스타일 — 보통 / 자연스럽게 (시험)</h3>
+<p><span class="tab">언어별 설정</span> 탭의 <b>문장 스타일</b>에서 고릅니다. 중국어·일본어·영어마다 따로 저장되고, 기본은 <b>보통</b>입니다.</p>
+<ul>
+  <li><b>보통</b>: 지금까지와 똑같이 번역합니다.</li>
+  <li><b>자연스럽게</b>: 원문의 어순과 문장 수를 따르지 않고, 한국 사람이 읽을 때 어색하지 않은 소설 문장으로 번역하게 합니다. "그녀는…", "~것이었다", "~에 의해" 같은 번역투를 피하고, 문장을 나누거나 합치는 것을 허용합니다. <b>내용·수위·누가 누구에게 무엇을 했는지는 그대로</b> 옮깁니다.</li>
+  <li>추가 요청 없이 같은 번역 요청 안에서 적용되므로 요금이 늘지 않고, 원문 수위 그대로 옮기라는 기본 지시도 그대로입니다.</li>
+  <li>바꾸면 다음 요청부터 적용되고, 번역 중인 책을 처음부터 다시 번역하지는 않습니다. 이미 번역된 부분까지 바꾸려면 <span class="btn">처음부터 다시</span>를 누르세요.</li>
+  <li>번역이 끝나면 작업 기록에 <b>"문장 점검 · 번역투 표현 N개 (한글 1,000자당 N)"</b>와 미번역 여부가 나옵니다. 같은 장을 두 설정으로 번역해 숫자와 읽는 느낌을 비교해 보세요(점검은 프로그램이 직접 세므로 요금이 들지 않습니다).</li>
+  <li>일반 문서 번역에는 쓰이지 않습니다(문서는 항상 정확한 문서 문체).</li>
+</ul>
+
+<h3>6-8. 바꾸면 처음부터 다시 번역되는 설정</h3>
+<p>이어 번역은 "같은 원문을 같은 설정으로" 번역한 결과만 다시 씁니다. 그래서 번역 내용 자체를 바꾸는 설정을 고치면 새 작업으로 보고 처음부터 번역합니다.</p>
+<div class="table-wrap"><table>
+  <tr><th>바꾸면 처음부터 (요금 다시 듦)</th><th>바꿔도 이어서</th></tr>
+  <tr><td>확정 용어집(항목 추가·삭제) · 작품 메모 · 언어 옵션(이름 표기 등) · 번역 방식</td><td>확정 용어집의 <b>한국어 표기만</b> 고친 경우 · 엔진 순서 · 모델 · API 키 · <b>인물 말투표</b> · <b>내 번역 지침</b> · <b>문장 스타일</b> · 문장부호·따옴표 정리 · 출력 폴더</td></tr>
+</table></div>
+<p class="why"><b>이름 표기만 고치기</b>: 번역을 마친 뒤 확정 용어집에서 한국어 표기만 고치고(예: 좌경 → 쭤징) <span class="btn">번역 시작 / 계속</span>을 누르면, 다시 번역하지 않고 저장된 번역의 이름만 바꿔 결과 파일을 새로 씁니다(요청·요금 없음). 뒤따르는 조사(은/는, 이/가, 을/를 등)도 새 이름에 맞춰 고치고, 이전 결과 파일은 <code>.before_시각.bak</code>으로 백업됩니다. 다른 단어 속에 들어 있는 같은 글자는 바꾸지 않지만, 두 글자 이름은 드물게 엉뚱한 곳이 바뀔 수 있으니 결과를 한 번 훑어보세요. 항목을 추가하거나 지우면 지금처럼 처음부터 번역합니다.</p>
+<p class="why">내 번역 지침은 이미 번역된 부분까지 바꾸지는 않습니다. 앞부분까지 새 지침으로 바꾸려면 <span class="btn">처음부터 다시</span>를 누르세요.</p>
+
+<h3 id="refinement">한국어 소설 재정비: 번역문을 자연스러운 소설로</h3>
+<p>재정비는 중국어·일본어·영어를 새로 번역하는 기능이 아닙니다. <b>이미 번역된 한국어 TXT</b>의 직역투, 어순, 조사, 어미, 문장 연결과 대사 흐름을 적극적으로 다듬습니다. 문단 안에서는 문장을 합치거나 나눌 수 있지만 줄거리·인물 관계·핵심 사건과 사실은 유지합니다.</p>
+<ol><li><span class="btn">API 설정</span>에서 <b>용어·말투 분석</b>과 <b>문학적 윤문·연속성</b> 모두 로컬 LLM을 지정하고 Ollama 등록 모델을 각각 고릅니다. 분석에 12B/14B, 윤문에 26B 같은 다른 크기를 설정해도 됩니다.</li>
+<li>Ollama 실행 상태, <code>ollama list</code>의 등록 모델, 앱의 <span class="btn">목록 불러오기</span> 및 연결 테스트를 확인합니다.</li>
+<li>한국어 소설 재정비를 열어 한국어 TXT를 고릅니다. 결과는 출력 폴더를 지정했다면 그 폴더, 아니면 원본 옆에 저장됩니다. 중간에 멈춘 재정비는 파일 이름을 바꾸거나 옮겨도 내용이 같으면 이어서 진행됩니다. 분석·윤문 모델은 <b>읽기 전용</b>으로 표시됩니다. 시작 후 진행 상황과 결과 파일을 확인합니다.</li>
+<li>완료 시 <b>총 소요 시간</b>과 <b>실제 변경 문단</b>, <b>원문과 동일한 문단</b>, <b>미교정 원문 보존</b>을 구분해 표시합니다. 완료 수가 실제 개선 품질을 보증하는 것은 아니므로 결과 문장을 비교하세요.</li></ol>
+<div class="box tip"><b>엔진별 속도 비교</b><p>재정비가 끝나면 창에 <b>총 소요 시간</b>이 나오고, 결과 옆의 검토 기록 파일(<code>….refined.txt.review.txt</code>) 둘째 줄에도 <b>소요 시간 · 윤문 모델 · 분석 모델</b>이 함께 기록됩니다. 같은 TXT를 12B·26B 등 다른 모델로 재정비해 이 줄을 비교하면 됩니다. 중간에 재정비 창의 "안전 중지"로 멈춘 뒤 같은 TXT와 엔진으로 이어서 하면 소요 시간도 합산됩니다.</p></div>
+<div class="box warn"><b>거부·검증 오류의 처리</b><p>Ollama에서는 재정비 요청도 번역과 같이 <b>모든 문단 ID가 반드시 들어간 형식(구조화 출력)</b>으로 답을 받으므로, 모델이 문단을 빠뜨리거나 합칠 수 없습니다. 그래도 문단 하나가 빠지면 나머지 교정문은 살리고 <b>빠진 문단과 바로 앞 문단만</b> 한 문단씩 다시 요청합니다. 모델이 거부하면 그 문단은 원문을 보존합니다. 일부 문단만 거부되고 다른 문단이 독립적으로 검증된 경우 정상 교정문은 살립니다. 별도 연속성 검토 API가 실패한 경우 이미 형식 검증을 통과한 결과는 유지하고 검토 미완료 사실을 기록합니다. 새 윤문 설정의 실행 기록은 예전 체크포인트와 혼합하지 않도록 관리됩니다.</p></div>
+<p>장편의 처리 속도는 모델 크기와 문맥 길이, GPU/RAM 여유에 따라 달라집니다. 재정비 입력은 10MB 미만의 TXT 파일만 지원하므로 큰 파일은 제한에 걸릴 수 있으며, 그 경우 원본을 보관하고 분할해서 작업하세요. 원문 파일은 따로 보관하고 결과 검토 기록에서 보존 사유를 확인합니다.</p>
+<h2 id="retry">7. 번역 안 된 부분 다시 번역하기</h2>
+<p>엔진이 거부하거나 서버가 막은 문단은 원문 그대로 결과 파일에 남습니다(<b>부분 완료</b>, <code>.ko.partial.txt</code>). 이런 부분은 그 부분만 다시 번역할 수 있습니다. 이미 번역된 부분은 다시 요청하지 않아 추가 요금이 들지 않습니다.</p>
+<div class="box tip"><b>자동으로 묻고, 자동으로 다시</b>
+<ul>
+  <li><b>파일 하나 · 붙여넣은 글</b> — 번역이 끝났는데 미번역 부분이 있으면 <b>"미번역 부분을 재시도할까요?"</b>라고 묻습니다. <b>재시도</b>를 누르면 남은 부분만 바로 다시 번역합니다. <b>나중에</b>를 눌러도, 언제든 같은 파일로 <span class="btn">번역 시작 / 계속</span>을 누르면 같은 재시도가 됩니다.</li>
+  <li><b>폴더 번역</b> — 자리를 비워도 되도록 묻지 않고, 미번역 부분이 남은 파일은 <b>파일당 한 번 자동으로 재시도</b>한 뒤 다음 파일로 넘어갑니다. 기록: <code>↻ 파일이름 · 미번역 부분 자동 재시도 (파일당 1회)</code></li>
+</ul></div>
+
+<h3>7-1. 무엇이 남았는지 확인</h3>
+<ul>
+  <li>작업이 끝나면 완료 창과 <span class="tab">상태 / 오류 기록</span>에 "원문으로 남은 문단 N개", "한자·가나가 남은 문단 N개"가 나옵니다.</li>
+  <li><span class="tab">미완료 목록</span>에 위치(문단 번호)와 이유가 나옵니다. 결과 파일은 <code>이름.ko.partial.txt</code> 하나만 생기며, 원문으로 남은 부분도 그 안에 빠짐없이 들어 있습니다(별도 목록 파일은 만들지 않습니다).</li>
+</ul>
+
+<h3>7-2. 다시 번역하는 방법</h3>
+<div class="table-wrap"><table>
+  <tr><th style="width:32%">상황</th><th>이렇게</th></tr>
+  <tr><td>잠깐의 오류·한도 때문에 남음</td><td>묻는 창에서 <b>재시도</b>, 또는 같은 파일을 열고 <span class="btn">번역 시작 / 계속</span>. 같은 엔진으로 그 부분만 다시 보냅니다.</td></tr>
+  <tr><td>엔진이 거부·차단해서 남음</td><td><span class="btn">API 설정</span>에서 다른 엔진(OpenAI나 로컬 LLM)을 켜거나 맨 위로 올린 뒤 같은 파일로 <span class="btn">번역 시작 / 계속</span>. 같은 엔진은 대개 같은 문단을 또 막습니다.</td></tr>
+  <tr><td>번역은 됐는데 한자·가나가 몇 글자 섞임</td><td>같은 파일로 <span class="btn">번역 시작 / 계속</span>. 그 글자만 고치는 요청을 보내고, 짧은 문단은 새로 번역합니다. 더 큰 모델을 쓰면 줄어듭니다.</td></tr>
+  <tr><td>문단 안에서 몇 문장만 원문으로 남음</td><td>같은 파일로 <span class="btn">번역 시작 / 계속</span>. <b>남은 문장들만</b> 모아 한 번에 보내고, 이미 번역된 문장은 그대로 둡니다.</td></tr>
+  <tr><td>설정을 바꿔서 전체를 새로</td><td><span class="btn">처음부터 다시</span> (요금이 다시 듭니다)</td></tr>
+</table></div>
+<p>재시도는 처음 번역과 같은 순서를 되풀이하지 않고, 지난번 막힌 이유에 맞춰 <b>더 세밀하게</b>(앞 문맥 없이, 문단 단위로) 요청합니다(<a href="#tech-rate">부록 A-4</a>).</p>
+<div class="box tip"><b>안심</b> · 다시 시도하다 실패해도 이전 번역은 지워지지 않습니다. 결과 파일을 덮어쓰기 전에는 <code>.before_날짜시간.bak</code> 백업도 남깁니다(직접 고친 내용 보호).</div>
+
+<h3>7-3. 기록 읽는 법 (상태 / 오류 기록 탭)</h3>
+<span class="log">청크 10/54 · P000091 · Gemini 서버 차단 → 로컬 LLM 성공 ✓
+청크 32/54 · P000228 · Gemini 거부 → 로컬 LLM 거부 → OpenAI 거부 → 원문 유지 ✗
+P000228 (일부 문장 · 3번째 문장부터) · …
+⚠ Gemini 사용 불가 (한도 소진: …) → 이 파일의 남은 청크는 OpenAI로 …
+↩ Gemini 복귀 · 정상 응답 확인, 다시 이 엔진으로 번역합니다</span>
+<div class="table-wrap"><table>
+  <tr><th>표시</th><th>뜻</th></tr>
+  <tr><td>서버 차단</td><td>Google 서버가 내용을 이유로 요청을 받지 않음(정책). 원문을 고치지 않으므로 다른 엔진이 필요합니다.</td></tr>
+  <tr><td>거부</td><td>모델이 답은 했지만 번역을 거절함("번역할 수 없습니다" 등)</td></tr>
+  <tr><td>안전 차단</td><td>모델의 안전 장치가 답을 중간에 막음. 서버 차단과 같이 다음 엔진이 맡습니다.</td></tr>
+  <tr><td>속도 제한 · 한도 소진</td><td>분당 한도 · 하루 한도에 걸림. 기다리거나 다른 프로젝트 키 · 다음 엔진으로 이어 갑니다(<a href="#tech-keys">부록 C</a>).</td></tr>
+  <tr><td>연결 실패</td><td>네트워크·서버 일시 오류. 잠시 뒤 자동으로 다시 요청합니다.</td></tr>
+  <tr><td>한국어 너무 적음</td><td>원문을 거의 그대로 돌려줌 → 다시 요청</td></tr>
+  <tr><td>문단 ID 불일치 (source=1 output=12)</td><td>문단 1개를 보냈는데 모델이 12개로 쪼개서 돌려줌 → 형식이 맞지 않아 다시 요청</td></tr>
+  <tr><td>로컬 LLM 응답 이상</td><td>로컬 모델의 답이 검사를 통과하지 못함(반복, 생각 섞임, 형식 오류 등). 고장이 아니라 그 답을 받지 않았다는 뜻</td></tr>
+  <tr><td>원문 유지 ✗</td><td>모든 엔진이 실패해 그 문단만 원문으로 남김 → 7-2의 방법으로 다시</td></tr>
+</table></div>
+
+<h2 id="resume">8. 멈추기 · 이어서 번역</h2>
+<ul>
+  <li><span class="btn">일시정지</span> — 진행 중인 요청 하나를 마무리해 저장한 뒤 멈춥니다. <span class="btn">다시 진행</span>으로 그 자리에서 계속합니다. 폴더 작업이면 다음 파일도 멈춘 상태로 기다립니다.</li>
+  <li><span class="btn">번역 중지</span> — 지금까지 한 것을 저장하고 끝냅니다. 결과는 <code>.ko.partial.txt</code>로 저장됩니다.</li>
+  <li><span class="btn">번역 시작 / 계속</span> — 같은 파일을 다시 열고 누르면 번역된 부분은 그대로 쓰고 남은 부분만 번역합니다. 프로그램을 껐다 켜도, PC가 꺼졌어도 됩니다.</li>
+  <li><span class="btn">처음부터 다시</span> — 저장된 번역을 쓰지 않고 처음부터 새로 번역합니다(요금이 다시 듭니다).</li>
+</ul>
+
+<h2 id="results">9. 결과 파일</h2>
+<div class="table-wrap"><table>
+  <tr><th>파일</th><th>뜻</th></tr>
+  <tr><td><code>이름.ko.txt</code></td><td>모두 번역됨</td></tr>
+  <tr><td><code>이름.ko.partial.txt</code></td><td>일부가 원문으로 남았거나 중지됨. 원문으로 남은 부분도 빠짐없이 들어 있습니다. 위치와 이유는 <span class="tab">미완료 목록</span> 탭에서 봅니다. 나중에 모두 번역되면 이 파일은 지우고 <code>이름.ko.txt</code>만 남깁니다.</td></tr>
+  <tr><td><code>번역_요약.txt</code></td><td>폴더 작업 결과와 전체 추정 비용</td></tr>
+  <tr><td><code>.before_날짜시간.bak</code></td><td>기존 결과 파일을 덮어쓰기 전에 남기는 백업(직접 고친 내용 보호)</td></tr>
+</table></div>
+<h3>클린리더로 문단 정리</h3>
+<p><span class="btn">클린리더로 열기</span>를 누르면 번역 결과를 <b>야문 클린리더</b>(문단 정리기)로 바로 엽니다. 긴 문단 나누기, 대사 줄바꿈 정리, 읽기 모드는 클린리더에서 하면 됩니다.</p>
+<ul>
+  <li>처음 한 번 <code>YamoonCleanReader.exe</code> 위치를 고르면 기억합니다. 이 프로그램과 같은 폴더나 옆 폴더에 있으면 자동으로 찾습니다. 위치를 바꾸려면 Shift를 누른 채 버튼을 누르세요.</li>
+  <li>파일 하나를 번역했으면 그 결과를, 폴더를 번역했으면 결과 파일 전체를 클린리더의 일괄 변환 창으로 엽니다.</li>
+</ul>
+<h3>문장부호 · 따옴표 정리 (언어별 설정 탭)</h3>
+<ul>
+  <li><b>번역문의 중국·일본식 문장부호를 한국식으로 바꾸기</b>(기본 켜짐): <code>。→.</code> <code>，、→,</code> <code>！？：；→!?:;</code> <code>・→·</code> <code>〜→~</code> <code>‥→…</code>, 전각 숫자·기호(<code>３</code> <code>％</code>) → 일반 문자. 문장부호 뒤에 글자가 바로 붙으면 한 칸 띄웁니다. <code>“。。。。。”</code>처럼 문장부호만 있는 줄도 바꿉니다.</li>
+  <li><b>따옴표</b>: 곧은 따옴표 <code>" "</code> <code>' '</code>(기본) / 둥근 따옴표 <code>“ ”</code> <code>‘ ’</code> / 바꾸지 않음. 「」도 함께 바뀌고, 책 제목에 쓰는 『』와 【】 ※ 는 그대로 둡니다.</li>
+  <li>결과 파일을 쓸 때만 적용되어 다시 번역하지 않습니다. 이미 끝낸 책은 같은 파일로 <span class="btn">번역 시작 / 계속</span>을 누르면 요청 없이 결과 파일만 새로 정리됩니다.</li>
+</ul>
+
+<h2 id="cost">10. 비용 · 한도 · 속도</h2>
+<h3>비용</h3>
+<ul>
+  <li>번역이 끝나면 <span class="tab">상태 / 오류 기록</span>에 엔진별 요청 수, 토큰 수, <b>추정 비용</b>(그중 재시도·확인 요청에 든 비용)이 나옵니다. Gemini 프로젝트의 등급을 지정하면 프로젝트별 무료($0)/유료(모델 가격으로 추정) 사용량을 구분합니다. 등급 미지정 프로젝트는 청구 등급을 확인할 수 없으므로, 기존 설정처럼 유료 가격으로 추정하거나 혼합 사용 시 청구액 미확정으로 안내합니다. <b>실제 요금은 Google AI Studio의 결제 화면 기준</b>입니다.</li>
+  <li>기본 Gemini 3.1 Flash Lite는 100만 토큰당 입력 $0.25 / 출력 $1.50입니다. 중국어 30만 자 정도 장편 한 권이 대략 1~2달러(막힌 부분 재시도가 많으면 조금 더)입니다.</li>
+  <li>막힌 문단 하나에 쓰는 유료 요청 수에 상한(청크당 16회)이 있어, 같은 문단에 요금이 계속 나가지 않습니다.</li>
+</ul>
+<h3>한도</h3>
+<ul>
+  <li>Gemini 한도는 <b>프로젝트 단위</b>입니다. 한도에 걸리면 다른 프로젝트 그룹의 키 → 다음 엔진 → 기다렸다 자동으로 이어 번역 순서로 처리합니다(<a href="#keys">3-3</a>).</li>
+  <li>무료 키는 분당·하루 한도가 낮습니다. 정확한 숫자는 Google AI Studio에서 확인하세요.</li>
+</ul>
+<h3>속도</h3>
+<ul>
+  <li>원문 길이보다 <b>막히는 문단이 얼마나 많은가</b>가 시간을 크게 좌우합니다. 막힘이 많은 글은 복구에 요청이 여러 번 들어 오래 걸립니다.</li>
+  <li>하단 API 상태 줄의 "속도 조절 대기 6초 · 현재 10.0회/분"은 고장이 아니라 요청 간격을 지키는 중이라는 뜻입니다.</li>
+  <li>자세한 원리와 수치는 <a href="#tech-speed">부록 B</a>에 있습니다.</li>
+</ul>
+
+<h2 id="local">11. 로컬 LLM (Ollama)</h2>
+<p><b>보조 엔진의 지연 로딩과 자동 해제</b> · 로컬 LLM을 두 번째 엔진으로 선택해도, 실제로 로컬 번역이 필요하기 전에는 Ollama 모델을 미리 로드하지 않습니다. 처음 호출했을 때 모델을 불러오며, 마지막 Ollama 요청 뒤 유휴 상태가 <b>5분</b> 지속되면 Ollama의 <code>keep_alive</code> 설정에 따라 모델이 자동 해제됩니다. 같은 5분 안에 다시 호출하면 모델을 재사용할 수 있습니다. 모델 목록 조회나 API 설정창을 여는 것만으로 이 설정의 사전 예열은 하지 않습니다. LM Studio 같은 다른 호환 서버에는 이 Ollama 전용 설정을 보내지 않습니다. 별도 프로그램에서 같은 모델을 사용하거나 Ollama 서버 자체 설정이 다르면 메모리 해제 시점이 달라질 수 있습니다.</p>
+<p>내 PC의 그래픽카드로 돌리는 번역 엔진입니다. 요금과 서버 차단이 없지만 클라우드 모델보다 느리고, 품질은 모델에 따라 다릅니다.</p>
+<ol>
+  <li>Ollama를 설치하고 모델을 받아 둡니다(명령 프롬프트에서 <code>ollama pull 모델이름</code>).</li>
+  <li><span class="btn">API 설정</span> → <span class="tab">로컬 LLM</span> 탭을 열면 Ollama에 등록된 모델 목록을 자동으로 가져옵니다. <b>모델 이름</b> 목록에서 고르세요(직접 입력도 됩니다). 목록이 비어 있으면 Ollama가 켜져 있는지 확인하고 <span class="btn">목록 불러오기</span>를 누르세요.</li>
+  <li><span class="btn">로컬 LLM 연결 테스트</span>로 확인합니다. 결과에 <b>생성 속도(토큰/초)</b>가 나옵니다.</li>
+  <li>번역 엔진 순서에서 로컬 LLM에 체크합니다. LM Studio도 <span class="btn">LM Studio</span> 버튼으로 주소를 넣어 쓸 수 있습니다.</li>
+</ol>
+<div class="table-wrap"><table>
+  <tr><th style="width:28%">설정</th><th>설명</th></tr>
+  <tr><td>추론(생각) 출력 끄기 (기본 켜짐)</td><td>Qwen 같은 모델이 답 전에 긴 생각을 만들어 몇 배 느려지는 것을 막습니다.</td></tr>
+  <tr><td>컨텍스트 길이 (기본 12,288)</td><td>한 번 요청에 필요한 길이. 작품 메모가 길거나 품질 우선이면 필요한 만큼 자동으로 늘립니다(최대 32,768).</td></tr>
+  <tr><td>응답 대기 한도 (기본 300초)</td><td>모델이 글자를 하나도 내지 않고 멈춰 있을 때 기다리는 최대 시간. 답을 쓰는 동안은 길어져도 끊지 않습니다.</td></tr>
+  <tr><td>구조화 출력 (자동)</td><td>Ollama에 "보낸 문단 ID가 모두 들어간 형식으로만 답하라"고 지정합니다. 모델이 문단을 빠뜨리거나 합칠 수 없어 다시 요청이 크게 줄어듭니다. 서버가 지원하지 않으면 자동으로 끄고 예전 방식으로 받습니다. 설정: <code>config\app.json</code> → <code>local_llm.structured_output</code></td></tr>
+  <tr><td>샘플링 (자동)</td><td>Gemma 모델의 번역·재정비 본문은 Google 권장값(temperature 1.0, top_p 0.95, top_k 64)을 씁니다. 다른 모델과 용어·말투 분석, 재정비 분석·연속성 확인은 안정적인 0.2를 씁니다. 앱이 요청마다 보내므로 Modelfile의 값보다 우선합니다. 설정: <code>local_llm.sampling</code> (<code>recommended</code> / 모든 경우 0.2는 <code>fixed</code>)</td></tr>
+  <tr><td>한 번 요청의 문단 수 (기본 12)</td><td>짧은 줄이 많은 소설은 한 청크에 문단이 50개 이상이라, 로컬 LLM에는 12문단씩 나눠 보냅니다. 청크 구성·이어 번역·번역 기억은 바뀌지 않습니다. 설정: <code>local_llm.max_paragraphs_per_request</code> (0이면 제한 없음)</td></tr>
+</table></div>
+<div class="box warn"><b>느리거나 "응답 시간 초과"가 날 때</b> · 명령 프롬프트에서 <code>ollama ps</code>를 실행해 보세요. PROCESSOR 칸이 <code>100% GPU</code>가 아니면(예: <code>30%/70% CPU/GPU</code>) 모델이 그래픽카드 메모리에 다 들어가지 않은 것입니다. 더 작은 모델이나 낮은 양자화(Q4)를 쓰거나, 그래픽카드를 쓰는 다른 프로그램을 닫으세요. 16GB 그래픽카드라면 14B 이하 Q4~Q6 모델이 알맞습니다.</div>
+<p>작은 모델에서 자주 생기는 문제(반복, 남은 한자, 영어 혼잣말 섞임)는 프로그램이 자동으로 걸러 내고 다시 요청합니다. 자세한 장치는 <a href="#tech-local">부록 F</a>에 있습니다.</p>
+
+<h3 id="local-setup">11-1. 처음부터 설치하기 — Windows Ollama + Gemma 4 12B Q8 GGUF</h3>
+<p><b>처음 사용하는 분은 아래 1~9단계를 위에서 아래로 따라 하세요.</b> Ollama는 선택 사항입니다. Gemini 또는 OpenAI API만으로 먼저 번역해도 되지만, 일부 콘텐츠는 온라인 AI 서비스의 정책에 따라 번역 요청이 거부될 수 있습니다. 그럴 때를 대비해 로컬 LLM을 추가로 설치해 둘 수 있습니다. 모델은 PC 안에서 실행되며, 충분한 RAM·GPU 메모리와 디스크 공간이 필요합니다.</p>
+<ol>
+<li><b>1단계 — Windows용 Ollama 다운로드.</b> 공식 <a href="https://ollama.com/download/windows" target="_blank" rel="noopener">Ollama Windows 다운로드 페이지</a>를 열고 Windows 설치 파일을 내려받으세요. 공식 사이트가 아닌 임의의 다운로드 사이트는 이용하지 마세요.</li>
+<li><b>2단계 — Ollama 설치 및 실행 확인.</b> 받은 설치 파일을 실행하고 안내에 따라 설치하세요. 설치를 마친 다음 Windows 시작 메뉴에서 Ollama를 실행합니다. <b>Windows 키 → cmd 입력 → 명령 프롬프트</b>를 열고 다음 명령을 입력하세요.</li>
+</ol>
+<pre>ollama --version</pre>
+<p>버전이 나오면 설치를 확인한 것입니다. 'ollama 명령을 찾을 수 없습니다'가 나오면 명령 프롬프트를 닫고 다시 열거나 Windows에 다시 로그인한 뒤 확인하세요. 설치 후 서버 연결이 되지 않으면 Ollama가 실제로 실행 중인지 확인하세요.</p>
+<ol start="3">
+<li><b>3단계 — 모델 파일 다운로드.</b> <a href="https://huggingface.co/llmfan46/gemma-4-12B-it-uncensored-heretic-GGUF/tree/main" target="_blank" rel="noopener">Hugging Face의 GGUF 파일 목록</a>을 열고 <a href="https://huggingface.co/llmfan46/gemma-4-12B-it-uncensored-heretic-GGUF/blob/main/gemma-4-12B-it-uncensored-heretic-Q8_0.gguf" target="_blank" rel="noopener"><code>gemma-4-12B-it-uncensored-heretic-Q8_0.gguf</code></a>를 선택해 파일 페이지의 <b>Download</b>로 내려받으세요. <b>약 12.7GB</b>의 큰 파일이므로 충분한 여유 공간을 준비하고 다운로드가 완료됐는지 확인하세요. 이 모델은 커뮤니티 수정판이므로 모델 카드와 이용 조건도 확인하세요.</li>
+<li><b>4단계 — 모델용 폴더 만들기.</b> 탐색기에서 <code>C:\AI\Models\Gemma12B</code> 폴더를 새로 만들고 다운로드한 GGUF 파일을 그 폴더로 옮기세요. 경로는 예시이므로 다른 드라이브(예: <code>D:\LLM\Gemma12B</code>)를 사용해도 됩니다. <b>파일명은 변경하지 마세요.</b></li>
+<li><b>5단계 — Modelfile 만들기.</b> Windows <b>메모장</b>을 실행하고 아래 7줄을 그대로 복사하여 붙여 넣으세요.</li>
+</ol>
+<pre>FROM ./gemma-4-12B-it-uncensored-heretic-Q8_0.gguf
+RENDERER gemma4-large
+PARSER gemma4
+PARAMETER num_ctx 16384
+PARAMETER temperature 1.0
+PARAMETER top_p 0.95
+PARAMETER top_k 64</pre>
+<p><code>RENDERER gemma4-large</code>와 <code>PARSER gemma4</code>는 Gemma 4 12B·26B에 맞는 대화 형식을 Ollama에 직접 알려 줍니다. 이 줄이 없으면 Ollama가 모델 이름으로 형식을 고르는데, 12B는 이름에 소문자 <code>12b</code>가 없으면 작은 모델용 형식이 쓰일 수 있습니다. 샘플링 값은 Google 권장값이며, 번역 앱은 요청마다 알맞은 값을 따로 보내므로 앱에서는 이 값보다 앱 설정이 우선합니다. <b>이미 등록한 모델</b>도 이 두 줄을 넣은 Modelfile로 <code>ollama create</code>를 다시 실행하면 그대로 갱신됩니다.</p>
+<p><b>메모장 → 파일 → 다른 이름으로 저장</b>을 클릭하세요. 저장 위치를 <code>C:\AI\Models\Gemma12B</code>로 지정하고, <b>파일 이름</b>에 <code>Modelfile-gemma-4-12B-Q8</code>, <b>파일 형식</b>에 <code>모든 파일 (*.*)</code>, <b>인코딩</b>에 <code>UTF-8</code>을 선택한 다음 저장합니다. <b>파일 이름 끝에 .txt가 붙으면 안 됩니다.</b> 탐색기의 <b>보기 → 표시 → 파일 확장명</b>을 켜서 확인하세요. <code>FROM ./...</code>은 Modelfile과 GGUF가 같은 폴더에 있다는 뜻입니다.</p>
+<div class="box tip"><b>6단계로 가기 전 폴더 확인.</b> <code>C:\AI\Models\Gemma12B</code> 안에 아래 두 파일이 나란히 있어야 합니다.<pre>gemma-4-12B-it-uncensored-heretic-Q8_0.gguf
+Modelfile-gemma-4-12B-Q8</pre>첫 번째는 다운로드한 모델 파일, 두 번째는 메모장으로 직접 만든 설정 파일입니다.</div>
+<ol start="6">
+<li><b>6단계 — 모델 등록.</b> Windows <b>명령 프롬프트(CMD)</b>를 실행하고 아래 두 줄을 <b>한 줄씩</b> 입력한 뒤 Enter를 누르세요. 첫 번째 줄은 모델 파일이 있는 폴더로 이동하고, 두 번째 줄은 GGUF를 Ollama에 등록합니다.</li>
+</ol>
+<pre>cd /d C:\AI\Models\Gemma12B
+ollama create gemma-4-12B-it-uncensored-heretic-Q8 -f Modelfile-gemma-4-12B-Q8</pre>
+<p><b>중요:</b> <code>ollama create</code>의 첫 번째 모델명 <code>gemma-4-12B-it-uncensored-heretic-Q8</code>은 <b>Ollama에 등록할 이름</b>입니다. <code>-f Modelfile-gemma-4-12B-Q8</code>은 <b>5단계에서 만든 설정 파일 이름</b>이며, <code>FROM</code> 안의 <code>.gguf</code>는 <b>실제 다운로드한 모델 파일 이름</b>입니다. 세 이름은 역할이 다르므로 예제를 그대로 사용하세요. 이 명령은 GGUF를 다시 다운로드하지 않고 로컬 파일을 등록합니다. 완료될 때까지 명령 프롬프트를 닫지 마세요. PowerShell을 사용하는 분은 첫 줄 대신 <code>cd C:\AI\Models\Gemma12B</code>를 입력하세요.</p>
+<ol start="7">
+<li><b>7단계 — 등록 확인.</b> 같은 명령 프롬프트에서 아래 두 명령을 순서대로 실행하고, 목록에 <code>gemma-4-12B-it-uncensored-heretic-Q8</code>가 나오는지 확인하세요.</li>
+</ol>
+<pre>ollama list
+ollama show gemma-4-12B-it-uncensored-heretic-Q8</pre>
+<ol start="8">
+<li><b>8단계 — 모델 실행 시험.</b> 다음 명령을 입력하고 모델이 준비되면 짧은 한국어 질문을 입력해 응답하는지 확인하세요. 끝낼 때는 <code>/bye</code>를 입력합니다. 첫 실행은 모델을 메모리에 올리느라 시간이 걸릴 수 있습니다.</li>
+</ol>
+<pre>ollama run gemma-4-12B-it-uncensored-heretic-Q8</pre>
+<ol start="9">
+<li><b>9단계 — 야문 Novel Translator에 연결.</b> Ollama를 실행한 상태에서 앱의 <span class="btn">API 설정</span> → <span class="tab">로컬 LLM</span> 탭으로 이동합니다. 로컬 LLM을 <b>사용</b>으로 켜고, 서버 주소는 기본값 <code>http://127.0.0.1:11434</code>를 사용하세요. <span class="btn">목록 불러오기</span>를 누른 뒤 등록된 <code>gemma-4-12B-it-uncensored-heretic-Q8</code>를 선택하고 <span class="btn">로컬 LLM 연결 테스트</span>를 실행합니다. 성공하면 설정을 저장하세요. 온라인 API 키 없이 로컬 모델만으로 번역하려면 이어지는 <a href="#local-only">11-2절</a>의 엔진 설정도 따라 하세요.</li>
+</ol>
+<div class="box warn"><b>모델이 느리거나 메모리 부족일 때</b> · Q8_0 GGUF는 약 12.7GB이며 실제 실행에는 문맥(KV 캐시)과 작업 메모리가 추가로 필요합니다. GPU 16GB여도 컨텍스트·다른 프로그램 사용량에 따라 완전히 GPU에 올리지 못할 수 있습니다. <code>ollama ps</code>로 CPU/GPU 사용 비율을 확인하고, 문제가 있으면 같은 모델 저장소의 더 작은 Q4_K_M 등 다른 양자화 버전을 별도 등록하세요. <code>num_ctx 16384</code>는 예시값이므로 PC 메모리가 부족하면 낮춰 새로 등록할 수 있습니다.</div>
+<div class="box tip"><b>문제가 생길 때 확인할 항목</b><ul>
+<li><b><code>ollama</code> 명령을 찾지 못함:</b> 설치 완료 후 CMD를 다시 열거나 재로그인하고 실행 상태를 확인합니다.</li>
+<li><b>GGUF 파일을 찾지 못함:</b> 두 파일의 위치가 같은지, <code>FROM</code>이 실제 GGUF 이름과 같은지 확인합니다.</li>
+<li><b>Modelfile을 찾지 못함:</b> <code>Modelfile-gemma-4-12B-Q8.txt</code>로 잘못 저장되지 않았는지 확인합니다.</li>
+<li><b>앱 모델 목록에 표시되지 않음:</b> <code>ollama list</code>의 등록명과 앱에서 선택한 이름을 비교하고, 서버 실행 상태 및 <span class="btn">목록 불러오기</span>를 확인합니다.</li>
+<li><b>등록 설정 확인:</b> <code>ollama show gemma-4-12B-it-uncensored-heretic-Q8 --modelfile</code>을 사용합니다.</li>
+</ul></div>
+<p>기술 참고: <a href="https://docs.ollama.com/import" target="_blank" rel="noopener">공식 Ollama GGUF 등록 가이드</a> · <a href="https://docs.ollama.com/modelfile" target="_blank" rel="noopener">공식 Modelfile 가이드</a>.</p>
+<div class="box info"><b>재정비용 Ollama 모델 등록·교체</b><p>앞의 1~9단계를 마치고 <span class="btn">API 설정</span>의 <b>용어·말투 분석</b>과 <b>문학적 윤문·연속성</b>에서 각각 <b>로컬 LLM</b> 및 등록된 모델을 선택하세요. 모델 목록이 비면 먼저 <code>ollama list</code>와 Ollama 서버 실행 여부를 확인한 뒤 앱에서 <span class="btn">목록 불러오기</span>를 누릅니다.</p>
+<p>새 GGUF를 쓰려면 실제 파일명에 맞춰 새 Modelfile을 만들고 <code>ollama create 새모델명 -f Modelfile파일명</code>으로 등록하세요. 등록 확인은 <code>ollama show 모델명</code>, 모델 삭제는 <code>ollama rm 모델명</code>입니다. 삭제 전에 앱에서 해당 모델을 사용 중이지 않은지 확인하세요. 더 큰 26B 모델은 일반적으로 12B보다 처리 시간이 길고 많은 메모리를 요구할 수 있습니다.</p></div>
+<h3 id="local-only">11-2. API 키 없이 로컬 LLM만으로 번역하기</h3>
+<ol>
+<li>Ollama를 실행해 두고 <code>ollama list</code>로 등록 모델을 확인합니다. 기본 Ollama 주소는 <code>http://127.0.0.1:11434</code>입니다. 앱에서 직접 로컬 서버 주소를 설정했다면 실제 사용 중인 주소를 입력하세요.</li>
+<li>야문 Novel Translator 실행 → <span class="btn">API 설정</span> → <span class="tab">로컬 LLM</span>을 <b>사용</b>으로 켜고 <span class="btn">목록 불러오기</span>로 <code>gemma-4-12B-it-uncensored-heretic-Q8</code>를 선택하세요. 모델 이름은 등록된 이름과 일치해야 합니다. <span class="btn">로컬 LLM 연결 테스트</span>를 실행합니다.</li>
+<li><b>번역 엔진 순서</b>에서 <b>로컬 LLM만</b> 활성화하고 Gemini·OpenAI는 번역 엔진 목록에서 제외합니다. 클라우드 API 키를 발급하거나 입력할 필요가 없습니다. 다만 인명·용어 추출과 인물 말투표 자동 생성은 별도 엔진 설정이므로, API 설정의 <b>용어·말투 분석</b>에서도 <b>로컬 LLM</b>을 선택하면 클라우드 키 없이 진행하기 쉽습니다.</li>
+<li>중국어·일본어·영어 TXT를 열고 <span class="btn">번역 시작 / 계속</span>을 누릅니다. Ollama에서는 모든 문단 ID가 반드시 들어간 형식으로 답을 받으므로 문단 빠짐으로 인한 재시도는 드뭅니다. 다만 내용을 제대로 번역하지 않으면(원문 그대로, 반복 등) 앱이 검증·재시도를 진행해 속도가 늦어질 수 있습니다. 로컬 엔진 하나만 설정했다면 클라우드 보조 엔진으로 자동 복구할 수 없는 점도 기억하세요.</li>
+</ol>
+<div class="box tip"><b>자주 생기는 문제</b><ul>
+<li><b>모델 목록에 없음:</b> <code>ollama list</code>에서 등록명 확인 → 앱의 모델 목록 새로고침. Ollama가 종료되었다면 다시 실행하세요.</li>
+<li><b>create에서 GGUF 파일을 찾지 못함:</b> <code>Modelfile-gemma-4-12B-Q8</code>의 <code>FROM</code>이 실제 파일명·폴더와 일치하는지 확인하고, <code>.txt</code>가 붙지 않았는지 점검하세요.</li>
+<li><b>모델이 너무 느림/메모리 부족:</b> <code>ollama ps</code>에서 GPU/CPU 사용 비율을 확인하고, 메모리가 부족하면 더 작은 GGUF로 별도 이름을 등록하세요.</li>
+<li><b>설정을 다시 확인하고 싶음:</b> <code>ollama show gemma-4-12B-it-uncensored-heretic-Q8 --modelfile</code>로 Ollama가 실제 적용한 설정을 확인하세요. 여기 나오는 내부 blob 경로를 새 Modelfile에 그대로 붙여 넣을 필요는 없습니다.</li>
+<li><b>기존 등록 모델을 제거할 때:</b> <code>ollama rm gemma-4-12B-it-uncensored-heretic-Q8</code>는 Ollama 등록 모델을 삭제하는 명령입니다. 필요한 모델을 실수로 삭제하지 않도록 주의하세요.</li>
+</ul></div>
+<p>참고 자료: <a href="https://docs.ollama.com/modelfile" target="_blank" rel="noopener">Ollama Modelfile 설명</a> · <a href="https://docs.ollama.com/import" target="_blank" rel="noopener">GGUF 가져오기</a> · <a href="https://ollama.com/download/windows" target="_blank" rel="noopener">Windows 설치</a>.</p>
+
+<h2 id="faq">12. 자주 묻는 질문</h2>
+<h3>번역 시작 버튼이 눌리지 않아요</h3>
+<p>아래 준비 상태 줄을 보세요. 원문이 없거나, 쓸 수 있는 엔진이 없으면(키가 없거나 체크가 안 됨) 눌리지 않습니다.</p>
+<h3>일부 문단이 원문(중국어)으로 남았어요</h3>
+<p>엔진이 거부했거나 막힌 부분입니다. 끝날 때 묻는 창에서 <b>재시도</b>를 누르거나 같은 파일로 <span class="btn">번역 시작 / 계속</span>을 다시 누르세요. 같은 엔진이 계속 막으면 다른 엔진을 켜세요(<a href="#retry">7장</a>).</p>
+<h3>키를 10개 넣었는데 하나만 쓰여요</h3>
+<p>정상입니다. 평소에는 맨 위 키 하나만 쓰고, 나머지는 예비입니다. 한도는 프로젝트 단위라 같은 프로젝트의 키를 돌려 써도 늘어나지 않습니다. 프로젝트 그룹 이름이 프로젝트마다 다르게(P1, P2…) 되어 있는지만 확인하세요(<a href="#keys">3-3</a>).</p>
+<h3>분당 한도를 넘으면 키가 정지되나요?</h3>
+<p>보통은 그 요청이 거절(429)될 뿐이고 잠시 뒤 다시 됩니다. 이 프로그램은 요청을 하나씩 보내고, 거절되면 스스로 속도를 낮춥니다. 정확한 한도 숫자는 Google AI Studio에서 확인하세요.</p>
+<h3>말투가 두 사람 관계에 안 맞아요</h3>
+<p><span class="tab">인물 말투</span> 탭에서 그 두 사람의 줄을 확인하세요. 줄이 없으면 <span class="btn">말투 추가</span>로 넣고, 틀렸으면 말투 칸에서 고르면 됩니다. 다음 요청부터 적용됩니다(<a href="#speech">6-4</a>).</p>
+<h3>이름이 중간에 바뀌어요</h3>
+<p><span class="tab">확정 용어집</span>에 그 이름을 적어 두세요. 자동 추출을 쓰면 편합니다.</p>
+<h3>중국 이름이 "쭤징"처럼 나와요</h3>
+<p><span class="tab">확정 용어집</span> 탭 맨 위 <b>중국 인명 표기</b>를 한국 한자음으로 고르고, 다시 추출할지 물으면 <b>새 방식으로 다시 추출</b>을 누르세요(<a href="#names">6-2</a>).</p>
+<h3>글자가 깨져 보여요</h3>
+<p><b>TXT 인코딩</b>을 직접 골라 보세요(중국어 간체 GB18030, 번체 Big5, 일본어 CP932 · EUC-JP).</p>
+<h3>번역이 갈수록 느려져요</h3>
+<p>막힌 문단을 나눠 다시 요청하느라 시간이 더 듭니다. 하단 API 상태에 "속도 조절 대기"가 보이면 요청 간격을 지키는 중입니다. 작업 끝 요약에 걸린 시간과 그 원인이 나옵니다(<a href="#tech-speed">부록 B</a>).</p>
+<h3>도중에 PC가 꺼졌어요</h3>
+<p>그대로 다시 열고 <span class="btn">번역 시작 / 계속</span>을 누르면 이어집니다.</p>
+
+<h2 id="data">13. 저장 위치 · 보안</h2>
+<ul>
+  <li>번역 진행 기록, 붙여넣은 글의 임시 파일, 내 번역 지침: <code>%LOCALAPPDATA%\NovelTranslator</code> (보통 <code>C:\Users\사용자\AppData\Local\NovelTranslator</code>)</li>
+  <li>로컬 LLM 형식 진단 기록: 같은 폴더의 <code>logs\format_diagnostics.log</code> (문단 ID 문제가 생겼을 때만 만들어짐, 본문과 키는 기록하지 않음)</li>
+  <li>API 키는 Windows 보안 저장(DPAPI)으로 암호화해 이 PC의 내 계정에서만 읽을 수 있게 저장합니다. 로그와 결과 파일에는 키를 남기지 않습니다.</li>
+  <li>설정 파일: 프로그램 폴더의 <code>config</code>, 언어 규칙: <code>profiles</code></li>
+  <li>새 버전으로 바꿀 때는 새 폴더에 압축을 풀어 쓰면 됩니다. 키와 진행 기록은 위 위치에 남아 있어 그대로 이어집니다.</li>
+</ul>
+
+<div class="part">기술 부록<span>번역률·속도·비용을 좌우하는 장치들. 무엇을 하는지, 왜 그렇게 하는지, 어떤 수치로 움직이는지, 기록에 어떻게 보이는지.</span></div>
+
+<h2 id="tech">개요 — 한 문단이 지나는 길</h2>
+<p>이 프로그램은 번역 API에 글을 통째로 보내고 받는 단순한 도구가 아닙니다. 소설 한 권을 <b>빠짐없이, 같은 이름으로, 원문 수위 그대로</b> 옮기기 위해 한 문단이 아래 단계를 거칩니다.</p>
+<div class="table-wrap"><table>
+  <tr><th style="width:5%">#</th><th style="width:22%">단계</th><th>하는 일</th><th style="width:26%">관련</th></tr>
+  <tr><td>1</td><td>인코딩 판별</td><td>여러 문자 코드로 읽어 보고 가장 자연스러운 글자가 나오는 쪽을 고름</td><td><a href="#tech-quality">E</a></td></tr>
+  <tr><td>2</td><td>문단 나누기 · 정리</td><td>문단에 번호(<code>P000001</code>)를 붙임. 이미 한국어인 문단, URL·코드 같은 문자열은 번역 대상에서 뺌</td><td><a href="#tech-reuse">D</a> · <a href="#tech-quality">E</a></td></tr>
+  <tr><td>3</td><td>청크 묶기</td><td>문단 여러 개를 한 요청 분량(중·일 약 800자)으로 묶음</td><td><a href="#tech-speed">B</a></td></tr>
+  <tr><td>4</td><td>용어 준비</td><td>확정 용어집 · 작품 메모 · 내 번역 지침 · 언어별 규칙을 요청에 붙임</td><td><a href="#tech-quality">E</a></td></tr>
+  <tr><td>5</td><td>요청</td><td>맨 위 엔진, 맨 위 키로 보냄. 요청 간격을 지킴</td><td><a href="#tech-speed">B</a> · <a href="#tech-keys">C</a></td></tr>
+  <tr><td>6</td><td>답 검사</td><td>문단 번호·한국어 비율·길이·거부 문구 등 8가지 검사</td><td><a href="#tech-rate">A</a></td></tr>
+  <tr><td>7</td><td>실패 시 복구</td><td>다시 요청 → 문맥 빼기 → 나누기 → 격리 → 다음 엔진</td><td><a href="#tech-rate">A</a></td></tr>
+  <tr><td>8</td><td>저장</td><td>청크마다 바로 저장. 다음에 다시 요청하지 않음</td><td><a href="#tech-reuse">D</a></td></tr>
+  <tr><td>9</td><td>결과 쓰기</td><td>문장부호 정리 후 <code>.ko.txt</code> 저장, 기존 파일은 백업</td><td><a href="#results">9장</a></td></tr>
+</table></div>
+
+<h3 id="tech-rate">A. 번역률 — 원문이 남지 않게 하는 장치</h3>
+<h4>A-1. 문단 번호로 1:1 대응</h4>
+<p>원문의 모든 문단에 <code>&lt;P000001&gt;</code> 같은 번호를 붙여 보내고, 답에서 같은 번호가 같은 순서로 한 번씩 돌아왔는지 확인합니다. 모델이 문단을 합치거나 빼먹거나 순서를 바꾸면 그 답은 받지 않고 다시 요청합니다.</p>
+<p class="why">왜: 언어 모델은 긴 글을 받으면 몇 문단을 건너뛰거나 두 문단을 하나로 합치는 일이 흔합니다. 일반 일괄 번역기에서 "중간이 사라졌다", "순서가 바뀌었다"는 불만이 나오는 이유입니다. 번호 대조로 이것을 원천적으로 막아, 결과 파일의 줄 구성이 원문과 같습니다.</p>
+
+<h4>A-2. 답을 받을 때마다 하는 검사</h4>
+<p>형식만 맞고 내용이 번역이 아닌 답을 걸러냅니다. 하나라도 걸리면 그 답은 쓰지 않습니다.</p>
+<div class="table-wrap"><table>
+<tr><th>검사</th><th>걸러내는 것</th><th>기준</th></tr>
+<tr><td>문단 번호 일치</td><td>누락 · 중복 · 순서 바뀜 · 번호 없는 답 · 한 문단을 여러 개로 쪼갠 답</td><td>보낸 번호와 정확히 같아야 함</td></tr>
+<tr><td>한국어 비율</td><td>원문을 그대로 돌려준 답</td><td>한글이 너무 적으면 실패 (코드처럼 원래 그대로 두는 줄은 제외)</td></tr>
+<tr><td>길이 비율</td><td>요약하거나 일부만 번역한 답</td><td>청크 전체가 원문의 18% 미만, 300자 이상 문단이 10% 미만이면 의심</td></tr>
+<tr><td>원문 문장 잔존</td><td>한 문장만 번역하지 않고 원문 그대로 둔 경우</td><td>중국어 한자 14자 이상 · 일본어 가나 포함 14자 이상 · 영어 8단어 이상이 원문과 똑같이 남음 (영어 제목·이름 목록은 제외)</td></tr>
+<tr><td>거부 문구</td><td>"죄송하지만 번역할 수 없습니다" 같은 답</td><td>원문 대사에 같은 뜻(抱歉 · すみません · I can't 등)이 있으면 정상 번역으로 봄</td></tr>
+<tr><td>임의 생략 표기</td><td>원문에 없는 "(묘사 생략)" "[검열됨]" 같은 표기</td><td>순화·누락 의심</td></tr>
+<tr><td>모델의 생각 섞임</td><td><code>&lt;/think&gt;</code>, "The user provided…" 같은 혼잣말</td><td>앞에 붙은 것은 잘라 내고, 문단 안에 섞이면 다시 요청</td></tr>
+<tr><td>범위 제외 표식</td><td>미성년자 관련 성적 내용 표식이 번역문과 섞인 답</td><td>표식은 그 문단 전체를 대신해야 함</td></tr>
+</table></div>
+
+<h4>A-3. 막혔을 때의 복구 사다리</h4>
+<p>엔진이 거부하거나 서버가 차단하면 청크 전체를 포기하지 않고, 문제 구간을 좁혀 가며 한 칸씩 내려갑니다.</p>
+<div class="flow"><span>① 같은 요청 재시도 (균형 최대 3회)</span><i>→</i><span>② 앞 문맥 빼고 1회</span><i>→</i><span>③ 청크를 절반씩 나누기</span><i>→</i><span>④ 문단 하나로 격리</span><i>→</i><span>⑤ 다음 엔진</span><i>→</i><span>⑥ 그 문단만 원문 유지 + 기록</span></div>
+<div class="table-wrap"><table>
+  <tr><th style="width:20%">단계</th><th>왜 하는가</th></tr>
+  <tr><td>① 재시도</td><td>일시적인 서버 오류·형식 오류는 다시 보내면 대부분 해결됩니다. 내용 때문에 막힌 경우(거부·차단)는 같은 요청을 반복하지 않고 바로 ②로 갑니다.</td></tr>
+  <tr><td>② 앞 문맥 빼기</td><td>엔진은 <b>이전 장면의 한국어 문맥까지 포함해</b> 요청 전체를 판단합니다. 앞 장면이 수위가 높으면 평범한 다음 청크까지 막히는 일이 있어, 문맥 없이 한 번 더 시도합니다.</td></tr>
+  <tr><td>③ 나누기</td><td>한 청크(약 800자)에 막히는 문장이 하나만 있어도 청크 전체가 거부됩니다. 절반씩 나누면 문제없는 문단은 번역되고, 막히는 부분만 남습니다. 서버 차단은 문단 크기까지, 거부 답은 문장 단위까지 좁히며, 아주 긴 문단은 300~600자 구간으로 나눠 처리합니다.</td></tr>
+  <tr><td>④ 격리</td><td>막히는 문단만 따로 떼어 냅니다. 나머지 문단은 이미 번역되어 저장됩니다(<b>부분 완료</b>).</td></tr>
+  <tr><td>⑤ 다음 엔진</td><td>격리된 문단만 엔진 순서대로 다음 엔진(OpenAI · 로컬 LLM 등)으로 보냅니다. 비싼 엔진에는 꼭 필요한 부분만 갑니다.</td></tr>
+  <tr><td>⑥ 원문 유지</td><td>모든 엔진이 실패한 문단만 원문으로 남기고 위치와 이유를 기록합니다. 나중에 그 부분만 다시 번역할 수 있습니다(<a href="#retry">7장</a>).</td></tr>
+</table></div>
+<div class="box warn"><b>원문을 고치지 않습니다</b> · 단어를 바꾸거나 가리거나, 가짜 대화 기록을 끼워 넣는 식으로 차단을 피하지 않습니다. 그래서 어떤 엔진이 정책상 끝까지 막는 문단은 <b>다른 엔진</b>이 있어야 번역됩니다. 엔진을 하나만 켜면 그런 문단은 원문으로 남습니다.</div>
+
+<h4>A-4. 다시 시도할 때는 더 세밀하게</h4>
+<p>재시도(같은 파일로 다시 실행, "재시도" 버튼, 폴더의 자동 재시도)에서는 지난번 어떻게 막혔는지 기억해 두었다가, 처음과 같은 순서를 되풀이하지 않습니다.</p>
+<div class="table-wrap"><table>
+  <tr><th style="width:30%">지난번 실패 이유</th><th>재시도 방법</th></tr>
+  <tr><td>거부 · 서버 차단 · 안전 차단 · 형식 오류</td><td>위 사다리의 ①②를 건너뛰고 <b>앞 문맥 없이, 더 엄격한 복구 지시와 함께, 문단 단위로 나눠서</b> 바로 요청합니다. 같은 청크 통째 요청은 같은 이유로 또 막힐 가능성이 높기 때문입니다. 그래도 막히는 문단만 엔진 순서대로 다음 엔진에 넘깁니다.</td></tr>
+  <tr><td>한도 · 네트워크 · 일시 오류</td><td>내용 문제가 아니므로 평소처럼 청크 단위로 요청합니다(요청 수를 늘리지 않음).</td></tr>
+  <tr><td>문단 안 일부 문장만 원문</td><td>남은 문장들만 모아 한 번에 요청(<a href="#tech-reuse">부록 D</a>)</td></tr>
+  <tr><td>한자·가나 몇 글자</td><td>그 글자만 고치는 요청, 짧은 문단은 새로 번역</td></tr>
+</table></div>
+<p>기록: <code>이어 번역 · 지난번 막힌 청크 N개는 앞 문맥 없이, 문단 단위로 나눠 더 세밀하게 다시 요청합니다</code></p>
+<h4>A-5. 범위 제외 재확인</h4>
+<p>모델이 문단에 "범위 제외"(미성년자 관련 성적 내용) 표시를 하면, 다음 엔진이 그 문단을 한 번 더 확인합니다. 일반 성인 장면을 잘못 제외한 경우에는 다음 엔진이 번역합니다. 한 모델의 과잉 판단 때문에 정상 문단이 빠지는 것을 막기 위해서입니다.</p>
+
+<h4>A-6. 남은 한자·가나 정리</h4>
+<p>번역은 됐는데 한자·가나가 몇 글자 섞인 문단(작은 모델에서 흔함)은 엔진 순서대로 "남은 글자만 한글로 고쳐 달라"는 짧은 요청을 보냅니다. 그래도 남으면 작업 끝에 개수를 알려 주고, 같은 파일로 다시 실행할 때 고칩니다. 확정 용어집에서 한자로 두기로 한 표기는 남은 글자로 보지 않습니다.</p>
+
+<div class="box tip"><b>실측 예</b> · 거부가 많이 나도록 일부러 고른 400KB 중국어 성인 소설: 67청크 중 31청크가 Gemini에서 막혔지만, 위 사다리를 거쳐 <b>원문으로 남은 것은 1문단</b>이었습니다(로컬 LLM이 막힌 문단 7개를 대신 번역). Gemini 요청 156회, 추정 비용 약 $0.45.</div>
+
+<h3 id="tech-speed">B. 속도 — 무엇이 시간을 쓰는가</h3>
+<h4>B-1. 시간 공식</h4>
+<p class="box info"><b>걸리는 시간 ≈ 요청 수 × (응답 시간 + 요청 간격 대기)</b></p>
+<ul>
+  <li><b>요청 수</b> = 청크 수 + 복구에 쓴 요청. 막힌 청크 하나는 사다리를 내려가며 요청을 3~10회 씁니다. 그래서 원문 길이보다 <b>막히는 구간이 얼마나 많은가</b>가 시간을 더 크게 좌우합니다.</li>
+  <li><b>응답 시간</b> = 모델이 한 청크를 번역해 돌려주는 시간. 클라우드 모델은 보통 몇 초에서 십여 초, 로컬 모델은 그래픽카드에 따라 더 깁니다.</li>
+  <li><b>요청 간격 대기</b> = 분당 한도를 넘지 않게 쉬는 시간(B-3).</li>
+</ul>
+<p>위 400KB 실측에서는 걸린 시간의 약 81%가 막힌 31청크의 복구에 쓰였습니다.</p>
+<div class="bar" role="img" aria-label="걸린 시간 구성: 막힌 청크 복구 81%, 정상 번역 19%"><div style="width:81%;background:#b45309">막힌 31청크 복구 81%</div><div style="width:19%;background:#2563eb">정상 19%</div></div>
+<p class="legend">400KB 중국어 성인 소설(거부가 많은 극단적 예). 평범한 소설은 복구가 거의 없어 훨씬 빠릅니다.</p>
+
+<h4>B-2. 요청을 하나씩 보내는 이유</h4>
+<p>이 프로그램은 요청을 <b>한 번에 하나씩, 순서대로</b> 보냅니다. 앞 청크의 한국어 번역을 다음 청크의 문맥으로 넘겨야 말투·호칭·장면이 이어지기 때문입니다. 여러 요청을 동시에 보내는 일괄 번역 도구는 더 빠르지만, 청크끼리 문맥을 모른 채 번역되고 분당 한도에 훨씬 쉽게 걸립니다.</p>
+<p class="why">그래서 실제 요청 속도는 대개 응답 시간이 정합니다. 응답에 5초가 걸리면 간격을 아무리 줄여도 1분에 12번을 넘지 못합니다. 무료 키의 분당 한도에 실제로 닿는 일이 드문 이유입니다.</p>
+
+<h4>B-3. 요청 간격 자동 조절</h4>
+<p>한도를 넘기면 오류(429)와 함께 수십 초씩 기다려야 해서 오히려 느려집니다. 그래서 안전한 속도로 시작해 성공이 이어지면 조금씩 올리고, 한도에 닿으면 내립니다.</p>
+<div class="table-wrap"><table>
+<tr><th style="width:16%">항목</th><th>값</th><th style="width:36%">기록에 보이는 모습</th></tr>
+<tr><td>시작 속도</td><td>분당 10회 (요청 사이 최소 6초)</td><td><code>속도 조절 대기 6초 · 현재 10.0회/분</code></td></tr>
+<tr><td>올리기</td><td>연속 성공 5번마다 분당 +1회 (최대 30회)</td><td>현재 회/분 숫자가 점점 커짐</td></tr>
+<tr><td>내리기</td><td>분당 한도(429)를 받으면 현재 속도의 70%로, Gemini가 알려 준 대기 시간(보통 수십 초)만큼 그 프로젝트를 쉬게 함</td><td><code>프로젝트 P1 · RATE_LIMIT · 약 32.0초 대기 · 현재 RPM 9.1</code></td></tr>
+<tr><td>최저</td><td>분당 2회 아래로는 내리지 않음</td><td></td></tr>
+</table></div>
+<p><span class="btn">고급 설정</span>의 시작 RPM · 최대 RPM · "RPM +1까지 연속 성공 수"로 바꿀 수 있습니다. 로그에 429가 자주 보이면 최대 RPM을 낮추고, 결제를 등록한 유료 등급 키라면 시작 RPM을 높여도 됩니다.</p>
+
+<h4>B-4. 청크 크기와 번역 방식</h4>
+<p>한 번에 보내는 분량입니다. 크면 요청 수가 줄어 빠르지만, 막혔을 때 영향 범위와 복구 비용이 커집니다.</p>
+<div class="table-wrap"><table>
+<tr><th>언어</th><th>기준 청크</th><th>범위</th></tr>
+<tr><td>중국어 · 일본어</td><td>약 800자</td><td>280 ~ 1,150자</td></tr>
+<tr><td>영어</td><td>약 1,800자</td><td>650 ~ 2,600자 (한국어로 옮기면 글자 수가 절반 정도라, 비슷한 분량의 한국어가 나오도록 크게 잡음)</td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>방식</th><th>청크 크기</th><th>앞 문맥</th><th>재시도</th><th>요청 제한 시간</th><th>Gemini 생각 단계</th><th>쓰임</th></tr>
+<tr><td>품질 우선</td><td>× 0.75</td><td>5,000자</td><td>4회</td><td>120초</td><td>medium</td><td>문체·흐름이 중요한 작품</td></tr>
+<tr><td>균형 (권장)</td><td>× 1.0</td><td>3,000자</td><td>3회</td><td>90초</td><td>low</td><td>대부분</td></tr>
+<tr><td>속도 우선</td><td>× 1.25</td><td>1,800자</td><td>2회</td><td>75초</td><td>최소</td><td>막힘이 적은 일반 소설을 빨리</td></tr>
+</table></div>
+<p class="why">생각 단계는 Gemini Flash 계열에만 보냅니다. 기본 모델 Gemini 3.1 Flash Lite에는 보내지 않으며, 이 모델은 원래 최소로 동작합니다. 최소는 빠르고 싸지만 헷갈리는 대목(생략된 주어, 존댓말 관계)에서 품질이 조금 낮을 수 있습니다. 최소를 받지 않는 모델은 자동으로 low로 낮춰 보냅니다.</p>
+<p><b>앞 문맥.</b> 매 요청에 바로 앞의 한국어 번역 일부(위 표의 글자 수)를 참고로 함께 보냅니다. 청크 경계에서 말투·호칭·장면이 끊기지 않게 하기 위해서이며, 그만큼 요청이 조금 커집니다.</p>
+
+<h3 id="tech-keys">C. 키 · 한도 · 엔진 전환</h3>
+<h4>C-1. 키를 고르는 규칙</h4>
+<ol>
+  <li>사용 가능한 키 중 <b>목록에서 가장 위의 키</b>를 씁니다. 돌아가며 쓰지 않습니다(예비 키를 이유 없이 소모하지 않기 위해).</li>
+  <li>키가 무효(<code>AUTH</code>)·차단(<code>KEY_BLOCKED</code>)되면 그 키를 끄고 다음 키로 넘어갑니다. 기록: <code>API 키 … · AUTH · 비활성 처리</code></li>
+  <li>분당 한도(<code>RATE_LIMIT</code>)·하루 한도(<code>QUOTA</code>)는 <b>프로젝트 그룹 전체</b>를 쉬게 합니다. Google 공식 문서도 "한도는 API 키가 아니라 프로젝트 단위로 적용된다"고 밝히고 있어, 같은 그룹의 다른 키로 바꾸는 것은 의미가 없기 때문입니다.</li>
+  <li>쉬고 있지 않은 다른 그룹의 키가 있으면 바로 그 키로 이어 갑니다.</li>
+</ol>
+<h4>C-2. 하루 한도와 엔진 전환</h4>
+<div class="flow"><span>하루 한도 소진</span><i>→</i><span>다른 프로젝트 그룹</span><i>→</i><span>다음 엔진으로 남은 청크 계속</span><i>→</i><span>10청크마다 Gemini 복귀 확인</span></div>
+<ul>
+  <li>Gemini가 한도 소진이나 장애로 계속 실패하면, 그 파일의 남은 청크는 다음 엔진이 이어 번역합니다. 기록: <code>⚠ Gemini 사용 불가 (…) → 이 파일의 남은 청크는 OpenAI로 …</code></li>
+  <li>10청크마다 Gemini가 돌아왔는지 확인해, 돌아왔으면 다시 Gemini로 번역합니다. 기록: <code>↩ Gemini 복귀</code></li>
+  <li>다음 엔진도 없으면 일시정지하고, 폴더 번역이면 기다렸다가 자동으로 이어 갑니다.</li>
+</ul>
+<h4>C-3. 무인 진행의 대기 시간</h4>
+<div class="table-wrap"><table>
+<tr><th>멈춘 이유</th><th>기다리는 시간</th><th>그다음</th></tr>
+<tr><td>분당 한도</td><td>1분</td><td rowspan="3">같은 파일을 자동으로 이어 번역 (파일당 최대 40번)</td></tr>
+<tr><td>네트워크 문제</td><td>2분</td></tr>
+<tr><td>하루 한도 소진</td><td>15분</td></tr>
+<tr><td>설정 오류 · 키 오류 · 파일 읽기 오류</td><td>—</td><td>그 파일만 건너뛰고 다음 파일로</td></tr>
+</table></div>
+
+<h3 id="tech-reuse">D. 재사용과 비용 보호</h3>
+<div class="table-wrap"><table>
+<tr><th style="width:26%">장치</th><th>하는 일</th><th style="width:24%">효과</th></tr>
+<tr><td>청크 단위 즉시 저장</td><td>번역된 청크는 바로 저장되어, 이어 번역할 때 다시 요청하지 않음</td><td>중단·재실행해도 추가 비용 0</td></tr>
+<tr><td>문단 단위 재사용</td><td>같은 원문·같은 설정으로 번역한 문단은 청크 구성이 달라져도 다시 씀</td><td>원문 끝에 글을 덧붙여도 앞부분은 재요청 없음</td></tr>
+<tr><td>남은 부분만 다시 보내기</td><td>원문으로 남은 문단만, 문단 안에 원문 문장 몇 개가 남았으면 <b>그 문장들만</b> 모아 청크당 한 번에 보냄(줄바꿈 없는 100문장 넘는 문단도 남은 문장만). 한자 몇 글자는 그 글자만 고치는 요청, 400자 이하 짧은 문단만 새로 번역</td><td>재번역 비용을 최소로</td></tr>
+<tr><td>청크당 요청 상한</td><td>유료 엔진은 한 청크에 최대 16번까지만 요청. 끝까지 막히는 문단에 요금이 계속 나가지 않게 함</td><td>최악의 경우에도 비용이 정해짐</td></tr>
+<tr><td>한국어 문단 통과</td><td>이미 한국어인 문단은 엔진에 보내지 않고 그대로 둠</td><td>섞인 글에서 요청 절약</td></tr>
+<tr><td>구조 문자열 보호</td><td>URL · 이메일 · 경로 · 태그 · 코드는 번역하지 않고 정확히 복원(내용 필터를 피하는 데에는 쓰지 않음)</td><td>깨짐 방지</td></tr>
+</table></div>
+
+<h3 id="tech-quality">E. 품질 장치</h3>
+<ul>
+  <li><b>언어별 번역 규칙:</b> 중국어·일본어·영어마다 따로 다듬은 규칙(<code>profiles</code> 폴더)을 씁니다. 대사의 말투, 의성어·의태어, 호칭(さん · 先輩 · 哥 · 姐), 존댓말·반말, 문장부호를 언어별로 다룹니다.</li>
+  <li><b>자동 언어팩:</b> 언어별 호칭·관계·장르 용어 목록(중국어 약 190개, 일본어 약 140개, 영어 약 145개 — 시아버지·장인·형수·올케·사숙·폐하·마마 같은 가족·사돈·무협·궁중 호칭 포함). 그 덩어리에 실제로 나온 단어만 "참고 힌트"로 보내고, 公公(시아버지/환관)처럼 뜻이 갈리는 말은 판별 기준을 함께 줍니다. 확정 용어가 항상 우선합니다.</li>
+  <li><b>인물 말투표:</b> 대사 표본에서 관계가 분명한 쌍만 뽑고, 인물 이름이 용어집에 없거나 말투가 정해진 6가지가 아니면 버립니다. 매 요청에 "이 두 사람 사이는 이 말투" 규칙으로 붙어, 덩어리마다 말투를 새로 짐작하지 않게 합니다. 작업 정체성(이어 번역 기준)에는 넣지 않아, 고쳐도 다시 번역되지 않습니다.</li>
+  <li><b>요청에 함께 붙는 내용:</b> 언어별 규칙, 확정 용어집, 이름 표기 방식, 인물 말투표, 작품 메모, 내 번역 지침, 앞 문맥. 내 번역 지침이 고정 규칙(빠짐없이 · 같은 문단 번호 · 한글 출력 · 확정 용어집 · 범위 제외)과 부딪치면 고정 규칙을 따르도록 함께 지시합니다.</li>
+  <li><b>확정 용어집 우선:</b> 용어집에 적은 표기는 책 전체에서 그대로 씁니다. 표기에 한자가 남은 항목(<code>郝장화</code>)이나 일반 단어(<code>公司 → 회사</code>)는 빨갛게 표시해 실수를 막습니다.</li>
+  <li><b>이름 표기 방식:</b> 한자음(左京 → 좌경)과 현지 발음 중 고를 수 있고, 책 전체에 같은 방식을 적용합니다.</li>
+  <li><b>인명·용어 자동 추출:</b> 번역 전에 원문에서 자주 나오는 후보 목록만(본문은 보내지 않음) 한 번 보내 이름 표기를 정합니다. 요청 1회, 보통 몇 초입니다.</li>
+  <li><b>문장부호 정리(결과 파일에만 적용):</b> 。→. ，、→, 「」→" " ・→· 〜→~, 전각 숫자→반각, 3．5 → 3.5. 번역 요청에는 영향이 없어 다시 번역하지 않아도 됩니다.</li>
+  <li><b>인코딩 자동 판별:</b> UTF-8 · UTF-16 · GB18030(간체) · Big5/CP950(번체) · Big5-HKSCS · CP932/Shift-JIS · EUC-JP · Windows-1252를 비교해 가장 자연스러운 글자가 나오는 쪽을 고릅니다. 이상한 바이트 한두 개 때문에 전체가 깨지지 않게 그 글자만 대체합니다.</li>
+  <li><b>원문 정리:</b> 70자 안팎마다 줄이 바뀐 영어(구텐베르크·PDF)는 파일 전체가 그런 모양일 때만 문단으로 이어 붙이고, 아오조라 문고 주석(［＃改ページ］)·URL·이메일·코드는 번역하지 않고 그대로 둡니다.</li>
+</ul>
+
+<h3 id="tech-local">F. 로컬 LLM에 들어간 장치</h3>
+<div class="table-wrap"><table>
+<tr><th style="width:32%">장치</th><th>이유</th></tr>
+<tr><td>답을 조금씩 받기(스트리밍)</td><td>긴 청크도 쓰는 동안은 시간 초과가 나지 않음. "응답 대기 한도"는 글자가 멈춘 시간만 셈</td></tr>
+<tr><td>컨텍스트 12,288 → 필요할 때만 최대 32,768로 늘림, 줄이지 않음</td><td>Ollama는 이 값이 바뀔 때마다 모델을 다시 불러와 수십 초가 걸림</td></tr>
+<tr><td>생각(추론) 출력 끄기</td><td>Qwen3 같은 모델이 답 전에 긴 생각을 만들어 몇 배 느려지는 것을 막음. 그래도 섞여 나온 생각은 잘라 내거나 다시 요청</td></tr>
+<tr><td>반복 루프 감지</td><td>"야야야…"처럼 같은 말을 끝없이 쓰면 몇 초 안에 끊음. 반복 억제 설정으로 1회만 다시 요청하고, 한 청크에서 3번 나오면 그 청크는 다음 엔진 또는 원문 유지 — 같은 반복이 되풀이되지 않게 함</td></tr>
+<tr><td>답 길이 상한</td><td>원문 길이의 약 3배 + 여유분. 정상 번역은 닿지 않고, 끝없이 쓰는 경우만 멈춤</td></tr>
+<tr><td>남은 한자 정리</td><td>작은 모델은 한자를 남기는 일이 많아, 남은 글자만 고치는 요청을 한 번 더 보냄(기록: "남은 한자·가나 정리")</td></tr>
+<tr><td>청크당 요청 상한 없음</td><td>무료이므로 유료 엔진의 비용 보호 상한(청크당 16회)을 적용하지 않음</td></tr>
+<tr><td>구조화 출력(Ollama)</td><td>보낸 문단 ID를 모두 필수 항목으로 한 형식으로만 답하게 함 → 문단 빠짐·합침이 생성 단계에서 막힘. 번역과 재정비 모두 적용, 서버가 거부하면 자동으로 끔</td></tr>
+<tr><td>요청당 최대 12문단</td><td>짧은 줄 소설은 한 청크에 문단 ID가 50~60개라 작은 모델이 놓치기 쉬움. 청크는 그대로 두고 요청만 나눔</td></tr>
+<tr><td>문단 1개 누락 시 나머지 유지</td><td>답 전체를 버리고 반으로 나눠 다시 보내지 않고, 빠진 문단과 앞 문단만 한 문단씩 다시 요청(앞 문단에 합쳐졌을 수 있어 함께)</td></tr>
+<tr><td>줄 중간·변형 문단 ID 인식</td><td><code>…했다.&lt;P000012&gt;</code>처럼 줄바꿈 없이 붙은 ID, 전각 <code>Ｐ</code>, <code>〈 〉</code>·<code>[ ]</code> 등을 보낸 ID에 한해 문단 경계로 인식</td></tr>
+<tr><td>Gemma 권장 샘플링</td><td>낮은 temperature(0.2)는 같은 문단에서 같은 실수를 되풀이하게 함. 본문(번역·재정비)은 Google 권장값, 분석 요청은 0.2 유지</td></tr>
+<tr><td>형식 진단 기록</td><td>문단 ID 문제가 생긴 경우에만 <code>logs\format_diagnostics.log</code>에 ID 개수·위치·표기 형태를 기록(본문·키는 남기지 않음). 파일이 없으면 문제가 없었다는 뜻</td></tr>
+</table></div>
+<p>속도는 그래픽카드 메모리에 모델이 다 들어가는지가 결정합니다. 연결 테스트의 "생성 속도"가 한 자리 수(토큰/초)면 모델 일부가 CPU에서 돌고 있다는 뜻입니다.</p>
+
+<h3 id="tech-limits">G. 한계 — 프로그램이 해결할 수 없는 것</h3>
+<ul>
+  <li><b>번역 품질의 상한은 모델이 정합니다.</b> 프로그램은 빠짐·거부·형식 오류를 걸러 내고 다시 시키지만, 문장을 더 잘 쓰게 만들 수는 없습니다. Flash Lite 같은 저가 모델이나 작은 로컬 모델은 문장이 어색하거나 지침을 덜 따르는 일이 더 많습니다.</li>
+  <li><b>정책 차단은 엔진마다 다릅니다.</b> 원문을 고쳐 차단을 피하지 않으므로, 한 엔진이 끝까지 막는 문단은 다른 엔진이 있어야 번역됩니다.</li>
+  <li><b>막힘이 많은 글은 오래 걸립니다.</b> 막힌 구간을 좁혀 가는 데 요청이 여러 번 필요하고, 요청마다 간격을 지켜야 합니다.</li>
+  <li><b>같은 원문이라도 매번 똑같이 번역되지는 않습니다.</b> 이름처럼 반드시 같아야 하는 것은 확정 용어집에 적어 두세요.</li>
+  <li><b>무료 키는 한도가 낮습니다.</b> 한도에 닿으면 기다리거나 다른 프로젝트의 키, 다른 엔진을 써야 합니다.</li>
+</ul>
+
+<h3 id="tech-check">H. 증상별 점검표</h3>
+<div class="table-wrap"><table>
+<tr><th style="width:24%">증상</th><th style="width:30%">흔한 원인</th><th>먼저 해 볼 것</th></tr>
+<tr><td>원문으로 남은 문단</td><td>엔진의 거부·서버 차단</td><td>다른 엔진을 켜고 같은 파일로 <span class="btn">번역 시작 / 계속</span> (<a href="#retry">7장</a>)</td></tr>
+<tr><td>한자가 섞인 번역</td><td>작은 모델의 한계</td><td>같은 파일로 다시 실행 · 더 큰 모델이나 Gemini를 앞에</td></tr>
+<tr><td>두 사람 말투가 들쭉날쭉</td><td>모델이 관계를 덩어리마다 짐작</td><td>인물 말투 탭에서 그 쌍 확인·추가</td></tr>
+<tr><td>이름이 오락가락</td><td>확정 용어집에 없음</td><td>자동 추출 또는 용어집에 직접 추가</td></tr>
+<tr><td>중국 이름이 현대 발음</td><td>표기 방식 설정</td><td>중국 인명 표기 → 한국 한자음, 새 방식으로 다시 추출</td></tr>
+<tr><td>너무 느림</td><td>막힌 청크 복구 · 로컬 모델이 CPU에서 돎</td><td>작업 끝 요약에서 원인 확인 · <code>ollama ps</code> 확인 · 막힘이 많으면 보조 엔진을 켜 두기</td></tr>
+<tr><td>429가 자주 보임</td><td>분당 한도</td><td><span class="btn">고급 설정</span>에서 최대 RPM 낮추기 · 다른 프로젝트 키 추가</td></tr>
+<tr><td>한도 소진으로 멈춤</td><td>프로젝트의 하루 한도</td><td>다른 프로젝트 키(다른 그룹 이름) 추가 · 보조 엔진 켜기</td></tr>
+<tr><td>지침이 잘 안 먹힘</td><td>저가 모델 · 고정 규칙과 충돌</td><td>지침을 짧고 구체적으로 · 상위 모델 사용</td></tr>
+<tr><td>글자가 깨짐</td><td>인코딩 판별 실패</td><td>TXT 인코딩 직접 선택</td></tr>
+</table></div>
+<p>무엇이든 <span class="tab">상태 / 오류 기록</span>에 어떤 문단이 왜 막혔고 어느 엔진이 처리했는지, 작업 끝 요약(걸린 시간 · 요청 수 · 비용)이 남아 있습니다. 문의할 때는 이 기록을 함께 보내 주시면 원인을 바로 찾을 수 있습니다.</p>
+
+</main>
+</div>
+<footer>야문 Novel Translator v2.1 · 2026년 10월 · 제작 야문 짱 &amp; Claude · 무료 프로그램 · Copyright © 2026 야문 짱. All rights reserved.</footer>
+</body>
+</html>

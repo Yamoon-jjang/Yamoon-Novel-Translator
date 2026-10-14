@@ -1,0 +1,80 @@
+{
+  "models": [
+    {
+      "provider": "gemini",
+      "id": "gemini-3.1-flash-lite",
+      "display_name": "Gemini 3.1 Flash Lite (기본 · 저비용)",
+      "enabled": true,
+      "recommended": true,
+      "thinking_levels": [],
+      "price_input_per_m": 0.25,
+      "price_output_per_m": 1.5
+    },
+    {
+      "provider": "gemini",
+      "id": "gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash (고품질)",
+      "enabled": true,
+      "recommended": false,
+      "thinking_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "price_input_per_m": 0.75,
+      "price_output_per_m": 3.75
+    },
+    {
+      "provider": "gemini",
+      "id": "gemini-3.7-flash",
+      "display_name": "Gemini 3.7 Flash (안정 대체 모델)",
+      "enabled": true,
+      "recommended": false,
+      "thinking_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "price_input_per_m": 0.75,
+      "price_output_per_m": 3.75
+    },
+    {
+      "provider": "gemini",
+      "id": "gemini-flash-latest",
+      "display_name": "Gemini Flash Latest (변동 가능)",
+      "enabled": true,
+      "recommended": false
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-luna",
+      "display_name": "GPT-6 Luna",
+      "enabled": true,
+      "price_input_per_m": 0.1,
+      "price_output_per_m": 0.5,
+      "note": "가장 저렴 · OpenAI를 주 엔진으로 책 전체를 번역할 때 권장 (Gemini Flash Lite보다 저렴)"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6.1-sol",
+      "display_name": "GPT-6.1 Sol",
+      "enabled": true,
+      "recommended": true,
+      "price_input_per_m": 2.0,
+      "price_output_per_m": 10.0,
+      "note": "중간 등급 (기본) · 막힌 문단만 넘겨받는 보조 엔진에 권장 · 어려운 문단의 품질이 좋고, 보조로는 요청량이 적어 비용 부담이 작음"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-astra",
+      "display_name": "GPT-6 Astra",
+      "enabled": true,
+      "price_input_per_m": 10.0,
+      "price_output_per_m": 50.0,
+      "note": "최고 등급 · 번역에는 과함 (Sol의 5배 가격)"
+    }
+  ],
+  "note": "목록 첫 번째 모델이 기본값입니다. thinking_levels가 빈 목록이면 생각 단계 설정을 보내지 않고 모델 기본값을 씁니다(지원 여부를 확인하지 못한 모델). 가격(price_*_per_m, 100만 토큰당 USD, 2026-10 기준)은 앱의 사용 비용 추정 표시에만 쓰이며, 실제 청구액은 Google 결제 화면이 기준입니다. 자동 모델 전환은 하지 않습니다."
+}

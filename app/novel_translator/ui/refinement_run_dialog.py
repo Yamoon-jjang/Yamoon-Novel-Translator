@@ -1,0 +1,313 @@
+"""Separate dialog for Korean literary editing; translation mode remains unchanged."""
+from __future__ import annotations
+from pathlib import Path
+import re
+import time
+from PySide6.QtCore import QThread, Signal, QTimer
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                               QFileDialog, QProgressBar, QMessageBox)
+from ..refinement_runtime import run_refinement, MAX_REFINEMENT_BYTES, format_duration
+from ..api_keys import normalize_key_records
+from .main_window import _make_provider
+from ..textio import read_txt_sample, decode_txt_bytes
+
+KOREAN_MIN_SHARE = 0.3
+
+
+def korean_share(path) -> float:
+    """Share of Hangul among the letters at the start of a TXT (0.0 when unreadable)."""
+    try:
+        raw=read_txt_sample(Path(path), 65536)
+        if len(raw) >= 65536 and b'\n' in raw:
+            raw=raw[:raw.rfind(b'\n')]   # never cut a multi-byte character in half
+        text,_=decode_txt_bytes(raw, 'ko')
+    except Exception:
+        return 0.0
+    letters=len(re.findall(r'[A-Za-z가-힣一-龥ぁ-ゟ゠-ヿ]', text))
+    return len(re.findall(r'[가-힣]', text))/letters if letters else 0.0
+
+
+class _StatusLabel(QLabel):
+    """A wrapped status line that lets the window grow when a longer message arrives
+    (a top-level window does not grow for word-wrapped text by itself)."""
+    def setText(self, text):
+        super().setText(text)
+        fit = getattr(self.window(), '_fit_height', None)
+        if fit:
+            fit()
+
+
+class RefinementWorker(QThread):
+    progressed = Signal(int,int,int)
+    outcome = Signal(object)
+    failed = Signal(str)
+    activity = Signal(str)
+
+    def __init__(self, source: Path, output: Path, provider_name: str, model: str,
+                 api_key: str, options: dict, parent=None, analysis=None):
+        super().__init__(parent)
+        self.source=source; self.output=output; self.provider_name=provider_name
+        self.model=model; self.api_key=api_key; self.options=options
+        self._stop=False
+        self.analysis=analysis
+
+    def stop(self):
+        self._stop=True
+
+    def run(self):
+        try:
+            provider=_make_provider(self.provider_name,
+                                   self.options.get('endpoint',''),self.options)
+            analysis=None
+            if self.analysis:
+                name,model,key,opts=self.analysis
+                analysis=(_make_provider(name,opts.get('endpoint',''),opts),model,key)
+            result=run_refinement(self.source,self.output,provider,self.model,self.api_key,
+                                  stop=lambda: self._stop, analysis_engine=analysis,
+                                  event=lambda message:self.activity.emit(message),
+                                  progress=lambda a,b,c: self.progressed.emit(a,b,c))
+            self.outcome.emit(result)
+        except Exception as e:
+            self.failed.emit(type(e).__name__+': '+str(e)[:450])
+
+
+class RefinementRunDialog(QDialog):
+    def __init__(self, host):
+        super().__init__(host)
+        self.host=host
+        self.setWindowTitle('한국어 소설 재정비 · 문학적 윤문')
+        self.resize(620,335)
+        self.worker=None
+        self._stage_text='대기 중'
+        self._stage_started=0.0
+        self._timer=QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self.source=None
+        self.output=None
+        layout=QVBoxLayout(self)
+        intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서는 유지하며 원본은 변경하지 않습니다.\n'
+                     '인물·용어·말투 분석표를 참고하며 윤문하고, 변화가 의심되는 구간은 연속성을 추가 검토합니다. 분석표는 자동 추론이므로 최종 확인이 필요합니다.')
+        intro.setWordWrap(True); layout.addWidget(intro)
+        row=QHBoxLayout()
+        self.pick=QPushButton('한국어 TXT 선택')
+        self.pick.clicked.connect(self._choose)
+        row.addWidget(self.pick)
+        self.source_label=QLabel('선택한 파일 없음')
+        self.source_label.setWordWrap(True)
+        row.addWidget(self.source_label,1)
+        layout.addLayout(row)
+        # API settings own both provider/model choices. This dialog is read-only.
+        self.analysis_info=QLabel()
+        self.editing_info=QLabel()
+        layout.addWidget(QLabel('용어·말투 분석 · API 설정'))
+        layout.addWidget(self.analysis_info)
+        layout.addWidget(QLabel('문학적 윤문·연속성 · API 설정'))
+        layout.addWidget(self.editing_info)
+        self._fill_engines()
+        self.help=QLabel('한국어 소설 재정비는 온라인 AI의 토큰 비용·출력 길이 제한·긴 대기·일부 내용의 교정 거부 문제를 줄이기 위해 로컬 LLM만 지원합니다. 로컬 LLM에도 문맥 길이·처리 속도 제한은 있습니다. API 설정에서 용어·말투 분석과 문학적 윤문을 모두 로컬 LLM으로 선택해야 시작할 수 있습니다. 용어·말투 검출은 소설 분량과 모델 속도에 따라 시간이 오래 걸릴 수 있으며, 로컬 LLM은 특히 느릴 수 있습니다. 엔진과 모델은 API 설정에서만 변경하며 여기서는 저장된 설정을 사용합니다. 성인 소설의 윤문 거부 가능성을 줄이려면 검열 해제된 로컬 LLM을 권장합니다. 단, 성공과 품질이 보장되지는 않습니다.')
+        self.help.setWordWrap(True);layout.addWidget(self.help)
+        self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0)
+        layout.addWidget(self.progress)
+        self.status=_StatusLabel('준비됨')
+        self.status.setWordWrap(True);layout.addWidget(self.status)
+        layout.addStretch(1)
+        bar=QHBoxLayout()
+        self.start=QPushButton('재정비 시작')
+        self.start.clicked.connect(self._start)
+        self.start.setEnabled(self._routes_ready)
+        self.cancel=QPushButton('닫기')
+        self.cancel.clicked.connect(self._close_or_stop)
+        bar.addStretch(1);bar.addWidget(self.start);bar.addWidget(self.cancel)
+        layout.addLayout(bar)
+        self._fit_height()
+        # Pre-fill only a Korean text: the last translation result if there is one,
+        # otherwise the open file when it is itself Korean. The foreign-language
+        # original that is open for translation is never pre-selected.
+        for candidate in self._prefill_candidates(host):
+            if korean_share(candidate) >= KOREAN_MIN_SHARE:
+                self._set_source(candidate)
+                break
+
+    @staticmethod
+    def _prefill_candidates(host):
+        out=[]
+        result=getattr(host,'last_result_path',None)
+        if result and Path(result).is_file() and Path(result).name.lower().endswith(('.ko.txt','.ko.partial.txt')):
+            out.append(Path(result))
+        existing=getattr(host,'source_path',None)
+        if existing and Path(existing).is_file():
+            out.append(Path(existing))
+        return out
+
+    def _fit_height(self):
+        """Grow (never shrink) so every wrapped line is fully visible at the current width."""
+        layout=self.layout()
+        if layout is None:
+            return
+        need=layout.totalHeightForWidth(self.width())
+        if need > self.height():
+            self.resize(self.width(), need)
+
+    def _live_models(self):
+        return {'gemini':self.host._selected_model_id(),
+                'openai':str((self.host.secrets.get('openai') or {}).get('model') or ''),
+                'local':str((self.host.secrets.get('local') or {}).get('model') or '')}
+
+    def _fill_engines(self):
+        """Show canonical API routes; never silently change them for refinement."""
+        settings=self.host.secrets
+        local=dict(settings.get('local') or {})
+        analysis=dict(settings.get('extraction_engines') or {})
+        editing=dict(settings.get('refinement_editing') or {})
+        aname=str(analysis.get('terms') or 'auto')
+        ename=str(editing.get('provider') or 'local')
+        amodel=str(analysis.get('model') or local.get('model') or '')
+        emodel=str(editing.get('model') or local.get('model') or '')
+        labels={'gemini':'Gemini','openai':'OpenAI','local':'로컬 LLM','auto':'자동 · 번역 엔진'}
+        self._routes_ready=False
+        self._route_error=''
+        self.analysis_info.setText(labels.get(aname,aname)+' · '+(amodel if aname=='local' else '재정비에 사용 불가'))
+        self.editing_info.setText(labels.get(ename,ename)+' · '+(emodel if ename=='local' else '재정비에 사용 불가'))
+        if aname!='local' or ename!='local':
+            self._route_error=('한국어 소설 재정비는 로컬 LLM만 지원합니다. '
+                               'API 설정에서 용어·말투 분석 엔진과 문학적 윤문 엔진을 모두 로컬 LLM으로 선택해 주세요.')
+        else:
+            try:
+                self._analysis_route=self._engine_credentials('local',amodel)
+                self._editing_route=self._engine_credentials('local',emodel)
+                if not str(local.get('endpoint') or '').strip():
+                    raise ValueError('API 설정에서 로컬 LLM 서버 주소를 지정하세요.')
+                self._routes_ready=True
+            except ValueError as exc:
+                self._route_error=str(exc)
+        if hasattr(self,'start') and self.worker is None:
+            self.start.setEnabled(self._routes_ready)
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if self.worker is None:
+            self._fill_engines()
+
+    def _engine_credentials(self,name,model):
+        if not str(model or '').strip():
+            raise ValueError(f'{name}: API 설정에서 모델을 지정하세요.')
+        options=dict(self.host.secrets.get('local') or {}) if name=='local' else {}
+        key=''
+        if name in ('gemini','openai'):
+            prefix='GEM' if name=='gemini' else 'OAI'
+            records=normalize_key_records((self.host.secrets.get(name) or {}).get('keys',[]),prefix)
+            key=next((record.secret for record in records if record.enabled),'')
+            if not key: raise ValueError(f'{name}: 유효한 API 키를 등록하세요.')
+        return (name,model,key,options)
+
+    def _set_source(self,path):
+        self.source=Path(path)
+        stem = self.source.stem
+        suffix = '.refined.txt' if stem.lower().endswith('.ko') else '.ko.refined.txt'
+        # The app-wide output folder holds every result, refinement included.
+        out_dir = getattr(self.host,'custom_output_dir',None) or self.source.parent
+        self.output=Path(out_dir)/(stem+suffix)
+        self.source_label.setText(self.source.name)
+        self.source_label.setToolTip(str(self.source))
+        self.status.setText(f'결과는 별도 파일에 저장됩니다: {self.output}')
+
+    def _choose(self):
+        chosen,_=QFileDialog.getOpenFileName(self,'교정할 한국어 TXT 선택','','텍스트 (*.txt);;모든 파일 (*)')
+        if chosen:
+            self._set_source(Path(chosen))
+
+    def _start(self):
+        if not self.source or not self.source.is_file():
+            QMessageBox.information(self,'TXT 파일 필요','먼저 한국어 TXT 파일을 선택하세요.');return
+        if self.source.stat().st_size >= MAX_REFINEMENT_BYTES:
+            QMessageBox.warning(self,'파일 크기 초과',
+                '한국어 재정비는 10MB 미만의 TXT 파일만 지원합니다.\n'
+                '장별로 나눈 파일을 선택하세요. 기존 중·일·영 번역에는 적용되지 않습니다.')
+            return
+        if korean_share(self.source) < KOREAN_MIN_SHARE:
+            answer=QMessageBox.question(self,'한국어 TXT 확인',
+                '선택한 파일은 한국어 문장이 적어 번역 전 원문으로 보입니다.\n'
+                '한국어 소설 재정비는 이미 한국어로 번역된 TXT를 다듬는 기능입니다.\n\n'
+                '그래도 이 파일로 시작할까요?')
+            if answer!=QMessageBox.Yes:
+                return
+        try:
+            self.output.parent.mkdir(parents=True,exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self,'결과 폴더 사용 불가',f'결과 폴더를 만들거나 쓸 수 없습니다.\n{self.output.parent}\n{exc}'); return
+        if self.output.exists():
+            QMessageBox.warning(self,'결과 파일 존재','같은 이름의 결과 파일이 이미 있습니다. 원본과 이전 결과를 보호하기 위해 덮어쓰지 않습니다. 기존 결과의 이름을 변경한 뒤 다시 시작하세요.');return
+        self._fill_engines()
+        if not self._routes_ready:
+            QMessageBox.warning(self,'API 엔진 설정 확인',self._route_error or 'API 설정에서 분석 및 윤문 엔진을 지정하세요.')
+            return
+        edit=self._editing_route
+        analysis=self._analysis_route
+        # The worker receives the provider's options dict, not this dialog.
+        self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis)
+        self.worker.progressed.connect(self._progress)
+        self.worker.activity.connect(self._activity)
+        self.worker.outcome.connect(self._finished)
+        self.worker.failed.connect(self._failed)
+        self.worker.finished.connect(self._thread_stopped)
+        self.pick.setEnabled(False);self.start.setEnabled(False)
+        self.cancel.setText('안전 중지')
+        self._stage_text='재정비 시작 중'
+        self._stage_started=time.monotonic()
+        self._run_started=time.monotonic()
+        self._timer.start()
+        self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
+        self.worker.start()
+
+    def _activity(self,message):
+        self._stage_text=message
+        self._stage_started=time.monotonic()
+        self._tick()
+
+    def _tick(self):
+        if self.worker and self.worker.isRunning():
+            elapsed=int(time.monotonic()-self._stage_started)
+            self.status.setText(f'{self._stage_text} · 응답 대기 {elapsed}초 (정책 차단은 응답이 도착해야 확인 가능)')
+
+    def _progress(self,done,total,issues):
+        self.progress.setValue(int(done*100/max(1,total)))
+        self.status.setText(f'교정 완료 {done}/{total} 문단 · 교정하지 못한 문단 {issues}개(원문 보존)')
+
+    def _finished(self,result):
+        if result['status']=='completed':
+            changed=result.get('changed',result["done"])
+            identical=result.get('identical',0)
+            preserved=result.get('preserved',result["total"]-result["done"])
+            self.status.setText(f'완료 · 총 소요 시간 {format_duration(result.get("seconds",0))}\n'
+                                f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
+                                f'결과: {result["output"]}\n검토 기록: {result["report"]}')
+            self.progress.setValue(100)
+        else:
+            self.status.setText(f'안전 중지했습니다 · 지금까지 소요 시간 {format_duration(result.get("seconds",0))}\n'
+                                '동일 TXT와 엔진으로 다시 실행하면 완료한 문단부터 이어지고, 소요 시간도 합산됩니다.')
+
+    def _failed(self,message):
+        took=format_duration(time.monotonic()-getattr(self,'_run_started',time.monotonic()))
+        self.status.setText(f'재정비 오류 · 이번 실행 {took} · 처리한 문단의 복구 정보는 유지됩니다.\n'+message)
+
+    def _thread_stopped(self):
+        self._timer.stop()
+        self.worker=None
+        self.pick.setEnabled(True)
+        self._fill_engines()
+        self.cancel.setText('닫기')
+        self.start.setEnabled(self._routes_ready)
+
+    def _close_or_stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.status.setText('중지 요청됨 · 현재 API 응답 이후 안전하게 중지합니다.')
+            return
+        self.accept()
+
+    def reject(self):
+        if self.worker and self.worker.isRunning():
+            self._close_or_stop()
+            return
+        super().reject()
