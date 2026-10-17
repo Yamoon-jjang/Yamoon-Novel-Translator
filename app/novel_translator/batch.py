@@ -2,8 +2,9 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-GENERATED_SUFFIXES = ('.ko.txt', '.ko.partial.txt', '.ko.failed.txt')
+GENERATED_SUFFIXES = ('.ko.txt', '.ko.partial.txt', '.ko.failed.txt', '.ko.pdf', '.ko.epub')
 SUMMARY_NAME = '번역_요약.txt'
+SOURCE_SUFFIXES = ('.txt', '.pdf', '.epub')   # a folder run translates TXT, PDF and EPUB files
 
 def is_generated_txt(path: Path) -> bool:
     low=path.name.lower()
@@ -18,7 +19,7 @@ def discover_txt_files(root: Path, include_subfolders: bool=False, excluded_root
     it=scan_root.rglob('*') if include_subfolders else scan_root.iterdir()
     out=[]
     for p in it:
-        if not p.is_file() or p.suffix.casefold() != '.txt' or is_generated_txt(p):
+        if not p.is_file() or p.suffix.casefold() not in SOURCE_SUFFIXES or is_generated_txt(p):
             continue
         rp=p.resolve()
         if excluded and (rp == excluded or excluded in rp.parents):

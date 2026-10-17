@@ -26,6 +26,8 @@ bundles the components below; each remains under its own license.
 - idna — BSD 3-Clause License · https://github.com/kjd/idna
 - certifi — Mozilla Public License 2.0 · https://github.com/certifi/python-certifi
   (Mozilla CA certificate bundle, unmodified)
+- pypdf — BSD 3-Clause License · https://github.com/py-pdf/pypdf
+  (PDF 글자 추출 / PDF text extraction; pure Python, unmodified)
 
 번역에 쓰는 Gemini·OpenAI·로컬 LLM(Ollama 등)은 프로그램에 포함되지 않으며, 각 서비스의
 이용 약관은 사용자가 직접 따릅니다.

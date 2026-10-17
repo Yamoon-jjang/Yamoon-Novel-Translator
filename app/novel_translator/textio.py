@@ -147,6 +147,24 @@ def read_txt(path: Path, source_language: str | None = None) -> tuple[str, str]:
     return decode_txt_bytes(path.read_bytes(), source_language)
 
 
+def read_source_file(path: Path, source_language: str | None = None, forced_encoding: str | None = None, progress=None) -> tuple[str, str, bytes]:
+    """Text, reading label and source bytes of a file to translate.
+
+    A TXT is decoded exactly as before. A PDF's or EPUB's text is taken out and cleaned
+    up (pdf_text / epub_text); its UTF-8 bytes then stand for the file everywhere the TXT
+    bytes do (resume identity, language detection), so the rest of the job is the same
+    as for TXT. The TXT encoding setting does not apply to a PDF or EPUB.
+    """
+    from .source_formats import document_kind, extract_document
+    path = Path(path)
+    if document_kind(path):
+        result = extract_document(path, progress)
+        return result.text, result.label, result.text.encode('utf-8')
+    raw = path.read_bytes()
+    text, label = decode_txt_bytes(raw, source_language, forced_encoding)
+    return text, label, raw
+
+
 def directory_writable(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)

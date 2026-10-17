@@ -705,7 +705,7 @@ def test_drop_is_refused_politely(qt_app,sandbox,monkeypatch,tmp_path):
     infos=[]; monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
     try:
         _drop(w,[img]); _drop(w,[tmp_path, tmp_path])
-        assert infos==['TXT 파일만 열 수 있음','폴더는 하나씩'] and w.input_mode!='single'
+        assert infos==['TXT·PDF·EPUB 파일만 열 수 있음','폴더는 하나씩'] and w.input_mode!='single'
         class Busy:
             def isRunning(self): return True
         w.worker=Busy()

@@ -60,7 +60,7 @@ def main():
     if missing: fail('missing build files: '+', '.join(missing))
 
     build_reqs=(ROOT/'requirements-build.txt').read_text(encoding='utf-8').lower()
-    for required_pkg in ('pyside6','requests','certifi','pyinstaller','pytest'):
+    for required_pkg in ('pyside6','requests','certifi','pyinstaller','pytest','pypdf'):
         if required_pkg not in build_reqs:
             fail(f'requirements-build.txt missing {required_pkg}')
 

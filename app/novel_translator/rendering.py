@@ -24,14 +24,38 @@ def _row_value(row, key: str, default=''):
 
 
 
-def safe_output_filename(source_path: Path, suffix: str, disambiguate: bool=False, max_chars: int=220) -> str:
-    stem=source_path.stem
+def has_name_twin(source_path: Path) -> bool:
+    """A PDF/EPUB with another book file of the same name beside it (book.pdf + book.txt / book.epub)."""
+    source_path=Path(source_path)
+    if source_path.suffix.casefold() not in ('.pdf','.epub'):
+        return False
+    try:
+        stem=source_path.stem.casefold(); own=source_path.name.casefold()
+        names={stem+'.txt',stem+'.pdf',stem+'.epub'}-{own}
+        return any(x.name.casefold() in names and x.is_file() for x in source_path.parent.iterdir())
+    except OSError:
+        return False
+
+
+def output_stem(source_path: Path) -> str:
+    """The book name results are saved under (book.txt / book.pdf / book.epub -> book)."""
+    stem=Path(source_path).stem
     # Re-processing a prior partial result should converge back to the original book name.
     # Never overwrite the selected source file itself if the new state is still partial.
     if stem.lower().endswith('.ko.partial'):
         stem=stem[:-len('.ko.partial')]
     elif stem.lower().endswith('.ko'):
         stem=stem[:-len('.ko')]
+    if has_name_twin(source_path):
+        # book.txt, book.pdf and book.epub in one folder are separate sources: a PDF/EPUB
+        # result must not replace another one's book.ko.txt (or its partial), so it is
+        # saved as book.pdf.ko.txt / book.epub.ko.txt. A TXT keeps book.ko.txt.
+        stem+=Path(source_path).suffix.lower()
+    return stem
+
+
+def safe_output_filename(source_path: Path, suffix: str, disambiguate: bool=False, max_chars: int=220) -> str:
+    stem=output_stem(source_path)
     extra=''
     if disambiguate:
         extra='_'+hashlib.sha256(str(source_path.resolve()).encode('utf-8','surrogatepass')).hexdigest()[:8]

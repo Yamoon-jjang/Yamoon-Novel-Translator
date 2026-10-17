@@ -4,6 +4,31 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QMessageBox
 from .runtime_audit import validate_resources
 
+def _pdf_round_trip() -> tuple[bool, str]:
+    """Packaged PDF/EPUB parts: write a reading PDF (Qt, Korean font) and EPUB, then read both back."""
+    import tempfile, re
+    try:
+        from .pdf_export import write_reading_pdf
+        from .pdf_text import extract_pdf_text
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / '자체점검.ko.pdf'
+            body = '\n\n'.join(f'야문번역점검문단{i}입니다.' for i in range(12))
+            pages = write_reading_pdf(out, '제1장 시작\n\n' + body + '\n\n제2장 끝\n\n' + body, '자체 점검')
+            text = re.sub(r'\s+', '', extract_pdf_text(out).text)
+            if pages < 2 or '야문번역점검문단11입니다.' not in text or '제2장' not in text:
+                return False, f'PDF round trip text mismatch (pages={pages})'
+            from .epub_export import write_reading_epub
+            from .epub_text import extract_epub_text
+            epub = Path(d) / '자체점검.ko.epub'
+            sections = write_reading_epub(epub, '제1장 시작\n\n' + body + '\n\n제2장 끝\n\n' + body, '자체 점검')
+            etext = extract_epub_text(epub).text
+            if sections != 2 or '야문번역점검문단11입니다.' not in etext or '제2장 끝' not in etext:
+                return False, f'EPUB round trip text mismatch (sections={sections})'
+        return True, f'PDF=PASS pages={pages} · EPUB=PASS sections={sections}'
+    except Exception as e:
+        return False, f'PDF/EPUB round trip failed: {type(e).__name__}: {e}'
+
+
 def gui_self_test() -> tuple[bool, str]:
     """Instantiate the real Qt application and main window without entering the event loop.
 
@@ -40,10 +65,14 @@ def gui_self_test() -> tuple[bool, str]:
         d.ensurePolished(); d.close()
         adv=AdvancedSettingsDialog(w); adv.ensurePolished(); adv.close()
         app.processEvents()
+        ok_pdf, pdf_note = _pdf_round_trip()
+        if not ok_pdf:
+            w.close()
+            return False, 'GUI_SELF_TEST=FAIL\n' + pdf_note
         title = w.windowTitle()
         w.close()
         app.processEvents()
-        return True, f'GUI_SELF_TEST=PASS\nwindow={title}'
+        return True, f'GUI_SELF_TEST=PASS\nwindow={title}\n{pdf_note}'
     except Exception as e:
         return False, f'GUI_SELF_TEST=FAIL\n{type(e).__name__}: {e}'
 

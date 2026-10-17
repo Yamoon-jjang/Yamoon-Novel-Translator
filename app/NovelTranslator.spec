@@ -2,7 +2,7 @@
 # Default release format is ONEDIR for Qt/plugin reliability and editable config/profiles.
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-hiddenimports = collect_submodules('charset_normalizer')
+hiddenimports = collect_submodules('charset_normalizer') + collect_submodules('pypdf')
 datas = [
     ('config', 'config'),
     ('profiles', 'profiles'),

@@ -9,7 +9,9 @@ from PySide6.QtWidgets import (
     QAbstractButton,QTabBar,QDialog
 )
 from ..profiles import ProfileManager
-from ..textio import decode_txt_bytes, atomic_write_text, directory_writable, read_txt_sample
+from ..textio import decode_txt_bytes, atomic_write_text, directory_writable, read_txt_sample, read_source_file
+from ..source_formats import document_kind, SourceTextError, NoTextError, document_sample_text
+from ..rendering import output_stem
 from ..chunking import split_paragraphs,make_chunks,mark_translatable
 from ..secure_store import SecretStore
 from ..config import DATA_DIR, CONFIG_DIR, load_json, save_json
@@ -19,7 +21,7 @@ from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalMod
 from .advanced_dialog import AdvancedSettingsDialog
 from ..translation_settings import canonical_kind, CONTENT_LABELS, default_settings
 from .worker import TranslationWorker
-from ..batch import discover_txt_files, output_dir_for, should_continue_after_result
+from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES
 from ..workspace import WorkspaceStore
 from ..language_options import option_spec
 from ..language_detection import detect_language, detect_language_bytes
@@ -275,7 +277,7 @@ class MainWindow(QMainWindow):
         layout=QVBoxLayout(root); layout.setContentsMargins(12,10,12,10); layout.setSpacing(7)
         top=QHBoxLayout(); title_box=QVBoxLayout()
         title=QLabel('야문 Novel Translator'); title.setStyleSheet('font-size:18px;font-weight:700;')
-        sub=QLabel('중국어 · 일본어 · 영어 TXT 소설을 한국어로 순차 번역'); sub.setStyleSheet('color:#6b7280;')
+        sub=QLabel('중국어 · 일본어 · 영어 TXT·PDF·EPUB 소설을 한국어로 순차 번역'); sub.setStyleSheet('color:#6b7280;')
         title.setToolTip(sub.text()); title_box.addWidget(title); top.addLayout(title_box); top.addStretch(1)
         self.health_btn=QPushButton('환경 점검'); self.health_btn.setToolTip('설정·저장 폴더·SQLite와 API 키 저장소(DPAPI)를 실제 API 호출 없이 검사합니다.')
         self.settings_toggle=QPushButton('설정 접기'); self.settings_toggle.setCheckable(True); self.settings_toggle.setChecked(True); self.settings_toggle.setStyleSheet('QPushButton,QPushButton:checked{background:#f8fafc;color:#334155;border:1px solid #d1d5db;border-radius:5px;} QPushButton:hover{background:#eef2f7;}'); self.settings_toggle.toggled.connect(self._toggle_settings); top.addWidget(self.settings_toggle)
@@ -319,9 +321,9 @@ class MainWindow(QMainWindow):
         card_css='padding:6px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;color:#1f2937;'
         # Row 0: where the source comes from
         row=QHBoxLayout(); row.setSpacing(6)
-        self.single_btn=QPushButton('TXT 파일 선택'); self.single_btn.clicked.connect(self.open_txt)
-        self.folder_btn=QPushButton('TXT 폴더 선택'); self.folder_btn.clicked.connect(self.open_folder)
-        self.paste_hint=QLabel('또는 TXT 파일·폴더 끌어다 놓기 · 글 붙여넣기 (Ctrl+V)'); self.paste_hint.setStyleSheet('color:#6b7280;')
+        self.single_btn=QPushButton('TXT·PDF·EPUB 파일 선택'); self.single_btn.clicked.connect(self.open_txt)
+        self.folder_btn=QPushButton('폴더 선택'); self.folder_btn.setToolTip('폴더 안의 TXT·PDF·EPUB 파일을 한 파일씩 차례로 번역합니다.'); self.folder_btn.clicked.connect(self.open_folder)
+        self.paste_hint=QLabel('또는 TXT·PDF·EPUB 파일·폴더 끌어다 놓기 · 글 붙여넣기 (Ctrl+V)'); self.paste_hint.setStyleSheet('color:#6b7280;')
         row.addWidget(self.single_btn); row.addWidget(self.folder_btn); row.addSpacing(6); row.addWidget(self.paste_hint); row.addStretch(1)
         self.reset_settings_btn=QPushButton('설정 초기화'); self.reset_settings_btn.setToolTip('API 설정(엔진·키·모델)과 원문·번역 파일을 보존하고, 앱 옵션 및 현재 작업의 메모·확정 용어를 기본값으로 되돌립니다.'); self.reset_settings_btn.clicked.connect(self._reset_settings); row.addWidget(self.reset_settings_btn)
         ib.addWidget(_cap('번역할 원문'),0,0); ib.addLayout(row,0,1)
@@ -331,7 +333,7 @@ class MainWindow(QMainWindow):
         # Row 2: folder options (only shown for a folder job)
         self.folder_opts_widget=QWidget(); folder_opts=QHBoxLayout(self.folder_opts_widget); folder_opts.setContentsMargins(0,0,0,0)
         self.include_sub=QCheckBox('하위 폴더 포함'); self.include_sub.stateChanged.connect(self._rescan_folder_if_needed); self.include_sub.setEnabled(False); folder_opts.addWidget(self.include_sub)
-        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=QComboBox(); self.batch_relation.addItem('각 TXT 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
+        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=QComboBox(); self.batch_relation.addItem('각 파일 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
         self.folder_opts_caption=_cap('폴더 옵션')
         ib.addWidget(self.folder_opts_caption,2,0); ib.addWidget(self.folder_opts_widget,2,1)
         # Row 3: where results go
@@ -409,11 +411,11 @@ class MainWindow(QMainWindow):
         self.view_result_btn.clicked.connect(lambda:self._show_preview('result'))
         self.result_copy_btn=QPushButton('결과 복사'); self.result_copy_btn.clicked.connect(self._copy_result); self.result_copy_btn.setEnabled(False)
         self.result_save_btn=QPushButton('결과 저장'); self.result_save_btn.clicked.connect(self._save_result); self.result_save_btn.setEnabled(False)
-        self.preview_hint=QLabel('TXT를 열거나, 이 창에 글을 직접 붙여넣거나 고친 뒤 [번역 시작 / 계속]을 누르면 창의 내용 그대로 번역합니다.')
+        self.preview_hint=QLabel('TXT·PDF·EPUB 파일을 열거나, 이 창에 글을 직접 붙여넣거나 고친 뒤 [번역 시작 / 계속]을 누르면 창의 내용 그대로 번역합니다.')
         self.preview_hint.setStyleSheet('color:#6b7280;')
         for w_ in (self.view_source_btn,self.view_result_btn,self.result_copy_btn,self.result_save_btn): vrow.addWidget(w_)
         vrow.addWidget(self.preview_hint,1); pv.addLayout(vrow)
-        self.preview=QPlainTextEdit(); self.preview.setPlaceholderText('TXT를 선택하거나 이 창에 TXT 파일·폴더를 끌어다 놓으면 원문이 표시됩니다. 파일 없이 번역할 글을 여기에 붙여넣어도 됩니다 (Ctrl+V).')
+        self.preview=QPlainTextEdit(); self.preview.setPlaceholderText('TXT·PDF·EPUB 파일을 선택하거나 이 창에 파일·폴더를 끌어다 놓으면 원문이 표시됩니다 (PDF·EPUB는 글자만 꺼내 표시). 파일 없이 번역할 글을 여기에 붙여넣어도 됩니다 (Ctrl+V).')
         self.preview.viewport().installEventFilter(self); self.preview.installEventFilter(self)
         self.preview.textChanged.connect(self._preview_changed)
         pv.addWidget(self.preview); self.tabs.addTab(preview,'원문')
@@ -431,9 +433,9 @@ class MainWindow(QMainWindow):
         self.job_table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch); self.job_table.verticalHeader().setVisible(False)
         jv.addWidget(self.job_table)
         job_actions=QHBoxLayout()
-        self.batch_exclude_btn=QPushButton('선택 TXT 제외'); self.batch_exclude_btn.setToolTip('선택한 TXT를 현재 폴더 번역 큐에서만 제외합니다.')
+        self.batch_exclude_btn=QPushButton('선택 파일 제외'); self.batch_exclude_btn.setToolTip('선택한 파일을 현재 폴더 번역 큐에서만 제외합니다.')
         self.batch_exclude_btn.clicked.connect(self._exclude_selected_batch_files)
-        self.batch_rescan_btn=QPushButton('폴더 다시 스캔'); self.batch_rescan_btn.setToolTip('제외 목록을 초기화하고 폴더의 TXT 목록을 다시 만듭니다.')
+        self.batch_rescan_btn=QPushButton('폴더 다시 스캔'); self.batch_rescan_btn.setToolTip('제외 목록을 초기화하고 폴더의 TXT·PDF·EPUB 목록을 다시 만듭니다.')
         self.batch_rescan_btn.clicked.connect(self._rescan_all_batch_files)
         self.batch_exclude_btn.setEnabled(False); self.batch_rescan_btn.setEnabled(False)
         job_actions.addWidget(self.batch_exclude_btn); job_actions.addWidget(self.batch_rescan_btn); job_actions.addStretch(1); jv.addLayout(job_actions)
@@ -508,7 +510,7 @@ class MainWindow(QMainWindow):
         mem_help.setWordWrap(True); mv.addWidget(mem_help)
         self.book_memory=QPlainTextEdit(); self.book_memory.setPlaceholderText('예) 하야토 → 미사키: 반말\n미사키 → 하야토: 존댓말\n두 사람은 연인 관계\n왕레이는 천현문의 장로')
         mv.addWidget(self.book_memory)
-        self.batch_memory_common=QCheckBox('폴더의 “각 TXT 독립 작품”에도 이 메모를 공통 적용')
+        self.batch_memory_common=QCheckBox('폴더의 “각 파일 독립 작품”에도 이 메모를 공통 적용')
         self.batch_memory_common.setChecked(False); self.batch_memory_common.setEnabled(False); self.batch_memory_common.stateChanged.connect(lambda _=None:self._save_workspace())
         mv.addWidget(self.batch_memory_common); self.tabs.addTab(memory,'작품 메모')
 
@@ -554,7 +556,7 @@ class MainWindow(QMainWindow):
         self._term_thread=None
         self._build_speech_tab()
 
-        guide=QLabel('사용 순서: ① TXT 파일/폴더 선택 → ② 원문 언어·인코딩 확인 → ③ API 키 확인 → ④ 필요하면 작품 메모/확정 용어 추가 → ⑤ 번역 시작. 완료분은 청크마다 저장되어 중단 후 이어서 진행할 수 있습니다.')
+        guide=QLabel('사용 순서: ① TXT·PDF·EPUB 파일/폴더 선택 → ② 원문 언어·인코딩 확인 → ③ API 키 확인 → ④ 필요하면 작품 메모/확정 용어 추가 → ⑤ 번역 시작. 완료분은 청크마다 저장되어 중단 후 이어서 진행할 수 있습니다.')
         guide.setWordWrap(True); guide.setStyleSheet('color:#374151;padding:7px 2px;'); self.settings_toggle.setToolTip(guide.text()); guide.hide()
         self.ready_label=QLabel('준비 상태 확인 중…'); self.ready_label.setWordWrap(True); self.ready_label.setStyleSheet('padding:8px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;'); layout.addWidget(self.ready_label)
         self.api_runtime_label=QLabel('API 상태 · 아직 요청 없음'); self.api_runtime_label.setWordWrap(True); self.api_runtime_label.setStyleSheet('padding:7px;background:#f9fafb;color:#374151;border-radius:6px;'); layout.addWidget(self.api_runtime_label)
@@ -665,7 +667,7 @@ class MainWindow(QMainWindow):
         p=self.pm.set_active(profile_id); self._configure_language_option(profile_id)
         if self.input_mode=='single' and self.source_bytes:
             try:
-                self.source_text,enc=decode_txt_bytes(self.source_bytes,p.source_language,self.encoding.currentData() if hasattr(self,'encoding') else 'auto')
+                self.source_text,enc=self._decode_source(p.source_language,self.encoding.currentData() if hasattr(self,'encoding') else 'auto')
                 self.file_label.setText(self._single_label(self.source_path.name,enc,self.source_text,self.source_bytes))
                 self._set_preview_source(self.source_text)
             except Exception as e: self.status.setText(f'인코딩 재해석 실패: {e}')
@@ -689,7 +691,7 @@ class MainWindow(QMainWindow):
             self._load_workspace()
         if self.input_mode=='single' and self.source_bytes:
             try:
-                self.source_text,enc=decode_txt_bytes(self.source_bytes,p.source_language,self.encoding.currentData() or 'auto')
+                self.source_text,enc=self._decode_source(p.source_language,self.encoding.currentData() or 'auto')
                 self.file_label.setText(self._single_label(self.source_path.name,enc,self.source_text,self.source_bytes)); self._set_preview_source(self.source_text); self._rechunk()
             except Exception as e:
                 self.source_text=''; self.paragraphs=[]; self.chunks=[]; self.status.setText(f'인코딩 재해석 실패: {e}')
@@ -825,22 +827,63 @@ class MainWindow(QMainWindow):
         self._completion_message = ''
         self._last_worker_status = ''
         self._paste_active = False
+        self._origin_kind = ''
         self._auto_terms_sha = ''
         if hasattr(self,'view_result_btn'): self._set_result('')
 
     def open_txt(self):
         if self._extracting(): return   # the extraction finishes first (a few seconds)
-        fn,_=QFileDialog.getOpenFileName(self,'번역할 TXT 파일 선택','','Text files (*.txt)')
+        fn,_=QFileDialog.getOpenFileName(self,'번역할 TXT·PDF·EPUB 파일 선택','','TXT·PDF·EPUB (*.txt *.pdf *.epub);;Text files (*.txt);;PDF (*.pdf);;EPUB (*.epub)')
         if not fn:return
         self._open_txt_path(fn)
 
-    def _open_txt_path(self, fn):
+    def _source_doc_kind(self) -> str:
+        """'PDF' / 'EPUB' when the open single source is such a book (its text was taken out), else ''."""
+        if not self.source_path or getattr(self,'_paste_active',False):
+            return ''
+        return document_kind(self.source_path)
+
+    def _decode_source(self, language, encoding):
+        """Text of the open single source; a PDF/EPUB's text is kept as taken out (no TXT encoding)."""
+        kind=self._source_doc_kind()
+        if kind:
+            return self.source_bytes.decode('utf-8'), getattr(self,'_doc_label','') or f'{kind} · 글자 추출'
+        return decode_txt_bytes(self.source_bytes,language,encoding)
+
+    @staticmethod
+    def _no_text_reason(p: Path) -> str:
+        return '문자 인식(OCR)이 필요한 PDF (글자 없는 스캔 PDF)' if document_kind(p)=='PDF' else '글자가 없는 EPUB (그림으로만 된 책)'
+
+    def _read_source(self, p: Path):
+        """(text, label, bytes) of a TXT, PDF or EPUB; a PDF/EPUB shows a wait cursor while its text is taken out."""
+        kind=document_kind(p)
+        if not kind:
+            return read_source_file(p,self.pm.active.source_language,self.encoding.currentData() or 'auto')
+        from PySide6.QtWidgets import QApplication
+        self.status.setText(f'{kind}에서 글자를 꺼내는 중 · {p.name}')
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        def progress(done, total):
+            if done==total or done%10==0:
+                self.status.setText(f'{kind}에서 글자를 꺼내는 중 · {p.name} · {done:,}/{total:,}쪽'); QApplication.processEvents()
         try:
-            p=Path(fn); raw=p.read_bytes(); text,enc=decode_txt_bytes(raw,self.pm.active.source_language,self.encoding.currentData() or 'auto')
-        except Exception as e: QMessageBox.critical(self,'파일을 열 수 없음',f'TXT를 읽지 못했습니다.\n{e}'); return
+            QApplication.processEvents()
+            return read_source_file(p,self.pm.active.source_language,progress=progress)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _open_txt_path(self, fn):
+        p=Path(fn); kind=document_kind(p)
+        try:
+            text,enc,raw=self._read_source(p)
+        except NoTextError as e:
+            reason=self._no_text_reason(p)
+            QMessageBox.information(self,reason.split(' (')[0],str(e)); self.status.setText(f'{p.name} · {reason}라 열지 않았습니다'); return
+        except SourceTextError as e:
+            QMessageBox.warning(self,f'{kind}를 열 수 없음',str(e)); self.status.setText(f'{p.name} · {kind}를 열지 못했습니다'); return
+        except Exception as e: QMessageBox.critical(self,'파일을 열 수 없음',f'{kind or "TXT"}를 읽지 못했습니다.\n{e}'); return
         self._prepare_new_input()
         self.input_mode='single'; self.batch_relation.setEnabled(False); self.include_sub.setEnabled(False); self._update_batch_memory_mode(); self.batch_root=None; self.batch_files=[]; self.batch_index=-1; self.batch_results={}; self.batch_selection=None
-        self.source_path=p; self.source_bytes=raw; self.source_text=text
+        self.source_path=p; self.source_bytes=raw; self.source_text=text; self._doc_label=enc if kind else ''; self._origin_kind=kind
         self.file_label.setText(self._single_label(p.name,enc,text,raw)); self._set_preview_source(text); self._refresh_job_table()
         target,note=self._auto_source_profile(p,raw)
         if target!=self.pm.active.id:
@@ -872,7 +915,7 @@ class MainWindow(QMainWindow):
 
     def open_folder(self):
         if self._extracting(): return   # the extraction finishes first (a few seconds)
-        fn=QFileDialog.getExistingDirectory(self,'TXT 폴더 선택')
+        fn=QFileDialog.getExistingDirectory(self,'번역할 TXT·PDF·EPUB 파일이 든 폴더 선택')
         if not fn:return
         self._open_folder_path(fn)
 
@@ -887,7 +930,7 @@ class MainWindow(QMainWindow):
         return bool((self.worker and self.worker.isRunning()) or self._extracting())
 
     def _handle_drop(self, paths: list[Path]) -> bool:
-        """One TXT file -> open it; one folder -> folder translation. Returns True when handled."""
+        """One TXT/PDF/EPUB file -> open it; one folder -> folder translation. Returns True when handled."""
         if not paths:
             return False
         if self._drop_busy():
@@ -895,9 +938,9 @@ class MainWindow(QMainWindow):
             return True
         if len(paths)==1 and paths[0].is_dir():
             self._open_folder_path(str(paths[0])); return True
-        if len(paths)==1 and paths[0].is_file() and paths[0].suffix.lower()=='.txt':
+        if len(paths)==1 and paths[0].is_file() and paths[0].suffix.lower() in SOURCE_SUFFIXES:
             self._open_txt_path(str(paths[0])); return True
-        if len(paths)>1 and all(x.is_file() and x.suffix.lower()=='.txt' for x in paths):
+        if len(paths)>1 and all(x.is_file() and x.suffix.lower() in SOURCE_SUFFIXES for x in paths):
             # Several files: translated one after another like a folder, but only these files.
             import os
             try:
@@ -906,12 +949,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self,'같은 드라이브의 파일만','서로 다른 드라이브에 있는 파일은 함께 열 수 없습니다. 한 드라이브의 파일만 끌어다 놓으세요.')
                 return True
             self._open_folder_path(str(root), selection=paths)
-            self.status.setText(f'끌어다 놓은 TXT {len(paths):,}개를 차례로 번역합니다 · 결과: {self._default_output_dir()}')
+            self.status.setText(f'끌어다 놓은 파일 {len(paths):,}개를 차례로 번역합니다 · 결과: {self._default_output_dir()}')
             return True
         if len(paths)>1 and any(x.is_dir() for x in paths):
             QMessageBox.information(self,'폴더는 하나씩','폴더는 한 번에 하나만 끌어다 놓을 수 있습니다. 여러 파일은 파일만 골라서 끌어다 놓으세요.')
             return True
-        QMessageBox.information(self,'TXT 파일만 열 수 있음','TXT 파일 하나 또는 TXT가 든 폴더 하나를 끌어다 놓으세요.')
+        QMessageBox.information(self,'TXT·PDF·EPUB 파일만 열 수 있음','TXT·PDF·EPUB 파일 또는 그런 파일이 든 폴더 하나를 끌어다 놓으세요.')
         return True
 
     def dragEnterEvent(self, event):
@@ -978,7 +1021,7 @@ class MainWindow(QMainWindow):
             try: total_bytes+=f.stat().st_size
             except OSError: pass
         kind='끌어다 놓은 파일' if self.batch_selection else '폴더 작업'
-        self.file_label.setText(f'{kind} · {root} · TXT {len(self.batch_files):,}개 · 합계 {self._size_text(total_bytes)} · 순차 처리' + (f' · 제외 {len(self.batch_excluded):,}개' if self.batch_excluded else ''))
+        self.file_label.setText(f'{kind} · {root} · {self._count_kinds(self.batch_files)} · 합계 {self._size_text(total_bytes)} · 순차 처리' + (f' · 제외 {len(self.batch_excluded):,}개' if self.batch_excluded else ''))
         self._refresh_job_table()
 
     def _refresh_job_table(self):
@@ -997,13 +1040,24 @@ class MainWindow(QMainWindow):
             self.job_table.setItem(r,2,QTableWidgetItem(status)); self.job_table.setItem(r,3,QTableWidgetItem(result))
 
     @staticmethod
+    def _count_kinds(files) -> str:
+        """'TXT 3개' or 'TXT 3개 · PDF 2개 · EPUB 1개' (PDF/EPUB shown only when there are any)."""
+        kinds=[document_kind(f) or 'TXT' for f in files]
+        parts=[f'{k} {kinds.count(k):,}개' for k in ('TXT','PDF','EPUB') if kinds.count(k)]
+        return ' · '.join(parts) or 'TXT 0개'
+
+    @staticmethod
     def _size_text(n:int)->str:
         if n<1024: return f'{n:,} B'
         if n<1024**2: return f'{n/1024:.2f} KB'
         return f'{n/1024**2:.2f} MB'
 
     def _single_label(self, name, enc, text, raw) -> str:
-        return f'단일 파일 · {name} · {self._size_text(len(raw or b""))} · {enc} · {len(text or ""):,}자'
+        size=len(raw or b'')
+        if self._source_doc_kind():
+            try: size=self.source_path.stat().st_size   # the PDF/EPUB file, not the text taken out of it
+            except OSError: pass
+        return f'단일 파일 · {name} · {self._size_text(size)} · {enc} · {len(text or ""):,}자'
 
     @classmethod
     def _safe_size(cls,p:Path)->str:
@@ -1022,7 +1076,7 @@ class MainWindow(QMainWindow):
             return
         rows=sorted({i.row() for i in self.job_table.selectedIndexes()})
         if not rows:
-            QMessageBox.information(self,'TXT 선택','작업 목록에서 제외할 TXT 행을 먼저 선택하세요.')
+            QMessageBox.information(self,'파일 선택','작업 목록에서 제외할 파일 행을 먼저 선택하세요.')
             return
         paths=[]
         for row in rows:
@@ -1033,13 +1087,13 @@ class MainWindow(QMainWindow):
             return
         for raw in paths: self.batch_excluded.add(str(Path(raw).resolve()))
         self._scan_batch_files(); self._update_ready_state()
-        self.status.setText(f'TXT {len(paths):,}개를 현재 번역 큐에서 제외했습니다.')
+        self.status.setText(f'파일 {len(paths):,}개를 현재 번역 큐에서 제외했습니다.')
 
     def _rescan_all_batch_files(self):
         if self.input_mode!='folder' or (self.worker and self.worker.isRunning()):
             return
         self.batch_excluded.clear(); self._scan_batch_files(); self._update_ready_state()
-        self.status.setText('끌어다 놓은 TXT 목록을 다시 불러왔습니다 (제외했던 파일 복원).' if self.batch_selection else '폴더 TXT 목록을 다시 스캔했습니다.')
+        self.status.setText('끌어다 놓은 파일 목록을 다시 불러왔습니다 (제외했던 파일 복원).' if self.batch_selection else '폴더의 TXT·PDF·EPUB 목록을 다시 스캔했습니다.')
 
     OUTPUT_SETTING_FILE='output_folder.json'
 
@@ -1099,7 +1153,7 @@ class MainWindow(QMainWindow):
         if not d:self.output_label.setText('원문 선택 후 자동 결정됩니다.')
         elif self.input_mode=='folder': self.output_label.setText(f'{d}  · 파일별 .ko.txt · 원래 하위 폴더 구조 보존'+self._output_scope_note())
         else:
-            name=self.source_path.stem+'.ko.txt' if self.source_path else '결과.ko.txt'
+            name=(output_stem(self.source_path) if document_kind(self.source_path) else self.source_path.stem)+'.ko.txt' if self.source_path else '결과.ko.txt'
             base=self._output_dir_for(self.source_path) if self.source_path else d
             self.output_label.setText(f'{(base or d) / name}  · 미완료 시 .ko.partial.txt'+self._output_scope_note())
 
@@ -1224,13 +1278,15 @@ class MainWindow(QMainWindow):
     def _encoding_changed(self):
         if self.input_mode=='single' and self.source_bytes:
             try:
-                self.source_text,enc=decode_txt_bytes(self.source_bytes,self.pm.active.source_language,self.encoding.currentData() or 'auto')
+                self.source_text,enc=self._decode_source(self.pm.active.source_language,self.encoding.currentData() or 'auto')
                 self.file_label.setText(self._single_label(self.source_path.name,enc,self.source_text,self.source_bytes))
                 self._set_preview_source(self.source_text); self._rechunk()
+                if self._source_doc_kind():
+                    self.status.setText(f'{self._source_doc_kind()}에는 TXT 인코딩 설정이 적용되지 않습니다 (꺼낸 글자를 그대로 사용).')
             except Exception as e:
                 self.source_text=''; self.paragraphs=[]; self.chunks=[]; self.status.setText(f'인코딩 해석 실패: {e}')
         elif self.input_mode=='folder':
-            self.status.setText('인코딩 설정이 변경되었습니다. 폴더의 각 TXT는 처리 차례에 이 설정으로 읽습니다.')
+            self.status.setText('인코딩 설정이 변경되었습니다. 폴더의 각 TXT는 처리 차례에 이 설정으로 읽습니다 (PDF·EPUB에는 적용되지 않음).')
         self._save_workspace(); self._update_ready_state()
 
     def _save_workspace(self):
@@ -1424,7 +1480,7 @@ class MainWindow(QMainWindow):
             return
         source=self.preview.toPlainText() if self._preview_edited() else (self.source_text if self.input_mode=='single' else '')
         if not source.strip():
-            QMessageBox.information(self,'원문 필요','TXT 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요. (폴더 작업은 첫 파일을 따로 열어 추출하면 같은 작품 전체에 활용할 수 있습니다)'); return
+            QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요. (폴더 작업은 첫 파일을 따로 열어 추출하면 같은 작품 전체에 활용할 수 있습니다)'); return
         self._begin_term_extraction(source, auto=False)
 
     def _begin_term_extraction(self, source: str, auto: bool) -> bool:
@@ -1806,7 +1862,7 @@ class MainWindow(QMainWindow):
         if len(self._speech_names())<2:
             QMessageBox.information(self,'인물 이름 필요','말투표는 확정 용어집의 인물 이름을 바탕으로 만듭니다. 먼저 확정 용어집 탭에서 [인명·용어 자동 추출]로 이름을 채워 주세요.'); return
         if not self._speech_source().strip():
-            QMessageBox.information(self,'원문 필요','TXT 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요.'); return
+            QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요.'); return
         if self._speech_rows():
             if QMessageBox.question(self,'말투표 다시 만들기','지금 말투표를 새로 만든 것으로 바꿀까요?')!=QMessageBox.Yes: return
         if not self._begin_speech_extraction(auto=False) and self._speech_fail:
@@ -1956,7 +2012,10 @@ class MainWindow(QMainWindow):
         from datetime import datetime
         text=self.preview.toPlainText()
         folder=DATA_DIR/'paste'; folder.mkdir(parents=True,exist_ok=True)
-        stem=(self.source_path.stem+'_수정') if (self.input_mode=='single' and self.source_path and not self._paste_active) else '붙여넣기'
+        from_file=self.input_mode=='single' and self.source_path and not self._paste_active
+        stem=(self.source_path.stem+'_수정') if from_file else '붙여넣기'
+        if not from_file:
+            self._origin_kind=''   # new text, not an edit of an opened PDF/EPUB
         path=folder/f'{stem}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
         raw=text.encode('utf-8')
         try: path.write_bytes(raw)
@@ -2003,15 +2062,50 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QApplication
             QApplication.clipboard().setText(self._result_text); self.status.setText('번역 결과를 클립보드에 복사했습니다.')
 
+    TXT_FILTER='Text (*.txt)'
+    PDF_FILTER='PDF · 읽기용 (*.pdf)'
+    EPUB_FILTER='EPUB · 읽기용 (*.epub)'
+
     def _save_result(self):
         if not self._result_text.strip(): return
-        name=(self.source_path.stem if self.source_path else '번역결과')+'.ko.txt'
+        # A book opened from a PDF/EPUB can also be saved in that format; TXT stays the default.
+        # The 원문 window's edit of an opened PDF/EPUB is still that book (its origin format is kept).
+        kind=(document_kind(self.source_path) or (getattr(self,'_origin_kind','') if self._paste_active else '')) if self.source_path else ''
+        stem=(output_stem(self.source_path) if document_kind(self.source_path) else self.source_path.stem) if self.source_path else '번역결과'
+        name=stem+'.ko.txt'
         base=(self._output_dir_for(self.source_path) if self.source_path else None) or self.custom_output_dir
-        fn,_=QFileDialog.getSaveFileName(self,'번역 결과 저장',str(Path(base)/name) if base else name,'Text (*.txt)')
+        extra={'PDF':self.PDF_FILTER,'EPUB':self.EPUB_FILTER}.get(kind,'')
+        filters=f'{self.TXT_FILTER};;{extra}' if extra else self.TXT_FILTER
+        fn,chosen=QFileDialog.getSaveFileName(self,'번역 결과 저장',str(Path(base)/name) if base else name,filters,self.TXT_FILTER)
         if not fn: return
+        out=Path(fn)
+        ext='.'+kind.lower() if kind else ''
+        as_doc=bool(extra) and (chosen==extra or out.suffix.lower()==ext)
         try:
-            atomic_write_text(Path(fn),self._result_text); self.status.setText(f'저장했습니다: {fn}')
+            if as_doc:
+                if out.suffix.lower()!=ext:
+                    out=out.with_name((out.name[:-len('.ko.txt')] if out.name.lower().endswith('.ko.txt') else out.stem)+'.ko'+ext)
+                self._save_result_document(out,stem,kind)
+            else:
+                atomic_write_text(out,self._result_text); self.status.setText(f'저장했습니다: {out}')
         except Exception as e: QMessageBox.critical(self,'저장 실패',str(e))
+
+    def _save_result_document(self, out: Path, title: str, kind: str):
+        """The translation as a reading PDF/EPUB (Korean font, paragraph spacing, chapter titles; page numbers in the PDF)."""
+        from PySide6.QtWidgets import QApplication
+        self.status.setText(f'{kind} 만드는 중 · {out.name}')
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            QApplication.processEvents()
+            if kind=='PDF':
+                from ..pdf_export import write_reading_pdf
+                n=write_reading_pdf(out,self._result_text,title); note=f'{n:,}쪽'
+            else:
+                from ..epub_export import write_reading_epub
+                n=write_reading_epub(out,self._result_text,title); note=f'{n:,}개 장'
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.status.setText(f'{kind}로 저장했습니다 ({note}): {out}')
 
     def _export_terms(self):
         base=self.custom_output_dir or (self.source_path.parent if self.source_path and not getattr(self,'_paste_active',False) else None)
@@ -2297,7 +2391,7 @@ class MainWindow(QMainWindow):
             self.status.setText(f'준비됨 · 주 번역 엔진 {ENGINE_LABELS[ready_engines[0]]} · 결과: {out}')
         elif not running and self.input_mode=='folder':
             out=self._default_output_dir()
-            self.status.setText(f'준비됨 · TXT {len(self.batch_files):,}개를 한 파일씩 순차 번역 · 결과: {out}')
+            self.status.setText(f'준비됨 · {self._count_kinds(self.batch_files)}를 한 파일씩 순차 번역 · 결과: {out}')
         elif not running and self.input_mode=='single' and has_input and has_keys:
             out=self._default_output_dir()
             self.status.setText(f'준비됨 · {len(self.chunks):,} 청크 · 결과: {out}')
@@ -2546,6 +2640,14 @@ class MainWindow(QMainWindow):
             # without reading a huge library into memory before starting.
             for p in self.batch_files[:8]:
                 try:
+                    if document_kind(p):
+                        sample=document_sample_text(p)   # first pages only
+                        if not sample.strip(): continue
+                        detected,confidence=detect_language(sample)
+                        if detected and confidence>=0.70:
+                            detected_set.add(detected)
+                            if detected!=expected:mismatches.append((p,detected))
+                        continue
                     raw=read_txt_sample(p)
                     if (self.encoding.currentData() or 'auto') == 'auto':
                         detected,confidence,_det_enc=detect_language_bytes(raw)
@@ -2577,9 +2679,9 @@ class MainWindow(QMainWindow):
             # Text pasted/edited in the 원문 window counts as the source; no file needed.
             if not self._use_preview_as_source(): return
         if self.input_mode not in {'single','folder'}:
-            QMessageBox.information(self,'원문 필요','TXT 파일·폴더를 선택하거나, 원문 창에 번역할 글을 붙여넣으세요.')
+            QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 파일·폴더를 선택하거나, 원문 창에 번역할 글을 붙여넣으세요.')
             return
-        label=('원문 창의 글 전체' if self._paste_active else '선택한 TXT 전체') if self.input_mode=='single' else f'폴더의 TXT {len(self.batch_files):,}개 전체'
+        label=('원문 창의 글 전체' if self._paste_active else f'선택한 {self._source_doc_kind() or "TXT"} 전체') if self.input_mode=='single' else f'폴더의 {self._count_kinds(self.batch_files)} 전체'
         msg=(f'{label}를 현재 설정으로 처음부터 다시 번역할까요?\n\n'
              '같은 작업의 저장된 완료 청크는 재사용하지 않습니다. 기존 결과 파일이 달라질 경우 자동 백업 후 새 결과를 저장합니다.')
         if QMessageBox.question(self,'처음부터 다시 번역',msg)!=QMessageBox.Yes:
@@ -2631,9 +2733,9 @@ class MainWindow(QMainWindow):
                     return
                 self._auto_terms_note=' · '.join(x for x in (note,getattr(self,'_speech_fail','')) if x)
         if self.input_mode=='single' and (not self.source_path or not self.paragraphs):
-            QMessageBox.warning(self,'번역할 내용 없음','선택한 TXT에 처리할 본문이 없습니다.'); return
+            QMessageBox.warning(self,'번역할 내용 없음',f'선택한 {self._source_doc_kind() or "TXT"}에 처리할 본문이 없습니다.'); return
         if self.input_mode=='folder' and not self.batch_files:
-            QMessageBox.warning(self,'TXT 없음','선택한 폴더에 번역할 TXT 파일이 없습니다.'); return
+            QMessageBox.warning(self,'번역할 파일 없음','선택한 폴더에 번역할 TXT·PDF·EPUB 파일이 없습니다.'); return
         conflicts=self._term_conflicts()
         if conflicts:
             lines='\n'.join(f'- {src}: {a} / {b}' for src,a,b in conflicts[:8])
@@ -2671,8 +2773,10 @@ class MainWindow(QMainWindow):
             self._finish_batch_summary(); return
         p=self.batch_files[self.batch_index]
         try:
-            raw=p.read_bytes(); text,enc=decode_txt_bytes(raw,self.pm.active.source_language,self.encoding.currentData() or 'auto'); paras=mark_translatable(split_paragraphs(text),self.pm.active.source_language); target,minimum,maximum,target_chars,min_chars,max_chars=self._mode_chunk_settings(); chunks=make_chunks(paras,self.pm.active.source_language,target,minimum,maximum,target_chars,min_chars,max_chars)
+            text,enc,raw=self._read_source(p); paras=mark_translatable(split_paragraphs(text),self.pm.active.source_language); target,minimum,maximum,target_chars,min_chars,max_chars=self._mode_chunk_settings(); chunks=make_chunks(paras,self.pm.active.source_language,target,minimum,maximum,target_chars,min_chars,max_chars)
             if not paras: raise ValueError('처리할 본문이 없습니다.')
+        except NoTextError:
+            self._skip_batch_file(p,self._no_text_reason(p),keys,model); return
         except Exception as e:
             self._skip_batch_file(p,f'파일을 읽지 못함 · {e}',keys,model); return
         try:
@@ -2977,7 +3081,7 @@ class MainWindow(QMainWindow):
         if usage: lines += ['']+usage
         summary=outroot/'번역_요약.txt'; atomic_write_text(summary,'\n'.join(map(str,lines))+'\n'); self.last_result_path=summary; self.open_result.setEnabled(True); self.cleanreader_btn.setEnabled(True)
         self.start.setText('번역 시작 / 계속'); self.start.setEnabled(True); self._set_running_ui(False); self._force_restart=False; self.status.setText(f'폴더 번역 완료 · 완료 {completed} · 부분 {partial} · 오류 {failed} · 걸린 시간 {took}')
-        QMessageBox.information(self,'폴더 번역 완료',f'TXT {len(self.batch_files)}개 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}')
+        QMessageBox.information(self,'폴더 번역 완료',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}')
 
     def on_key_disabled(self,provider_id,key_id,reason):
         self.on_worker_issue(f'API 키 비활성 · {provider_id} · {key_id} · {reason}')
