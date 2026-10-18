@@ -4,14 +4,15 @@ import re
 
 def detect_language(text: str) -> tuple[str|None, float]:
     sample=text[:120000]
-    kana=len(re.findall(r'[ぁ-ゟ゠-ヿ]',sample))
+    # ・ ー ゠ are also used in Chinese text (约翰・史密斯, 啊ー), so they are not counted as kana.
+    kana=len(re.findall(r'[ぁ-ゟァ-ヺヽ-ヿ]',sample))
     han=len(re.findall(r'[一-龥]',sample))
     latin=len(re.findall(r'[A-Za-z]',sample))
     total=kana+han+latin
     if total < 20:return None,0.0
     if kana >= 12 and kana/max(1,total) >= 0.05:
         return 'ja', min(0.99,0.65+kana/max(1,total))
-    if han >= 20 and kana == 0 and han/max(1,total) >= 0.30:
+    if han >= 20 and kana/max(1,total) < 0.01 and han/max(1,total) >= 0.30:
         return 'zh', min(0.98,0.60+han/max(1,total)*0.35)
     if latin >= 30 and (han+kana)/max(1,total) < 0.08:
         return 'en', min(0.99,0.70+latin/max(1,total)*0.25)

@@ -363,7 +363,12 @@ class MainWindow(QMainWindow):
         self.lang.setToolTip(self.lang.currentData(Qt.ToolTipRole) or '')
         def _on_lang_selected():
             self.lang.setToolTip(self.lang.currentData(Qt.ToolTipRole) or '')
+            single=self.input_mode=='single' and bool(self.source_bytes)
+            if single: self._lang_chosen=False   # the language left behind is no longer this book's choice
             self._apply_profile(self.lang.currentData())
+            if self.input_mode=='single' and self.source_bytes:
+                # Only a language the user picks here locks this book against automatic detection.
+                self._lang_chosen=True; self._save_workspace()
         self.lang.currentIndexChanged.connect(_on_lang_selected)
         c.addWidget(self.lang,0,1); self.model_caption=QLabel('Gemini 모델'); c.addWidget(self.model_caption,0,2)
         self.model=ClickModelCombo(); self.model.setEditable(True)
@@ -829,6 +834,7 @@ class MainWindow(QMainWindow):
         self._paste_active = False
         self._origin_kind = ''
         self._auto_terms_sha = ''
+        self._lang_chosen = False
         if hasattr(self,'view_result_btn'): self._set_result('')
 
     def open_txt(self):
@@ -893,9 +899,10 @@ class MainWindow(QMainWindow):
         if note: self.status.setText(note)
 
     def _auto_source_profile(self, path: Path, raw: bytes) -> tuple[str, str]:
-        """The language profile to open a TXT with: the detected source language when the
-        detection is confident, unless this book already has saved settings under the
-        currently chosen language (the user picked it deliberately before)."""
+        """The language profile to open a TXT/PDF/EPUB with: the detected source language when
+        the detection is confident, unless the user picked the current language for this book
+        in the language box before. Settings saved for other reasons (opening it under that
+        language in an older build, settings reset) do not block the detection."""
         current=self.pm.active.id
         try:
             detected,confidence,_enc=detect_language_bytes(raw[:262144])   # the bytes already read; a cut character is tolerated
@@ -906,7 +913,7 @@ class MainWindow(QMainWindow):
             return current,''
         try:
             sha=hashlib.sha256(raw).hexdigest()
-            if self.workspace_store.get(self.workspace_store.key('single',path,current,sha)):
+            if self.workspace_store.get(self.workspace_store.key('single',path,current,sha)).get('language_chosen'):
                 return current,''
         except Exception:
             pass
@@ -1306,6 +1313,7 @@ class MainWindow(QMainWindow):
                 'batch_relation': self.batch_relation.currentData() if hasattr(self,'batch_relation') else 'independent',
                 'batch_memory_common': bool(self.batch_memory_common.isChecked()) if hasattr(self,'batch_memory_common') else False,
                 'auto_terms_sha': getattr(self,'_auto_terms_sha',''),
+                'language_chosen': bool(getattr(self,'_lang_chosen',False)),
                 'speech': self._speech_rows() if hasattr(self,'speech_table') else [],
             })
         except Exception:
@@ -1315,6 +1323,7 @@ class MainWindow(QMainWindow):
         key=self._workspace_key()
         if not key:return
         state=self.workspace_store.get(key)
+        self._lang_chosen=bool(state.get('language_chosen')) if state else False
         if not state:return
         if hasattr(self,'book_memory'): self.book_memory.setPlainText(str(state.get('book_memory') or ''))
         self._auto_terms_sha=str(state.get('auto_terms_sha') or '')

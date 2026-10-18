@@ -71,8 +71,7 @@ def test_a_language_chosen_before_for_this_book_is_kept(qt_app, sandbox, monkeyp
     w._apply_profile('zh-ko')
     path = _open(w, root, 'ja.txt', JA)
     assert w.pm.active.id == 'ja-ko'
-    w._apply_profile('zh-ko')            # the user deliberately switches this book to Chinese
-    w._save_workspace()
+    w.lang.setCurrentIndex(w.lang.findData('zh-ko'))   # the user deliberately switches this book to Chinese
     _open(w, root, 'en.txt', EN)          # another book in between
     w._apply_profile('zh-ko')
     w._open_txt_path(str(path))           # reopening keeps the user's choice
@@ -85,3 +84,38 @@ def test_unclear_text_keeps_the_current_language(qt_app, sandbox, monkeypatch):
     w._apply_profile('ja-ko')
     _open(w, root, 'ko.txt', '그는 조용히 창밖을 바라보았다. 비가 계속 내렸다.\n' * 40)
     assert w.pm.active.id == 'ja-ko'
+
+
+def test_settings_saved_without_a_choice_do_not_block_detection(qt_app, sandbox, monkeypatch):
+    """v2.2 fix: a book opened under another language before (older build, settings reset)
+    still gets its detected language; only a choice in the language box is kept."""
+    root, _ = sandbox
+    w = _window(monkeypatch)
+    w._apply_profile('zh-ko')
+    path = _open(w, root, 'ja.txt', JA)
+    w.lang.blockSignals(True); w.lang.setCurrentIndex(w.lang.findData('zh-ko')); w.lang.blockSignals(False)
+    w.pm.set_active('zh-ko'); w._save_workspace()   # state under zh without a choice (as an older build left it)
+    _open(w, root, 'zh.txt', ZH)
+    w._open_txt_path(str(path))
+    assert w.pm.active.id == 'ja-ko' and '일본어로 자동 설정' in w.status.text()
+
+
+def test_a_later_choice_replaces_an_earlier_one(qt_app, sandbox, monkeypatch):
+    root, _ = sandbox
+    w = _window(monkeypatch)
+    w._apply_profile('zh-ko')
+    path = _open(w, root, 'ja.txt', JA)
+    w.lang.setCurrentIndex(w.lang.findData('en-ko'))   # chosen: English
+    w.lang.setCurrentIndex(w.lang.findData('ja-ko'))   # then back to Japanese
+    _open(w, root, 'en.txt', EN)
+    assert w.pm.active.id == 'en-ko'
+    w._open_txt_path(str(path))                        # English is no longer this book's choice
+    assert w.pm.active.id == 'ja-ko'
+
+
+def test_shared_symbols_do_not_hide_chinese():
+    from novel_translator.language_detection import detect_language
+    assert detect_language(ZH.replace('苏晴', '苏・晴'))[0] == 'zh'
+    assert detect_language(ZH.replace('雨', '雨ー'))[0] == 'zh'
+    assert detect_language(JA)[0] == 'ja' and detect_language(EN)[0] == 'en'
+    assert detect_language('「ねえ、ジョン・スミスさん」と私は言った。'*20)[0] == 'ja'
