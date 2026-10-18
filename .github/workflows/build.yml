@@ -2,6 +2,11 @@ name: Build Yamoon Novel Translator (Windows Portable)
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_release:
+        description: '같은 버전 재배포: 이미 있는 릴리스의 zip·안내문을 이 빌드로 바꾸고 태그를 이 커밋으로 옮김'
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
     paths:
@@ -136,21 +141,38 @@ jobs:
       - name: Publish GitHub Release (new version on main only; push or manual run)
         # After every gate above has passed on main: if no release exists yet for the
         # version in app/novel_translator/__init__.py, create the tag and the release
-        # with the tested portable folder. Existing releases are never touched.
+        # with the tested portable folder. Existing releases are never touched, except by a
+        # manual run with refresh_release checked (same-version redeploy of a fixed build).
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_release && 'true' || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $m = Select-String -Path 'app/novel_translator/__init__.py' -Pattern "VERSION_LABEL\s*=\s*'([^']+)'"
           if (-not $m) { throw 'VERSION_LABEL not found' }
           $tag = $m.Matches[0].Groups[1].Value
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) { Write-Output "RELEASE_EXISTS=$tag (skipped)"; exit 0 }
           $notes = ".github/release-notes/$tag.md"
-          if (-not (Test-Path $notes)) { Write-Output "NO_RELEASE_NOTES=$notes (skipped)"; exit 0 }
           $zip = Join-Path $env:RUNNER_TEMP "Yamoon-Novel-Translator-$tag-Windows-Portable.zip"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            if ($env:REFRESH -ne 'true') { Write-Output "RELEASE_EXISTS=$tag (skipped)"; exit 0 }
+            # Manual run with refresh_release: same version, fixed build. Replace the zip and
+            # notes and point the tag at this commit; the release itself (URL) stays.
+            if (-not (Test-Path $notes)) { throw "NO_RELEASE_NOTES=$notes" }
+            Compress-Archive -Path 'app/dist/NovelTranslator' -DestinationPath $zip
+            git tag -f $tag $env:GITHUB_SHA
+            git push -f origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw 'tag move failed' }
+            gh release upload $tag $zip --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed' }
+            gh release edit $tag --notes-file $notes
+            if ($LASTEXITCODE -ne 0) { throw 'gh release edit failed' }
+            Write-Output "RELEASE_REFRESHED=$tag sha=$env:GITHUB_SHA"
+            exit 0
+          }
+          if (-not (Test-Path $notes)) { Write-Output "NO_RELEASE_NOTES=$notes (skipped)"; exit 0 }
           Compress-Archive -Path 'app/dist/NovelTranslator' -DestinationPath $zip
           gh release create $tag $zip --target $env:GITHUB_SHA --title "야문 Novel Translator $tag" --notes-file $notes
           if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
