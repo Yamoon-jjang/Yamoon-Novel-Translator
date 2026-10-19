@@ -49,6 +49,29 @@ def _make_provider(provider_id, endpoint='', local_options=None):
     from ..providers.openai import OpenAIProvider; return OpenAIProvider(endpoint or None)
 
 
+def _call_until_cancelled(provider, request, secret, cancelled):
+    """Run one analysis request in a helper thread so a cancel (or "skip") takes effect at
+    once instead of after the request ends. The request carries the same check, so a local
+    LLM stream closes and Ollama stops generating; a cloud reply that arrives later is
+    simply dropped. Raises TranslationCancelled when cancelled."""
+    import threading
+    from ..providers.base import TranslationCancelled
+    if cancelled():
+        raise TranslationCancelled('사용자 취소')
+    box={}
+    def run():
+        try: box['resp']=provider.translate(request,secret)
+        except BaseException as e: box['err']=e
+    t=threading.Thread(target=run,name='analysis-request',daemon=True); t.start()
+    while t.is_alive():
+        t.join(0.1)
+        if t.is_alive() and cancelled():
+            raise TranslationCancelled('사용자 취소')
+    if 'err' in box:
+        raise box['err']
+    return box['resp']
+
+
 class SpeechExtractThread(QThread):
     """Prefer one full-context analysis; use split excerpts only if it fails.
 
@@ -56,6 +79,7 @@ class SpeechExtractThread(QThread):
     never silently resolved by whichever batch happened to run first.
     """
     done = Signal(bool, object)
+    stage = Signal(str)   # what is being asked right now (shown with the elapsed time)
     def __init__(self, engines, prompts, parse, parent=None, fallback_prompts=None):
         super().__init__(parent)
         self.engines=list(engines)
@@ -75,15 +99,19 @@ class SpeechExtractThread(QThread):
         from ..speech_levels import MAX_ROWS
         errors=[]; used=set(); requests=0
 
-        def analyse(system, user):
+        def analyse(system, user, what):
             nonlocal requests
             for provider_id,secret,model,endpoint,opts in self.engines:
                 if self._cancelled():
                     return None
                 try:
                     requests+=1
-                    resp=_make_provider(provider_id,endpoint,opts).translate(
-                        TranslationRequest(model,system,user,timeout=40,purpose='analysis'),secret)
+                    label=ENGINE_LABELS.get(provider_id,provider_id)
+                    self.stage.emit(f'{what} · {label} 요청 중 (AI 요청 {requests}회째)'
+                                    +(' · 앞 엔진: '+errors[-1] if errors else ''))
+                    resp=_call_until_cancelled(_make_provider(provider_id,endpoint,opts),
+                        TranslationRequest(model,system,user,timeout=40,purpose='analysis',cancel=self._cancelled),
+                        secret,self._cancelled)
                     if self._cancelled():
                         return None
                     parsed=self.parse(resp.text)
@@ -101,7 +129,7 @@ class SpeechExtractThread(QThread):
 
         # One 6,000-character sample supplies a coherent view of all the evidence.
         for system,user in self.prompts:
-            result=analyse(system,user)
+            result=analyse(system,user,'전체 대사 분석')
             if result is None:
                 self.done.emit(False,'사용자 취소'); return
             if result:
@@ -115,10 +143,10 @@ class SpeechExtractThread(QThread):
             self.done.emit(False,' · '.join(dict.fromkeys(errors)) or '유효한 인물 관계 없음')
             return
         grouped={}; conflicts=set(); failed=0
-        for system,user in self.fallback_prompts:
+        for part_no,(system,user) in enumerate(self.fallback_prompts,1):
             if self._cancelled():
                 self.done.emit(False,'사용자 취소'); return
-            result=analyse(system,user)
+            result=analyse(system,user,f'나눠서 분석 {part_no}/{len(self.fallback_prompts)}묶음')
             if result is None:
                 self.done.emit(False,'사용자 취소'); return
             if not result:
@@ -146,6 +174,7 @@ class SpeechExtractThread(QThread):
 class TermExtractThread(QThread):
     """Try configured analysis models in order without changing translation settings."""
     done = Signal(bool, object)
+    stage = Signal(str)
     def __init__(self, provider_id, secret, model, endpoint, system, user, cands, parent=None, local_options=None, parse=None, engines=None):
         super().__init__(parent)
         self.engines=list(engines or [(provider_id,secret,model,endpoint,local_options)])
@@ -166,7 +195,10 @@ class TermExtractThread(QThread):
                 self.done.emit(False,'사용자 취소'); return
             try:
                 provider=_make_provider(provider_id,endpoint,options)
-                resp=provider.translate(TranslationRequest(model,self.system,self.user,timeout=60,purpose='json'),secret)
+                self.stage.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} 요청 중'+(' · 앞 엔진: '+errors[-1][:60] if errors else ''))
+                resp=_call_until_cancelled(provider,
+                    TranslationRequest(model,self.system,self.user,timeout=60,purpose='json',cancel=self._cancelled),
+                    secret,self._cancelled)
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
                 result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known)
@@ -583,9 +615,19 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.status,2); bottom.addWidget(self.progress,3); bottom.addWidget(self.time_label); bottom.addWidget(self.open_result); bottom.addWidget(self.cleanreader_btn); bottom.addWidget(self.restart_btn); bottom.addWidget(self.pause_btn); bottom.addWidget(self.start); layout.addLayout(bottom)
         self.setStyleSheet('QWidget{font-size:13px;} QMainWindow{background:#fff;} QPushButton{padding:5px 9px;} QComboBox{padding:4px;min-width:90px;} QPushButton[analysisBusy="true"]:disabled{color:#1745b5;background:#dbeafe;border:1px solid #4f83d8;font-weight:700;} QTabWidget::pane{border:1px solid #d1d5db;}')
 
-    def _set_analysis_busy(self, busy: bool, caption: str = ''):
-        """An analysis button stays visible, high-contrast, and non-clickable."""
+    def _set_analysis_busy(self, busy: bool, caption: str = '', label: str = ''):
+        """An analysis button stays visible, high-contrast, and non-clickable.
+        While it runs, the status line and the API state show what is being asked and for
+        how long (one-second ticker), so a slow engine never looks like a frozen program."""
         self.start.setProperty('analysisBusy', bool(busy))
+        if not hasattr(self,'_analysis_timer'):
+            self._analysis_timer=QTimer(self); self._analysis_timer.setInterval(1000)
+            self._analysis_timer.timeout.connect(self._refresh_analysis_status)
+        if busy:
+            self._analysis_label=label or caption; self._analysis_stage=''; self._analysis_t0=time.monotonic()
+            self._analysis_timer.start()
+        else:
+            self._analysis_timer.stop(); self._analysis_t0=None
         if busy:
             self.start.setText(caption)
             self.start.setEnabled(False)
@@ -600,6 +642,44 @@ class MainWindow(QMainWindow):
         self.start.style().unpolish(self.start)
         self.start.style().polish(self.start)
         self.start.update()
+
+    def _connect_stage(self, thread):
+        stage=getattr(thread,'stage',None)
+        if stage is not None: stage.connect(self._analysis_stage_changed)
+
+    def _analysis_stage_changed(self, text: str):
+        self._analysis_stage=str(text or ''); self._refresh_analysis_status()
+
+    def _refresh_analysis_status(self):
+        t0=getattr(self,'_analysis_t0',None)
+        if t0 is None or not self._extracting():
+            return
+        sec=int(time.monotonic()-t0)
+        took=f'{sec//60}분 {sec%60:02d}초' if sec>=60 else f'{sec}초'
+        stage=getattr(self,'_analysis_stage','')
+        # Short line beside the progress bar; the engine/stage detail goes to the API state.
+        label=getattr(self,'_analysis_label','')
+        short='말투표 만드는 중' if '말투표' in label else ('인명·용어 추출 중' if '용어' in label else label)
+        line=f'{short} · 경과 {took}'
+        if getattr(self,'_speech_skip',False):
+            line+=' · 건너뛰는 중…'
+        self.status.setText(line)
+        if hasattr(self,'api_runtime_label'):
+            self.api_runtime_label.setText('API 상태 · '+' · '.join(x for x in (getattr(self,'_analysis_label',''),stage,f'경과 {took}') if x))
+
+    def _speech_skippable(self) -> bool:
+        """An automatic speech-table run before a translation can be skipped from the main
+        button: the translation then starts at once without the table."""
+        return (self._extracting() and isinstance(self._term_thread, SpeechExtractThread)
+                and bool(getattr(self,'_speech_auto',False)) and not getattr(self,'_speech_skip',False))
+
+    def _skip_auto_speech(self):
+        if not self._speech_skippable():
+            return
+        self._speech_skip=True
+        self._term_thread.requestInterruption()
+        self.start.setEnabled(False)
+        self._refresh_analysis_status()
 
     def _refresh_content_ui(self):
         kind=self.content_kind
@@ -1483,7 +1563,7 @@ class MainWindow(QMainWindow):
             if isinstance(self._term_thread, TermExtractThread):
                 self._term_thread.requestInterruption()
                 self.term_extract.setEnabled(False)
-                self.status.setText('인명·용어 추출 취소 요청 · 현재 API 요청이 끝나면 중단합니다…')
+                self.status.setText('인명·용어 추출 취소 요청 · 중단하는 중…')
             return
         if self._term_thread and self._term_thread.isRunning():
             return
@@ -1520,12 +1600,13 @@ class MainWindow(QMainWindow):
         self._lock_inputs(True); self.start.setEnabled(False)
         self.term_extract.setEnabled(True); self.term_extract.setText('용어 추출 취소')
         self.status.setText(('번역 전 ' if auto else '')+f'인명·용어 후보 {len(cands)}개 분석 중 · {provider_id}')
-        self._set_analysis_busy(True, '용어 검출 중…')
+        self._set_analysis_busy(True, '용어 검출 중…', ('번역 전 ' if auto else '')+f'인명·용어 후보 {len(cands)}개 분석')
         if auto:
             self.on_api_state(f'{ {"gemini":"Gemini","openai":"OpenAI","local":"로컬 LLM"}.get(provider_id,provider_id)} · {model} · 번역 전 인명·용어 자동 추출 (요청 1회)')
         self._term_thread=TermExtractThread(provider_id,secret,model,endpoint,system,user,cands,self,local_options=local_opts)
         self._term_thread.known=self._terms()
         self._term_thread.engines=analysis_engines
+        self._connect_stage(self._term_thread)
         self._term_result=(False,'추출이 종료되었습니다.')
         self._term_thread.done.connect(lambda ok,res:setattr(self,'_term_result',(ok,res)))
         self._term_thread.finished.connect(self._extract_terms_finished); self._term_thread.start()
@@ -1803,7 +1884,8 @@ class MainWindow(QMainWindow):
             i=self.speech_table.rowCount(); self.speech_table.insertRow(i)
             self.speech_table.setItem(i,0,QTableWidgetItem(str(r.get('speaker',''))))
             self.speech_table.setItem(i,1,QTableWidgetItem(str(r.get('listener',''))))
-            combo=QComboBox(); combo.addItems(LEVELS)
+            from .table_combo import TableComboBox
+            combo=TableComboBox(); combo.addItems(LEVELS)
             lv=normalize_level(r.get('level','')) or '반말'; combo.setCurrentIndex(max(0,combo.findText(lv)))
             combo.currentIndexChanged.connect(lambda _i: (self._save_workspace(), self._update_speech_tab_title()))
             self.speech_table.setCellWidget(i,2,combo)
@@ -1865,7 +1947,7 @@ class MainWindow(QMainWindow):
             if isinstance(self._term_thread, SpeechExtractThread):
                 self._term_thread.requestInterruption()
                 self.speech_generate.setEnabled(False)
-                self.status.setText('말투표 생성 취소 요청 · 현재 요청 정리 후 중단…')
+                self.status.setText('말투표 생성 취소 요청 · 중단하는 중…')
             return
         if self.worker and self.worker.isRunning(): return
         if len(self._speech_names())<2:
@@ -1882,7 +1964,7 @@ class MainWindow(QMainWindow):
         from ..lexical_guidance import extra_pack
         self._speech_fail=''
         names=self._speech_names(); source=self._speech_source(); lang=self.pm.active.source_language
-        key=self._source_sha() or hashlib.sha256(source.encode('utf-8')).hexdigest(); self._speech_tried.add(key)
+        key=self._source_sha() or hashlib.sha256(source.encode('utf-8')).hexdigest(); self._speech_tried.add(key); self._speech_key=key
         cues=[c for c in list(getattr(self.pm.active,'lexical_guidance',{}) or {})+list(extra_pack(lang)) if 0<len(c)<=(12 if lang=='en' else 4)]
         samples=sample_dialogue(source,names,cues=cues)
         if not samples:
@@ -1896,9 +1978,12 @@ class MainWindow(QMainWindow):
         self._speech_auto=auto; self._term_source_sha=self._source_sha()
         self._lock_inputs(True); self.start.setEnabled(False)
         self.speech_generate.setEnabled(True); self.speech_generate.setText('말투표 생성 취소'); self.status.setText(('번역 전 ' if auto else '')+f'인물 말투표 만드는 중 · 인물 {len(names)}명 · {provider_id}')
-        self._set_analysis_busy(True, '말투표 검출 중…')
+        self._speech_skip=False
+        self._set_analysis_busy(True, '말투표 건너뛰고 번역 시작' if auto else '말투표 검출 중…',
+                                ('번역 전 ' if auto else '')+f'인물 말투표 만드는 중 · 인물 {len(names)}명')
         self._term_thread=SpeechExtractThread(engines,prompts,lambda text,n=dict(names): parse_table(text,n),self,
                                               fallback_prompts=fallback_prompts)
+        self._connect_stage(self._term_thread)
         self._speech_result=(False,'말투표 만들기가 종료되었습니다.')
         self._term_thread.done.connect(lambda ok,res:setattr(self,'_speech_result',(ok,res)))
         self._term_thread.finished.connect(self._extract_speech_finished); self._term_thread.start()
@@ -1909,11 +1994,21 @@ class MainWindow(QMainWindow):
         ok,res=self._speech_result; thread=self._term_thread; self._term_thread=None
         if thread is not None: thread.deleteLater()
         auto=getattr(self,'_speech_auto',False); self._speech_auto=False
+        skipped=bool(getattr(self,'_speech_skip',False)); self._speech_skip=False
         self._lock_inputs(False); self.speech_generate.setText('말투표 자동 생성'); self._set_analysis_busy(False)
         if getattr(self,'_close_after_extract',False):
             self.close(); return
         self.speech_generate.setEnabled(True)
+        if not ok and res=='사용자 취소' and auto and skipped:
+            # [말투표 건너뛰고 번역 시작]: this book's automatic attempt is over (it is not
+            # asked again on resume); the button on the 인물 말투 tab can still build it later.
+            self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+[
+                '인물 말투표 · 건너뜀 (사용자 선택) · 말투표 없이 번역합니다 · 필요하면 인물 말투 탭의 [말투표 자동 생성]으로 나중에 만들 수 있습니다'])
+            self._auto_notes=[]
+            return
         if not ok and res=='사용자 취소':
+            # A cancelled attempt is not a finished one: the next start tries again.
+            self._speech_tried.discard(getattr(self,'_speech_key',''))
             self._update_ready_state()
             self.status.setText('말투표 자동 생성 취소됨 · 번역은 시작하지 않았습니다')
             return
@@ -2369,7 +2464,7 @@ class MainWindow(QMainWindow):
         extracting=self._extracting()
         # The separate Korean TXT picker is available even without a translation source.
         self.refinement_run_btn.setEnabled(not running and not extracting)
-        self.start.setEnabled((running or (has_input and has_provider)) and not extracting)
+        self.start.setEnabled(((running or (has_input and has_provider)) and not extracting) or self._speech_skippable())
         self.restart_btn.setEnabled((not running) and has_input and not extracting)
         checks=[]
         checks.append(('✓' if has_input else '○')+' 원문')
@@ -2393,7 +2488,9 @@ class MainWindow(QMainWindow):
         checks.insert(1,'번역 엔진: '+engines_txt)
         self.ready_label.setToolTip('<b>준비 상태</b><br>'+'<br>'.join(html.escape(x) for x in checks)); gem_txt=f' · Gemini 키 {len(self._enabled_keys())}개' if 'gemini' in self._engine_order() else ''
         self.ready_label.setText(f'원문 {"선택됨" if has_input else "미선택"} · 엔진 {engines_txt}{gem_txt} · {self.pm.active.display_name} · {self.mode.currentText()}')
-        if not running and has_input and not has_provider:
+        if extracting:
+            self._refresh_analysis_status()   # the analysis' own progress line, never "준비됨"
+        elif not running and has_input and not has_provider:
             self.status.setText('사용 가능한 번역 엔진이 없습니다 · API 설정에서 엔진 순서와 키·모델을 확인하세요.')
         elif not running and has_input and ready_engines and ready_engines[0]!='gemini':
             out=self._default_output_dir()
@@ -2698,7 +2795,9 @@ class MainWindow(QMainWindow):
         self.start_translation(True)
 
     def start_translation(self, force_restart: bool=False):
-        if self._extracting(): return   # started automatically when the extraction ends
+        if self._extracting():   # started automatically when the extraction ends
+            if self._speech_skippable(): self._skip_auto_speech()
+            return
         if getattr(self,'_guide_timer',None) and self._guide_timer.isActive():
             self._guide_timer.stop(); self._save_user_guide()
         if self._resume_timer.isActive():

@@ -178,7 +178,8 @@ class _KeyTable(QWidget):
             row=self.table.rowCount(); self.table.insertRow(row)
             enabled=QTableWidgetItem(''); enabled.setFlags(Qt.ItemIsEnabled|Qt.ItemIsUserCheckable|Qt.ItemIsSelectable); enabled.setCheckState(Qt.Checked if rec.enabled else Qt.Unchecked); enabled.setData(Qt.UserRole,rec.id); self.table.setItem(row,0,enabled)
             self.table.setItem(row,1,QTableWidgetItem(rec.label)); self.table.setItem(row,2,QTableWidgetItem(rec.project_group))
-            tier_box=QComboBox(); tier_box.addItem('미지정','unknown'); tier_box.addItem('무료','free'); tier_box.addItem('유료','paid')
+            from .table_combo import TableComboBox
+            tier_box=TableComboBox(); tier_box.addItem('미지정','unknown'); tier_box.addItem('무료','free'); tier_box.addItem('유료','paid')
             tier_index=tier_box.findData(rec.tier); tier_box.setCurrentIndex(tier_index if tier_index>=0 else 0)
             tier_box.currentIndexChanged.connect(lambda _i:self._notify())
             self.table.setCellWidget(row,3,tier_box)
@@ -395,7 +396,7 @@ class ApiDialog(QDialog):
         self.local_status=QLabel(''); self.local_status.setWordWrap(True); trow.addWidget(self.local_test_btn); trow.addWidget(self.local_status,1); lv.addLayout(trow)
         lv.addStretch(1); tabs.addTab(loc,'로컬 LLM')
 
-        box=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); box.accepted.connect(self._save_and_accept); box.rejected.connect(self.reject); outer.addWidget(box)
+        box=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); box.button(QDialogButtonBox.Save).setText('저장'); box.button(QDialogButtonBox.Cancel).setText('취소'); box.accepted.connect(self._save_and_accept); box.rejected.connect(self.reject); outer.addWidget(box)
 
         # Engine list <-> tabs are linked both ways; roles/status refresh live.
         self._tab_of={'gemini':0,'openai':1,'local':2}; self._syncing=False

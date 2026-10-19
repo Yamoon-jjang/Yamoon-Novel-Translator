@@ -81,7 +81,7 @@ class LocalLLMProvider(TranslationProvider):
         return self._translate_compat(request, api_key)
 
     def _headers(self, api_key: str) -> dict:
-        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.2'}
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.3'}
         if api_key and api_key not in {'local', 'none', '-'}:
             headers['Authorization'] = f'Bearer {api_key}'
         return headers
@@ -150,7 +150,7 @@ class LocalLLMProvider(TranslationProvider):
         last = None
         for url in urls:
             try:
-                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.2'})
+                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.3'})
             except requests.ConnectionError as e:
                 raise ProviderError(ErrorKind.TRANSIENT, f'로컬 LLM 서버에 연결할 수 없습니다. Ollama 또는 LM Studio가 실행 중인지 확인하세요: {base}') from e
             except requests.RequestException as e:
@@ -395,8 +395,12 @@ class LocalLLMProvider(TranslationProvider):
     def _read_stream(self, r, request: TranslationRequest) -> dict:
         """Collect an Ollama /api/chat stream (one JSON object per line) into one reply."""
         parts: list[str] = []; final: dict = {}; fresh = 0
+        cancel = getattr(request, 'cancel', None)
         try:
             for line in r.iter_lines():
+                if cancel is not None and cancel():
+                    # Closing the stream (finally below) also stops Ollama generating.
+                    raise TranslationCancelled('사용자 취소')
                 if not line:
                     continue
                 try:

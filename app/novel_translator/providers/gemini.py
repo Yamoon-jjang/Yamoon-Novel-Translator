@@ -117,7 +117,7 @@ class GeminiProvider(TranslationProvider):
         if thinking:
             payload['generationConfig']={'thinkingConfig': {'thinkingLevel': thinking}}
         try:
-            r = requests.post(url, headers={'x-goog-api-key':api_key,'Content-Type':'application/json','User-Agent':'NovelTranslator/2.2'}, json=payload, timeout=request.timeout)
+            r = requests.post(url, headers={'x-goog-api-key':api_key,'Content-Type':'application/json','User-Agent':'NovelTranslator/2.3'}, json=payload, timeout=request.timeout)
         except requests.Timeout as e:
             raise ProviderError(ErrorKind.TRANSIENT, '요청 시간 초과') from e
         except requests.RequestException as e:

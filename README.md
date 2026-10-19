@@ -75,7 +75,7 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 </tr>
 <tr>
 <td><sub><b>확정 용어집</b> — 번역을 시작할 때 인명 · 지명 · 문파 이름을 자동으로 뽑아 고정합니다. 책마다 쌓이는 <b>공용 용어집</b>은 다음 책에도 그대로 쓰입니다.</sub></td>
-<td><sub><b>인물 말투표</b> — 중국어 · 영어에는 존댓말 문법이 없어 청크마다 말투가 흔들립니다. 누가 누구에게 반말 · 해요체 · 합쇼체 · 하게체를 쓰는지 한 번 정해 책 전체에 적용합니다.</sub></td>
+<td><sub><b>인물 말투표</b> — 중국어 · 영어에는 존댓말 문법이 없어 청크마다 말투가 흔들립니다. 누가 누구에게 반말 · 해요체 · 합쇼체 · 하게체를 쓰는지 한 번 정해 책 전체에 적용합니다. 만드는 동안 엔진과 경과 시간이 표시되고, 기다리기 싫으면 건너뛰고 바로 번역할 수 있습니다.</sub></td>
 </tr>
 </table>
 
@@ -130,7 +130,7 @@ python -m pip install -r requirements-build.txt
 build_windows.bat
 ```
 
-`build_windows.bat`은 자동 테스트(500여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
+`build_windows.bat`은 자동 테스트(580여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
 GitHub Actions(`.github/workflows/build.yml`)도 같은 과정으로 빌드하며, 새 버전이 main에서 모든 점검을 통과하면 Releases에 배포본을 자동으로 올립니다.
 
 ## 라이선스 · 이용 안내

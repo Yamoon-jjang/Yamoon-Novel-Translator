@@ -2,6 +2,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QTableWidget,
     QTableWidgetItem,QHeaderView,QComboBox,QPushButton,QDialogButtonBox,QLineEdit)
+from .table_combo import TableComboBox
 
 
 class TermConflictDialog(QDialog):
@@ -34,7 +35,7 @@ class TermConflictDialog(QDialog):
             for col,value in enumerate((src,old,new)):
                 item=QTableWidgetItem(value);item.setFlags(Qt.ItemIsEnabled|Qt.ItemIsSelectable)
                 item.setToolTip(value);self.table.setItem(row,col,item)
-            choose=QComboBox(self.table)
+            choose=TableComboBox(self.table)
             choose.addItem('기존 유지·고정','keep')
             choose.addItem('새 제안·고정','replace')
             self.table.setCellWidget(row,3,choose)

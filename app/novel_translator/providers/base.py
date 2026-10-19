@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 class TranslationCancelled(Exception):
@@ -46,6 +46,10 @@ class TranslationRequest:
     purpose: str = 'translate'
     # Paragraph IDs of a tagged 'edit' request (translation requests are read from SOURCE).
     paragraph_ids: tuple = ()
+    # Optional "stop now?" check (a callable returning True). Only the app's name/speech
+    # analysis passes one; a local LLM stream then stops at once instead of finishing a
+    # long answer nobody is waiting for. Translation requests never set it.
+    cancel: object = field(default=None, compare=False, repr=False)
 
 @dataclass
 class TranslationResponse:

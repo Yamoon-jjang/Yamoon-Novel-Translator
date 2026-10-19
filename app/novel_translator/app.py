@@ -36,10 +36,12 @@ def gui_self_test() -> tuple[bool, str]:
     import-time/UI-construction regressions that a non-GUI self-test cannot see.
     """
     try:
-        from .theme import prepare_environment, force_light
+        from .theme import prepare_environment, force_light, install_korean_qt
         if QApplication.instance() is None: prepare_environment()
         app = QApplication.instance() or QApplication([])
         force_light(app)
+        if not install_korean_qt(app):
+            return False, 'GUI_SELF_TEST=FAIL\nQt Korean translation (qtbase_ko.qm) missing'
         app.setApplicationName('Novel Translator')
         app.setOrganizationName('NovelTranslator')
         issues = validate_resources()
@@ -62,7 +64,15 @@ def gui_self_test() -> tuple[bool, str]:
         # Construct the real multi-provider API settings UI too. No network call is
         # made; this catches Qt/widget/signature regressions in the packaged EXE.
         d = ApiDialog([], 'gemini-3.1-flash-lite', {'enabled':False,'model':'gpt-6.1-sol','keys':[]}, 'https://api.openai.com/v1/responses', w)
-        d.ensurePolished(); d.close()
+        d.ensurePolished()
+        from PySide6.QtWidgets import QDialogButtonBox, QMessageBox
+        english=[b.text() for bb in d.findChildren(QDialogButtonBox) for b in bb.buttons()
+                 if b.text().replace('&','') in ('Save','Cancel','OK','Close','Apply')]
+        mb=QMessageBox(QMessageBox.Question,'','',QMessageBox.Yes|QMessageBox.No)
+        yes=mb.button(QMessageBox.Yes).text(); mb.deleteLater(); d.close()
+        if english or 'Yes' in yes:
+            w.close()
+            return False, f'GUI_SELF_TEST=FAIL\nEnglish standard buttons: {english} {yes}'
         adv=AdvancedSettingsDialog(w); adv.ensurePolished(); adv.close()
         app.processEvents()
         ok_pdf, pdf_note = _pdf_round_trip()
@@ -77,10 +87,11 @@ def gui_self_test() -> tuple[bool, str]:
         return False, f'GUI_SELF_TEST=FAIL\n{type(e).__name__}: {e}'
 
 def main():
-    from .theme import prepare_environment, force_light
+    from .theme import prepare_environment, force_light, install_korean_qt
     prepare_environment()
     app=QApplication(sys.argv)
     force_light(app)   # the UI is designed for light colours; never follow Windows dark mode
+    install_korean_qt(app)   # 예/아니요/확인/저장… for Qt's standard buttons (English stays only if missing)
     app.setApplicationName('Novel Translator')
     app.setOrganizationName('NovelTranslator')
     issues=validate_resources()

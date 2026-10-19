@@ -48,3 +48,35 @@ def force_light(app) -> None:
     except Exception:
         pass
     app.setPalette(light_palette())
+
+
+_QT_TRANSLATORS: list = []   # kept alive for the whole run (Qt does not own them)
+
+
+def install_korean_qt(app) -> bool:
+    """Qt's own Korean texts for its standard buttons and menus: 예/아니요/확인/취소/저장
+    instead of Yes/No/OK/Cancel/Save, and the right-click menu of text boxes
+    (실행 취소·잘라내기·복사·붙여넣기…). Without it those stayed English while the app's own
+    texts are Korean. qtbase_ko.qm ships with PySide6 and is bundled by PyInstaller."""
+    from pathlib import Path
+    from PySide6.QtCore import QTranslator, QLibraryInfo
+    dirs = []
+    try:
+        dirs.append(QLibraryInfo.path(QLibraryInfo.TranslationsPath))
+    except Exception:
+        pass
+    try:
+        import PySide6
+        base = Path(PySide6.__file__).resolve().parent
+        dirs += [str(base / 'Qt' / 'translations'), str(base / 'translations')]
+    except Exception:
+        pass
+    if getattr(sys, '_MEIPASS', None):
+        dirs.append(os.path.join(sys._MEIPASS, 'PySide6', 'Qt', 'translations'))
+    for d in dirs:
+        tr = QTranslator(app)
+        if d and tr.load('qtbase_ko', d):
+            app.installTranslator(tr)
+            _QT_TRANSLATORS.append(tr)
+            return True
+    return False
