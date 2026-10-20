@@ -412,6 +412,16 @@ def narrator_gender(rows) -> str:
     return ''
 
 
+def _note_for(gender: str, note: str) -> str:
+    """A relation note in the words the narrator would use (언니 ↔ 누나, 오빠 ↔ 형)."""
+    if gender == 'male':
+        return note.replace('언니', '누나').replace('오라버니', '형').replace('오빠', '형')
+    if gender == 'female':
+        note = note.replace('누님', '언니').replace('누나', '언니').replace('형님', '오빠')
+        return re.sub(r'(?<![가-힣])형(?![가-힣])', '오빠', note)
+    return note
+
+
 def address_mismatches(gender: str, names) -> list[str]:
     """Korean names that end in an address the narrator of that gender would not use
     (단단 언니 for a male narrator, who says 단단 누나)."""
@@ -447,7 +457,10 @@ def clean_rows(rows) -> list[dict]:
             li = _ROLE_BY_GENDER.get(r['listener'], {}).get(gender, r['listener'])
             if sp == li or (sp, li) in seen:
                 continue
-            seen.add((sp, li)); resolved.append(dict(r, speaker=sp, listener=li))
+            note = r['note']
+            if NARRATOR in (sp, li) and note:
+                note = _note_for(gender, note)    # "아는 언니" from a man's point of view is "아는 누나"
+            seen.add((sp, li)); resolved.append(dict(r, speaker=sp, listener=li, note=note))
         out = resolved
     return out[:60]
 

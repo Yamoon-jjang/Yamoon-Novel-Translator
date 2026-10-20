@@ -62,8 +62,61 @@ def test_extraction_instruction_draws_the_line():
     zh, _ = build_prompts([('秦岚', 9)], 'zh')
     ja, _ = build_prompts([('美咲', 9)], 'ja')
     assert 'EVERY character name' in zh and 'even common-sounding ones' in zh        # names: all of them
+    assert 'when unsure whether a string is a character' in zh                       # recall first
     assert '少林' in zh and 'may be selected' in zh                                   # known sects/places stay
     assert 'generic genre vocabulary' in zh and 'adjectives or verbs' in zh          # soft guidance only
     assert 'Do not select forms of address' in zh and 'treat every similar word the same way' in zh
     assert 'single-character' in zh and 'single-character' not in ja
     assert '학 아저씨' not in zh                                                      # no longer asked to render addresses
+
+
+@pytest.mark.parametrize('src,ko,expected', [
+    ('单单姐', '단단저', ('单单', '단단')),          # hanja reading of 姐
+    ('单单姐', '단단지에', ('单单', '단단')),        # Chinese sound of 姐
+    ('阿强哥', '아창거', ('阿强', '아창')),
+    ('美咲姉さん', '미사키네상', ('美咲', '미사키')),
+    ('李小妹', '이소매', None), ('王小妹', '왕소매', None),   # 小妹 itself is the address
+    ('欧阳明月', '구양명월', None), ('秦岚', '진란', None),
+])
+def test_an_address_read_out_instead_of_translated_is_also_split(src, ko, expected):
+    from novel_translator.term_extraction import split_address
+    assert split_address(src, ko) == expected
+
+
+def test_name_with_address_is_kept_as_the_name_not_dropped():
+    rep = {}
+    got = parse_glossary('{"单单姐":"단단저","阿强哥":"아창거","李哥":"이가","老姨":"노이","小妹":"소매","秦岚":"진란"}',
+                         [(k, 9) for k in ('单单姐', '阿强哥', '李哥', '老姨', '小妹', '秦岚')], report=rep, lang='zh')
+    assert got == {'秦岚': '진란', '单单': '단단', '阿强': '아창'}
+    assert rep['address'] == 2 and rep['address_only'] == 3
+
+
+def test_relation_note_follows_the_narrator():
+    from novel_translator.speech_levels import clean_rows
+    rows = clean_rows([{'speaker': '나', 'listener': '엄마', 'level': '반말', 'note': '모자'},
+                       {'speaker': '단단', 'listener': '나', 'level': '반말', 'note': '아는 언니/동료'},
+                       {'speaker': '엄마', 'listener': '단단', 'level': '반말', 'note': '아는 언니'}])
+    notes = {(r['speaker'], r['listener']): r['note'] for r in rows}
+    assert notes[('단단', '나')] == '아는 누나/동료'       # the narrator's own relation
+    assert notes[('엄마', '단단')] == '아는 언니'          # someone else's relation is left alone
+
+
+@pytest.mark.parametrize('word', ['杜十娘', '红娘', '公孙', '长孙', '周公', '包公', '王孙', '师父'])
+def test_names_ending_in_a_kinship_looking_character_are_kept(word):
+    # weak characters (娘 · 公 · 孙 · 父 …) alone do not make an address
+    assert not is_address_term(word)
+
+
+@pytest.mark.parametrize('word', ['伯母', '叔父', '姑娘', '大娘', '婆婆', '公公', '岳母', '老公', '老婆', '二伯母'])
+def test_weak_characters_still_count_next_to_a_strong_one_or_as_address_words(word):
+    assert is_address_term(word)
+
+
+def test_given_names_ending_in_mei_or_di_are_not_cut_without_evidence():
+    # 招弟 / 春妹 are classic given names; read out they look like name + address.
+    got = parse_glossary('{"李招弟":"이초제","王春妹":"왕춘매","单单姐":"단단저"}',
+                         [('李招弟', 9), ('王春妹', 9), ('单单姐', 9)], lang='zh')
+    assert got == {'李招弟': '이초제', '王春妹': '왕춘매', '单单': '단단'}
+    # With the bare name seen on its own, the address is split as usual.
+    got = parse_glossary('{"阿珍妹":"아진매"}', [('阿珍妹', 9), ('阿珍', 9)], lang='zh')
+    assert got == {'阿珍': '아진'}

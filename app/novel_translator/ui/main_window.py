@@ -2032,24 +2032,34 @@ class MainWindow(QMainWindow):
         return clean_rows(rows)
 
     def _address_note(self) -> str:
-        """The narrator's gender from the speech table, and glossary/speech-table names whose
-        address word that narrator would not use (단단 언니 when the narrator is a man)."""
+        """The narrator's gender from the speech table, glossary entries that fix an address
+        (单单姐 = 단단저, 老姨 = 노이) and names whose address the narrator would not use."""
         try:
             from ..speech_levels import narrator_gender, address_mismatches, NARRATOR
+            from ..term_extraction import split_address, is_address_term
             rows=self._speech_rows() if hasattr(self,'speech_table') else []
-            gender=narrator_gender(rows)
-            if not gender: return ''
             terms=self._terms() if hasattr(self,'term_table') else {}
-            names=list(terms.values())+[r[k] for r in rows for k in ('speaker','listener')]
-            wrong=address_mismatches(gender,names)
-            who,sis,bro=('남자','누나','형') if gender=='male' else ('여자','언니','오빠')
-            note=f'1인칭 화자({NARRATOR}): {who} (말투표의 관계 메모로 판단) · 화자가 부르는 姐는 {sis}, 哥는 {_ro(bro)} 번역'
-            if wrong:
-                src={b:a for a,b in terms.items()}
-                shown=', '.join(f"{n}({src[n]})" if n in src else n for n in wrong[:5])
-                note+=(f' · 맞지 않는 호칭: {shown} — 확정 용어집에서 이름만 남기거나(예: 丹丹 → 단단) '
-                       f'{sis}·{_ro(bro)} 고치고, 말투표 이름도 같게 고치세요')
-            return note
+            parts=[]
+            fixed=[]
+            for a,b in terms.items():
+                split=split_address(a,b)
+                if split: fixed.append(f'{b}({a}) → 이름만 {split[1]}({split[0]})')
+                elif is_address_term(a): fixed.append(f'{b}({a}) → 호칭이라 빼기')
+            gender=narrator_gender(rows)
+            if gender:
+                who,sis,bro=('남자','누나','형') if gender=='male' else ('여자','언니','오빠')
+                parts.append(f'1인칭 화자({NARRATOR}): {who} (말투표의 관계 메모로 판단) · 화자가 부르는 姐는 {sis}, 哥는 {_ro(bro)} 번역')
+                names=list(terms.values())+[r[k] for r in rows for k in ('speaker','listener')]
+                wrong=[n for n in address_mismatches(gender,names) if not any(n in f for f in fixed)]
+                if wrong:
+                    src={b:a for a,b in terms.items()}
+                    shown=', '.join(f"{n}({src[n]})" if n in src else n for n in wrong[:5])
+                    parts.append(f'맞지 않는 호칭: {shown} — 확정 용어집에서 이름만 남기거나(예: 丹丹 → 단단) '
+                                 f'{sis}·{_ro(bro)} 고치고, 말투표 이름도 같게 고치세요')
+            if fixed:
+                parts.append('확정 용어집에 호칭이 든 항목: '+', '.join(fixed[:5])+(' …' if len(fixed)>5 else '')
+                             +' — 이전 추출에서 들어온 것이니 고치면 번역이 문맥대로 호칭을 붙입니다')
+            return ' · '.join(parts)
         except Exception:
             return ''
 

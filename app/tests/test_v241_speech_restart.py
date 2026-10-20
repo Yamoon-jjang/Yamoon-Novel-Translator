@@ -60,8 +60,9 @@ def test_narrator_note_reads_naturally():
     class Fake:
         speech_table = object(); term_table = object()
         def _speech_rows(self):
-            return clean_rows([{'speaker': '나', 'listener': '엄마', 'level': '반말', 'note': '모자'}])
-        def _terms(self): return {'单单姐': '단단 언니'}
+            return clean_rows([{'speaker': '나', 'listener': '엄마', 'level': '반말', 'note': '모자'},
+                               {'speaker': '단단 언니', 'listener': '나', 'level': '반말', 'note': ''}])
+        def _terms(self): return {}
 
     note = ui.MainWindow._address_note(Fake())
     assert '哥는 형으로 번역' in note and '누나·형으로 고치고' in note and '형로' not in note

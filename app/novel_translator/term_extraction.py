@@ -153,6 +153,8 @@ def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = ''
         'Give one natural Korean rendering for each selected string, consistent across related names (same surname, same reading system). '
         'Write every rendering entirely in Hangul: no Chinese characters or kana may remain, and render every character of the name '
         '(郝江化 -> 학강화 or 하오장화, never 郝장화). '
+        'Missing a real name is worse than including a doubtful one: when unsure whether a string is a character\'s '
+        'name, include it (address words and ordinary words are filtered out afterwards anyway). '
         'Return ONLY a JSON object mapping each selected source string to its Korean rendering. No commentary.'
     )
     rows = '\n'.join(f'{k}\t{v}' for k, v in cands)
@@ -259,7 +261,12 @@ _KO_ADDRESS_END = re.compile(r'^(?P<name>.*?[가-힣A-Za-z])\s*(?:언니|누나|
 # Address words alone (老姨, 姨姐, 李哥, 小妹, 阿姨, 二舅妈, お姉さん) are not names: who says them
 # decides the Korean (이모 · 처제 · 언니 …), and as a fixed entry they become pseudo-names
 # read out in hanja sounds (노이, 이저, 이가). The extraction leaves them to the context.
-_ZH_KIN = set('姐哥妹弟姨姑舅叔伯婶嫂爷奶妈爸娘爹母父夫妻婿侄甥孙公婆兄')
+# Strong kinship characters make an address on their own; weak ones also end real names
+# (杜十娘, 红娘, 周公, compound surnames 公孙 · 长孙) and count only next to a strong one (伯母, 叔父).
+_ZH_KIN_STRONG = set('姐哥妹弟姨姑舅叔伯婶嫂爷奶妈爸爹兄')
+_ZH_KIN_WEAK = set('娘公母父夫妻婆孙婿侄甥')
+_ZH_KIN = _ZH_KIN_STRONG | _ZH_KIN_WEAK
+_ZH_ADDRESS_WORDS = {'大娘', '婆婆', '公公', '岳父', '岳母', '娘亲', '老娘', '妈咪', '爹地', '媳妇', '闺女', '老幺'}
 _ZH_KIN_PREFIX = set('老小大阿二三四五六七八九十表堂亲干后继')
 _JA_KIN = {'姉', '兄', '妹', '弟', '母', '父', '叔母', '叔父', '伯母', '伯父', '祖母', '祖父', '婆', '爺', '義姉', '義兄', '義母', '義父'}
 _JA_KIN_KANA = {'ママ', 'パパ', 'おばさん', 'おじさん', 'おばあさん', 'おじいさん', 'おばあちゃん', 'おじいちゃん', 'ねえさん', 'にいさん'}
@@ -271,7 +278,7 @@ def is_address_term(source: str) -> bool:
     s = str(source or '').strip()
     if not s or len(s) > 6:
         return False
-    if s in _JA_KIN_KANA or s in ('妈咪', '爹地', '媳妇', '闺女', '老幺'):
+    if s in _JA_KIN_KANA or s in _ZH_ADDRESS_WORDS:
         return True
     if len(s) >= 2 and s.endswith('子') and s[-2] in _ZH_KIN and is_address_term(s[:-1]):
         return True       # 嫂子 · 婶子 · 舅子 · 小姑子: a kinship word with the familiar 子
@@ -289,13 +296,13 @@ def is_address_term(source: str) -> bool:
     i = len(s)
     while i > 0 and s[i - 1] in _ZH_KIN:
         i -= 1
-    if i == len(s):
-        return False                      # does not end in a kinship word
+    if i == len(s) or not any(c in _ZH_KIN_STRONG for c in s[i:]):
+        return False                      # no kinship word at the end (杜十娘, 周公, 公孙 are names)
     rest = [c for c in s[:i] if c not in _ZH_KIN_PREFIX]
     return len(rest) <= 1                 # nothing, a prefix, or a bare surname before it
 
 
-def split_address(source: str, korean: str) -> tuple[str, str] | None:
+def split_address(source: str, korean: str, bases=None) -> tuple[str, str] | None:
     """(name, Korean name) when an entry is a name plus a kinship address that the
     Korean also renders (丹丹姐 = 단단 언니 -> 丹丹 = 단단); None otherwise.
     A transliterated name that only ends in such a character (李小妹 = 이소매) is kept."""
@@ -307,13 +314,40 @@ def split_address(source: str, korean: str) -> tuple[str, str] | None:
     if len(base) < 2:
         return None          # 姐姐 itself, or a bare surname (林姐): nothing safe to keep
     m = _KO_ADDRESS_END.match(ko)
-    if not m:
+    if m:
+        name = m.group('name').strip()
+        spaced = ko[len(m.group('name')):][:1].isspace()
+        if not spaced and len(re.findall(r'[가-힣]', name)) < 2:
+            return None          # 이형: one syllable left, more likely a name than name+address
+        return base, name
+    # The address read out instead of translated: 丹丹姐 = 단단저 (hanja) or 단단지에 (Chinese
+    # sound). Either the Korean has one syllable per character, or it ends in a known reading.
+    flat = ko.replace(' ', '')
+    # 李小妹 / 王小妹: the suffix belongs to 小妹 (a kinship word), not to a name before it.
+    # 妹 / 弟 also end real given names (招弟, 春妹): read out, they are split only when the
+    # bare name is known on its own (`bases`, e.g. the candidate list). 姐 / 哥 almost never are.
+    if bases is not None and suffix[0] in '妹弟' and base not in bases:
         return None
-    name = m.group('name').strip()
-    spaced = ko[len(m.group('name')):][:1].isspace()
-    if not spaced and len(re.findall(r'[가-힣]', name)) < 2:
-        return None          # 이형: one syllable left, more likely a name than name+address
-    return base, name
+    if re.fullmatch(r'[가-힣]+', flat) and base[-1] not in _ZH_KIN_PREFIX and base[-1] not in _ZH_KIN:
+        # One Hangul syllable per Chinese character (hanja reading); Japanese is not 1:1.
+        if re.fullmatch(r'[一-龥]+', src) and len(flat) == len(src):
+            name = flat[:len(flat) - len(suffix)]
+            return (base, name) if len(name) >= 1 else None
+        for reading in _ADDRESS_READINGS.get(suffix, ()):
+            if flat.endswith(reading) and len(flat) - len(reading) >= 2:
+                return base, ko.rstrip()[:len(ko.rstrip()) - len(reading)].rstrip()
+    return None
+
+
+# How an address suffix comes out when it is read rather than translated (hanja / Chinese / Japanese sound).
+_ADDRESS_READINGS = {
+    '姐': ('지에', '저', '자', '제', '쩨'), '姐姐': ('지에지에', '저저', '제제'),
+    '哥': ('거', '가', '꺼'), '哥哥': ('거거', '가가'),
+    '妹': ('메이', '매', '메'), '妹妹': ('메이메이', '매매'),
+    '弟': ('디', '제', '띠'), '弟弟': ('디디', '제제'),
+    '姉さん': ('네상', '네에상', '자상'), '兄さん': ('니상', '니이상', '형상'),
+    '姉': ('네', '자'), '兄': ('니', '형'),
+}
 
 
 def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict: bool = False,
@@ -340,6 +374,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             report.update(answer=0)
         return {}
     allowed = {k for k, _ in (cands or [])}
+    bases = allowed | set(known or {})
     why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0, 'address_only': 0, 'single': 0}
     out: dict[str, str] = {}
     keys = set()
@@ -361,13 +396,13 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.
         if lang == 'zh' and len(k) == 1:
             why['single'] += 1; continue
-        if is_address_term(k):
-            why['address_only'] += 1; continue
+        if split_address(k, v, bases) is None and is_address_term(k):
+            why['address_only'] += 1; continue      # name + address (阿强哥) is split below instead
         if not valid_rendering(k, v):
             why['bad_rendering'] += 1; continue
         out[k] = v
     for k, v in list(out.items()):
-        split = split_address(k, v)
+        split = split_address(k, v, bases)
         if split:
             del out[k]
             why['address'] += 1

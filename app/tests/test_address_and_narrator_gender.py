@@ -94,7 +94,10 @@ def test_window_reports_the_narrator_and_wrong_addresses(monkeypatch):
                                          {'丹丹姐': '단단 언니', '秦岚': '진란'}))
     assert '1인칭 화자(나): 남자' in note and '姐는 누나' in note
     assert '단단 언니(丹丹姐)' in note
-    assert MainWindow._address_note(Fake([], {'丹丹姐': '단단 언니'})) == ''
+    # A glossary entry that fixes an address is reported even before the narrator is known.
+    early = MainWindow._address_note(Fake([], {'丹丹姐': '단단 언니', '老姨': '노이'}))
+    assert '이름만 단단(丹丹)' in early and '노이(老姨) → 호칭이라 빼기' in early and '1인칭 화자' not in early
+    assert MainWindow._address_note(Fake([], {'秦岚': '진란'})) == ''
 
 
 def test_an_answer_may_name_either_half_of_a_combined_role():
