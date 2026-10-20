@@ -52,6 +52,8 @@ class TranslationWorker(QThread):
         # 문장 스타일: like the guidelines, NOT part of the job identity (switching it does not restart a book),
         # but part of the translation-memory key so the two styles are never mixed by reuse.
         self.sentence_style = 'natural' if sentence_style == 'natural' else 'normal'
+        self._pending_style: str | None = None   # set from the window while running (set_sentence_style)
+        self.style_changes: list[tuple[int, str]] = []   # (chunk number, style) changed during the run
         self.source_path = source_path; self.source_bytes = source_bytes; self.profile = profile; self.chunks = chunks
         self.model = model; self.api_keys = api_keys; self.terms = terms; self.mode_id = mode_id; self.output_dir = Path(output_dir) if output_dir else None
         self.all_paragraphs=list(all_paragraphs) if all_paragraphs is not None else [p for c in chunks for p in c.paragraphs]
@@ -138,6 +140,11 @@ class TranslationWorker(QThread):
 
     def resume(self):
         self._paused = False
+
+    def set_sentence_style(self, style: str) -> None:
+        """문장 스타일 changed in the window while this job runs: used from the next chunk
+        (the one in flight finishes with the style it started with)."""
+        self._pending_style = 'natural' if style == 'natural' else 'normal'
 
     def is_paused(self) -> bool:
         return bool(self._paused)
@@ -1284,6 +1291,7 @@ class TranslationWorker(QThread):
             prev = self.initial_context[-context_chars:] if self.initial_context else ''
             consecutive_infra_failures = 0
             total = len(self.chunks)
+            saved_view: list[str] = []
             for i, c in enumerate(self.chunks):
                 if c.index not in translations:
                     self._wait_if_paused(raise_on_stop=False)
@@ -1293,7 +1301,30 @@ class TranslationWorker(QThread):
                 if c.index in translations:
                     prev = self._roll_context(prev, translations[c.index], context_chars); self.final_context=prev
                     self.progress.emit(i+1, total, '저장된 번역 사용')
+                    try:   # resumed job: the live view shows the saved part too (sent in one block below)
+                        _parsed=parse_tagged_translation(translations[c.index])
+                        saved_view.append('\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
+                    except Exception:
+                        pass
                     continue
+                if saved_view:
+                    self.chunk_translated.emit(i, total, '\n\n'.join(x for x in saved_view if x.strip()))
+                    saved_view=[]
+                pending_style=self._pending_style
+                if pending_style and pending_style!=self.sentence_style:
+                    # 문장 스타일 changed during the run: from this chunk on (a chunk is never
+                    # mixed). It is not part of the job identity, so nothing is translated again.
+                    self._pending_style=None
+                    self.sentence_style=pending_style
+                    for _o in self._perf_engines.values():
+                        _o.sentence_style=pending_style
+                    try:   # the translation memory label follows the style now in use
+                        db.get_or_create_project(str(self.source_path), self.profile.source_language, self.profile.id, sha, fingerprint, self._settings_key())
+                    except Exception:
+                        pass
+                    self.style_changes.append((i+1, pending_style))
+                    self.issue.emit(f'문장 스타일 변경 · 청크 {i+1}/{total}부터 '+('자연스럽게' if pending_style=='natural' else '보통')
+                                    +' 적용 (이미 번역한 앞부분은 다시 번역하지 않음)')
                 partial_base=partial_map.get(c.index); work=c
                 if partial_base is None and para_memory:
                     partial_base=self._base_from_memory(c, para_memory)

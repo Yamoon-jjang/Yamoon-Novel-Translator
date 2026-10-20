@@ -1508,7 +1508,12 @@ class MainWindow(QMainWindow):
             cfg['sentence_style']=styles; save_json(CONFIG_DIR/'app.json',cfg)
         except Exception:
             pass
-        self.status.setText('문장 스타일: '+('자연스럽게' if self.sentence_style.currentData()=='natural' else '보통')+' · 다음 번역 요청부터 적용 (번역 중인 책을 처음부터 다시 번역하지 않음)')
+        label='자연스럽게' if self.sentence_style.currentData()=='natural' else '보통'
+        if self.worker and self.worker.isRunning() and hasattr(self.worker,'set_sentence_style'):
+            self.worker.set_sentence_style(self._sentence_style_value())   # the running job switches from its next chunk
+            self.status.setText(f'문장 스타일: {label} · 진행 중인 번역의 다음 청크부터 적용 (이미 번역한 부분은 다시 번역하지 않음)')
+        else:
+            self.status.setText(f'문장 스타일: {label} · 다음 번역부터 적용 (번역 중인 책을 처음부터 다시 번역하지 않음)')
 
     def _korean_punct_toggled(self, on: bool):
         try:
@@ -1728,6 +1733,9 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         style='자연스럽게' if getattr(self.worker,'sentence_style','normal')=='natural' else '보통'
+        changes=list(getattr(self.worker,'style_changes',[]) or [])
+        if changes:
+            style+=' (번역 중 변경: '+', '.join(f"청크 {n}부터 {'자연스럽게' if v=='natural' else '보통'}" for n,v in changes)+')'
         top=', '.join(f'{k} {v}' for k,v in sorted(found.items(),key=lambda kv:-kv[1])[:4])
         left=int(getattr(self.worker,'leftover_count',0) or 0)
         self.on_worker_issue(f'문장 점검 · 문장 스타일 {style} · 번역투 표현 {total:,}개 (한글 1,000자당 {rate:.1f})'+(f' · {top}' if top else '')

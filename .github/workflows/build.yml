@@ -98,13 +98,13 @@ jobs:
           if ($info.source_commit -ne $env:GITHUB_SHA) { throw 'Embedded source commit does not match GitHub Actions SHA' }
           if ([string]$info.github_run_id -ne [string]$env:GITHUB_RUN_ID) { throw 'Embedded run ID mismatch' }
           Write-Output ("BUILD_IDENTITY=PASS sha=" + $info.source_commit.Substring(0,8) + " run=" + $info.github_run_id)
-      - name: Verify v2.3 Windows EXE file version
+      - name: Verify v2.3.1 Windows EXE file version
         shell: pwsh
         working-directory: app
         run: |
           $v=(Get-Item 'dist/NovelTranslator/NovelTranslator.exe').VersionInfo
           Write-Output ("EXE_VERSION=" + $v.FileVersion + " PRODUCT_VERSION=" + $v.ProductVersion)
-          if ($v.FileVersion -ne '2.3.0.0' -or -not $v.ProductVersion.StartsWith('2.3')) { throw 'EXE version resource must be v2.3' }
+          if ($v.FileVersion -ne '2.3.1.0' -or -not $v.ProductVersion.StartsWith('2.3.1')) { throw 'EXE version resource must be v2.3.1' }
       - name: Check signatures of bundled native files
         shell: pwsh
         working-directory: app
@@ -133,7 +133,7 @@ jobs:
       - name: Upload tested portable folder
         uses: actions/upload-artifact@v4
         with:
-          name: NovelTranslator-v2.3-Windows-Portable
+          name: NovelTranslator-v2.3.1-Windows-Portable
           path: app/dist/NovelTranslator/
           if-no-files-found: error
           include-hidden-files: true

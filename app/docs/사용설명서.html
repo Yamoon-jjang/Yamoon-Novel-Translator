@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>야문 Novel Translator v2.3 사용 설명서</title>
+<title>야문 Novel Translator v2.3.1 사용 설명서</title>
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fb; --line:#e5e7eb; --text:#1f2937; --muted:#4b5563;
@@ -84,7 +84,7 @@
     <text x="92" y="103" text-anchor="middle" font-size="30" font-weight="700" fill="#fff" font-family="Malgun Gothic,sans-serif">가</text>
   </svg>
   <div>
-    <h1>야문 Novel Translator v2.3 사용 설명서</h1>
+    <h1>야문 Novel Translator v2.3.1 사용 설명서</h1>
     <p>중국어 · 일본어 · 영어 소설과 문서를 한국어로 번역 · 2026년 10월</p>
   </div>
 </div></header>
@@ -293,7 +293,7 @@
   <tr><td>모델 (맨 위 엔진)</td><td>API 설정의 엔진 순서에서 맨 위에 있는 엔진의 모델을 고릅니다. Gemini면 "Gemini 모델"(기본 Gemini 3.1 Flash Lite), OpenAI면 "OpenAI 모델", 로컬 LLM이면 "로컬 LLM 모델"로 이름과 목록이 바뀝니다. 체크한 엔진이 없으면 "Gemini 모델 (사용 안 함)"으로 표시됩니다.</td></tr>
   <tr><td>번역 방식</td><td><b>균형(권장)</b> · <b>품질 우선</b>(더 작은 단위, 더 긴 앞 문맥) · <b>속도 우선</b>(더 큰 단위). 차이는 <a href="#tech-speed">부록 B</a>.</td></tr>
   <tr><td>TXT 인코딩</td><td>보통 "자동 감지". 글자가 깨져 보이면 직접 고르세요(중국어 GB18030/Big5, 일본어 CP932 등).</td></tr>
-  <tr><td><span class="tab">원문</span> 탭</td><td>원문 보기 / 붙여넣기 / 번역 결과 보기. 번역 중에는 <b>번역 결과 (진행 중)</b>을 누르면 방금 번역된 한국어가 청크마다 차례로 붙어 나와, 진행 상황을 실시간으로 볼 수 있습니다(끝나면 전체 결과로 바뀜). 폴더 번역 중에는 자동으로 이 화면이 열립니다.</td></tr>
+  <tr><td><span class="tab">원문</span> 탭</td><td>원문 보기 / 붙여넣기 / 번역 결과 보기. 번역 중에는 <b>번역 결과 (진행 중)</b>을 누르면 방금 번역된 한국어가 청크마다 차례로 붙어 나와, 진행 상황을 실시간으로 볼 수 있습니다(끝나면 전체 결과로 바뀜). <b>중지했다가 이어서 번역할 때</b>는 이미 번역해 둔 앞부분이 먼저 한꺼번에 나오고, 그 뒤에 새로 번역되는 부분이 이어 붙습니다(앞부분은 다시 요청하지 않음). 폴더 번역 중에는 자동으로 이 화면이 열립니다.</td></tr>
   <tr><td><span class="tab">작업 목록</span></td><td>파일별 상태(대기 · 번역 중 · 완료 · 부분 완료 · 오류 · 건너뜀)와 결과 파일</td></tr>
   <tr><td><span class="tab">상태 / 오류 기록</span></td><td>무슨 일이 있었는지 한 줄씩 남습니다. 막힌 문단을 어느 엔진이 처리했는지, 작업 끝 요약(걸린 시간 · 요청 수 · 비용)도 여기 나옵니다(<a href="#retry">7장</a>).</td></tr>
   <tr><td><span class="tab">미완료 목록</span></td><td>원문으로 남은 부분의 위치와 이유</td></tr>
@@ -376,12 +376,12 @@
 </ul>
 
 <h3 id="style">6-7. 문장 스타일 — 보통 / 자연스럽게 (시험)</h3>
-<p><span class="tab">언어별 설정</span> 탭의 <b>문장 스타일</b>에서 고릅니다. 중국어·일본어·영어마다 따로 저장되고, 기본은 <b>보통</b>입니다.</p>
+<p><span class="tab">언어별 설정</span> 탭의 <b>문장 스타일</b>에서 고릅니다. 중국어·일본어·영어마다 따로 저장되고, 기본은 <b>자연스럽게</b>입니다.</p>
 <ul>
   <li><b>보통</b>: 지금까지와 똑같이 번역합니다.</li>
   <li><b>자연스럽게</b>: 원문의 어순과 문장 수를 따르지 않고, 한국 사람이 읽을 때 어색하지 않은 소설 문장으로 번역하게 합니다. "그녀는…", "~것이었다", "~에 의해" 같은 번역투를 피하고, 문장을 나누거나 합치는 것을 허용합니다. <b>내용·수위·누가 누구에게 무엇을 했는지는 그대로</b> 옮깁니다.</li>
   <li>추가 요청 없이 같은 번역 요청 안에서 적용되므로 요금이 늘지 않고, 원문 수위 그대로 옮기라는 기본 지시도 그대로입니다.</li>
-  <li>바꾸면 다음 요청부터 적용되고, 번역 중인 책을 처음부터 다시 번역하지는 않습니다. 이미 번역된 부분까지 바꾸려면 <span class="btn">처음부터 다시</span>를 누르세요.</li>
+  <li>바꾸면 바로 적용됩니다. <b>번역 중에 바꾸면 진행 중인 번역의 다음 청크부터</b> 새 스타일로 번역하고(지금 요청 중인 청크는 시작한 스타일로 마무리), 작업 기록에 "문장 스타일 변경 · 청크 N부터"가 남습니다. 번역 중인 책을 처음부터 다시 번역하지는 않습니다. 이미 번역된 부분까지 바꾸려면 <span class="btn">처음부터 다시</span>를 누르세요.</li>
   <li>번역이 끝나면 작업 기록에 <b>"문장 점검 · 번역투 표현 N개 (한글 1,000자당 N)"</b>와 미번역 여부가 나옵니다. 같은 장을 두 설정으로 번역해 숫자와 읽는 느낌을 비교해 보세요(점검은 프로그램이 직접 세므로 요금이 들지 않습니다).</li>
   <li>일반 문서 번역에는 쓰이지 않습니다(문서는 항상 정확한 문서 문체).</li>
 </ul>
@@ -833,6 +833,6 @@ ollama show gemma-4-12B-it-uncensored-heretic-Q8</pre>
 
 </main>
 </div>
-<footer>야문 Novel Translator v2.3 · 2026년 10월 · 제작 야문 짱 &amp; Claude · 무료 프로그램 · Copyright © 2026 야문 짱. All rights reserved.</footer>
+<footer>야문 Novel Translator v2.3.1 · 2026년 10월 · 제작 야문 짱 &amp; Claude · 무료 프로그램 · Copyright © 2026 야문 짱. All rights reserved.</footer>
 </body>
 </html>
