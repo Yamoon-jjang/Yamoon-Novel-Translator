@@ -1,7 +1,6 @@
 from __future__ import annotations
 import json, os, sys
 from pathlib import Path
-from dataclasses import dataclass
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', PACKAGE_ROOT))
@@ -78,12 +77,3 @@ def save_json(path: Path, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush(); os.fsync(f.fileno())
     tmp.replace(path)
-
-@dataclass(frozen=True)
-class RuntimePaths:
-    app_dir: Path = APP_DIR
-    resource_root: Path = RESOURCE_ROOT
-    config_dir: Path = CONFIG_DIR
-    profile_dir: Path = PROFILE_DIR
-    data_dir: Path = DATA_DIR
-    log_dir: Path = LOG_DIR

@@ -47,10 +47,18 @@ def _save_all(data: dict, base=None) -> None:
 
 
 def acceptable(source: str, korean: str) -> bool:
-    from .term_extraction import valid_rendering, COMMON_WORDS
+    from .term_extraction import valid_rendering, COMMON_WORDS, split_address
     s = str(source or '').strip(); k = str(korean or '').strip()
     return (len(s) >= 2 and bool(k) and len(k) <= 30 and s != k and s not in COMMON_WORDS
-            and valid_rendering(s, k) and bool(re.search(r'[가-힣]', k)))
+            and valid_rendering(s, k) and bool(re.search(r'[가-힣]', k))
+            and split_address(s, k) is None)     # 丹丹姐 = 단단 언니 depends on the speaker
+
+
+def usable(entries: dict[str, str]) -> dict[str, str]:
+    """Entries a book may use. An older shared entry that fixes a speaker-dependent address
+    (丹丹姐 = 단단 언니) is left out; the file itself is not changed."""
+    from .term_extraction import split_address
+    return {a: b for a, b in (entries or {}).items() if split_address(a, b) is None}
 
 
 def new_candidates(lang: str, terms: dict, base=None) -> dict[str, str]:

@@ -48,13 +48,6 @@ class EpubText:
         return f'EPUB {self.documents:,}개 문서 · 글자 추출'
 
 
-def is_epub(path) -> bool:
-    try:
-        return Path(path).suffix.casefold() == '.epub'
-    except Exception:
-        return False
-
-
 # ------------------------------------------------------------------ zip / package
 
 def _local(tag: str) -> str:

@@ -6,7 +6,7 @@ small print 8.5 pt, 96×34 확인 button) so the two programs look the same.
 """
 from __future__ import annotations
 from PySide6.QtCore import Qt, QRectF, QPointF, QRect
-from PySide6.QtGui import QPainter, QPixmap, QIcon, QColor, QPen, QFont, QFontMetrics
+from PySide6.QtGui import QPainter, QPixmap, QIcon, QColor, QPen, QFont
 from PySide6.QtWidgets import QDialog, QPushButton
 from .. import APP_NAME, VERSION_LABEL, RELEASE_DATE
 from ..build_identity import build_display, build_detail

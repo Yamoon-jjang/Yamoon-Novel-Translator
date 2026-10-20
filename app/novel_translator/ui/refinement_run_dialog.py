@@ -5,8 +5,9 @@ import re
 import time
 from PySide6.QtCore import QThread, Signal, QTimer
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                               QFileDialog, QProgressBar, QMessageBox)
-from ..refinement_runtime import run_refinement, MAX_REFINEMENT_BYTES, format_duration
+                               QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit)
+from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_duration,
+                                  retry_status, peek_guidance)
 from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
@@ -44,8 +45,9 @@ class RefinementWorker(QThread):
     activity = Signal(str)
 
     def __init__(self, source: Path, output: Path, provider_name: str, model: str,
-                 api_key: str, options: dict, parent=None, analysis=None):
+                 api_key: str, options: dict, parent=None, analysis=None, update_existing=False):
         super().__init__(parent)
+        self.update_existing=bool(update_existing)
         self.source=source; self.output=output; self.provider_name=provider_name
         self.model=model; self.api_key=api_key; self.options=options
         self._stop=False
@@ -64,6 +66,7 @@ class RefinementWorker(QThread):
                 analysis=(_make_provider(name,opts.get('endpoint',''),opts),model,key)
             result=run_refinement(self.source,self.output,provider,self.model,self.api_key,
                                   stop=lambda: self._stop, analysis_engine=analysis,
+                                  update_existing=self.update_existing,
                                   event=lambda message:self.activity.emit(message),
                                   progress=lambda a,b,c: self.progressed.emit(a,b,c))
             self.outcome.emit(result)
@@ -86,8 +89,9 @@ class RefinementRunDialog(QDialog):
         self.source=None
         self.output=None
         layout=QVBoxLayout(self)
-        intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서는 유지하며 원본은 변경하지 않습니다.\n'
-                     '인물·용어·말투 분석표를 참고하며 윤문하고, 변화가 의심되는 구간은 연속성을 추가 검토합니다. 분석표는 자동 추론이므로 최종 확인이 필요합니다.')
+        intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서와 존댓말·반말은 유지하며 원본은 변경하지 않습니다.\n'
+                     '이 앱으로 번역한 TXT는 번역할 때 확정된 인물 말투·이름을 기준표로 쓰고, 그 밖의 TXT는 시작할 때 샘플 분석으로 기준표를 만듭니다. '
+                     '분량·말투·이름에 변화가 의심되는 구간은 연속성을 추가 검토합니다.')
         intro.setWordWrap(True); layout.addWidget(intro)
         row=QHBoxLayout()
         self.pick=QPushButton('한국어 TXT 선택')
@@ -97,15 +101,25 @@ class RefinementRunDialog(QDialog):
         self.source_label.setWordWrap(True)
         row.addWidget(self.source_label,1)
         layout.addLayout(row)
+        grow=QHBoxLayout()
+        self.guidance_info=QLabel('기준표: TXT를 선택하면 표시됩니다')
+        self.guidance_info.setWordWrap(True)
+        grow.addWidget(self.guidance_info,1)
+        self.guidance_view=QPushButton('기준표 보기')
+        self.guidance_view.setEnabled(False)
+        self.guidance_view.clicked.connect(self._show_guidance)
+        grow.addWidget(self.guidance_view)
+        layout.addLayout(grow)
+        self._guidance_text=''
         # API settings own both provider/model choices. This dialog is read-only.
         self.analysis_info=QLabel()
         self.editing_info=QLabel()
-        layout.addWidget(QLabel('용어·말투 분석 · API 설정'))
+        layout.addWidget(QLabel('용어·말투 분석 · API 설정 (번역 기록이 없는 TXT에만 사용)'))
         layout.addWidget(self.analysis_info)
         layout.addWidget(QLabel('문학적 윤문·연속성 · API 설정'))
         layout.addWidget(self.editing_info)
         self._fill_engines()
-        self.help=QLabel('한국어 소설 재정비는 온라인 AI의 토큰 비용·출력 길이 제한·긴 대기·일부 내용의 교정 거부 문제를 줄이기 위해 로컬 LLM만 지원합니다. 로컬 LLM에도 문맥 길이·처리 속도 제한은 있습니다. API 설정에서 용어·말투 분석과 문학적 윤문을 모두 로컬 LLM으로 선택해야 시작할 수 있습니다. 용어·말투 검출은 소설 분량과 모델 속도에 따라 시간이 오래 걸릴 수 있으며, 로컬 LLM은 특히 느릴 수 있습니다. 엔진과 모델은 API 설정에서만 변경하며 여기서는 저장된 설정을 사용합니다. 성인 소설의 윤문 거부 가능성을 줄이려면 검열 해제된 로컬 LLM을 권장합니다. 단, 성공과 품질이 보장되지는 않습니다.')
+        self.help=QLabel('한국어 소설 재정비는 온라인 AI의 토큰 비용·출력 길이 제한·긴 대기·일부 내용의 교정 거부 문제를 줄이기 위해 로컬 LLM만 지원합니다. 로컬 LLM에도 문맥 길이·처리 속도 제한은 있습니다. API 설정에서 용어·말투 분석과 문학적 윤문을 모두 로컬 LLM으로 선택해야 시작할 수 있습니다. 번역 기록이 없는 TXT는 시작할 때 샘플 분석 요청을 한 번 보내며, 윤문은 소설 분량과 모델 속도에 따라 오래 걸릴 수 있습니다. 엔진과 모델은 API 설정에서만 변경하며 여기서는 저장된 설정을 사용합니다. 성인 소설의 윤문 거부 가능성을 줄이려면 검열 해제된 로컬 LLM을 권장합니다. 단, 성공과 품질이 보장되지는 않습니다.')
         self.help.setWordWrap(True);layout.addWidget(self.help)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0)
         layout.addWidget(self.progress)
@@ -148,11 +162,6 @@ class RefinementRunDialog(QDialog):
         need=layout.totalHeightForWidth(self.width())
         if need > self.height():
             self.resize(self.width(), need)
-
-    def _live_models(self):
-        return {'gemini':self.host._selected_model_id(),
-                'openai':str((self.host.secrets.get('openai') or {}).get('model') or ''),
-                'local':str((self.host.secrets.get('local') or {}).get('model') or '')}
 
     def _fill_engines(self):
         """Show canonical API routes; never silently change them for refinement."""
@@ -211,6 +220,37 @@ class RefinementRunDialog(QDialog):
         self.source_label.setText(self.source.name)
         self.source_label.setToolTip(str(self.source))
         self.status.setText(f'결과는 별도 파일에 저장됩니다: {self.output}')
+        self._refresh_guidance()
+
+    def _refresh_guidance(self):
+        """Which reference table a run on the selected TXT uses, before it starts."""
+        self._guidance_text=''
+        if not self.source:
+            return
+        try:
+            where,summary,table=peek_guidance(self.source)
+        except Exception:
+            where,summary,table='none','',''
+        if where=='translation':
+            text='기준표: 번역 기록에서 가져옴 · '+summary
+        elif where=='analysis':
+            text='기준표: '+summary+'(이어서 실행하면 그대로 사용)'
+        else:
+            text='기준표: 번역 기록 없음 · 시작하면 샘플 분석으로 만듭니다'
+        self._guidance_text=table
+        self.guidance_info.setText(text)
+        self.guidance_view.setEnabled(bool(table))
+
+    def _show_guidance(self):
+        d=QDialog(self); d.setWindowTitle('재정비 기준표'); d.resize(560,420)
+        v=QVBoxLayout(d)
+        note=QLabel('윤문할 때 모든 요청에 함께 보내는 기준표입니다. 번역 기록에서 가져온 표는 번역 화면의 인물 말투·확정 용어를 고쳐 다시 번역하면 바뀌고, '
+                    '샘플 분석 표는 자동 추론입니다. 검토 기록(.review.txt) 끝에도 같은 표가 남습니다.')
+        note.setWordWrap(True); v.addWidget(note)
+        box=QPlainTextEdit(); box.setReadOnly(True); box.setPlainText(self._guidance_text); v.addWidget(box,1)
+        close=QPushButton('닫기'); close.clicked.connect(d.accept)
+        b=QHBoxLayout(); b.addStretch(1); b.addWidget(close); v.addLayout(b)
+        d.exec()
 
     def _choose(self):
         chosen,_=QFileDialog.getOpenFileName(self,'교정할 한국어 TXT 선택','','텍스트 (*.txt);;모든 파일 (*)')
@@ -236,16 +276,26 @@ class RefinementRunDialog(QDialog):
             self.output.parent.mkdir(parents=True,exist_ok=True)
         except OSError as exc:
             QMessageBox.warning(self,'결과 폴더 사용 불가',f'결과 폴더를 만들거나 쓸 수 없습니다.\n{self.output.parent}\n{exc}'); return
-        if self.output.exists():
-            QMessageBox.warning(self,'결과 파일 존재','같은 이름의 결과 파일이 이미 있습니다. 원본과 이전 결과를 보호하기 위해 덮어쓰지 않습니다. 기존 결과의 이름을 변경한 뒤 다시 시작하세요.');return
         self._fill_engines()
         if not self._routes_ready:
             QMessageBox.warning(self,'API 엔진 설정 확인',self._route_error or 'API 설정에서 분석 및 윤문 엔진을 지정하세요.')
             return
         edit=self._editing_route
         analysis=self._analysis_route
+        update_existing=False
+        if self.output.exists():
+            retry=retry_status(self.source,self.output,edit[0],edit[1])
+            if not retry:
+                QMessageBox.warning(self,'결과 파일 존재','같은 이름의 결과 파일이 이미 있습니다. 원본과 이전 결과를 보호하기 위해 덮어쓰지 않습니다. 기존 결과의 이름을 변경한 뒤 다시 시작하세요.');return
+            answer=QMessageBox.question(self,'보존한 문단만 다시 시도',
+                f'이 TXT의 이전 재정비 결과가 있습니다.\n그때 교정하지 못하고 원문으로 보존한 문단 {retry}개만 다시 시도해, '
+                f'같은 결과 파일을 갱신할까요?\n\n이미 다듬은 문단은 그대로 두고 다시 요청하지 않습니다.\n{self.output}')
+            if answer!=QMessageBox.Yes:
+                return
+            update_existing=True
         # The worker receives the provider's options dict, not this dialog.
-        self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis)
+        self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis,
+                                     update_existing=update_existing)
         self.worker.progressed.connect(self._progress)
         self.worker.activity.connect(self._activity)
         self.worker.outcome.connect(self._finished)
@@ -279,9 +329,15 @@ class RefinementRunDialog(QDialog):
             changed=result.get('changed',result["done"])
             identical=result.get('identical',0)
             preserved=result.get('preserved',result["total"]-result["done"])
-            self.status.setText(f'완료 · 총 소요 시간 {format_duration(result.get("seconds",0))}\n'
+            where={'translation':'번역 기록','analysis':'샘플 분석'}.get(result.get('guidance_source'),'없음')
+            residue=(f' · 한자·가나 남은 문단 {result.get("residue_before",0)}→{result.get("residue_after",0)}개'
+                     if result.get('residue_before') else '')
+            retry=('\n보존한 문단은 같은 TXT로 다시 [재정비 시작]을 누르면 그 문단만 다시 시도합니다.' if preserved else '')
+            self.status.setText(f'완료 · 총 소요 시간 {format_duration(result.get("seconds",0))} · 기준표 {where}{residue}\n'
                                 f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
-                                f'결과: {result["output"]}\n검토 기록: {result["report"]}')
+                                f'결과: {result["output"]}\n검토 기록: {result["report"]}{retry}')
+            self._guidance_text=str(result.get('guidance') or '')
+            self.guidance_view.setEnabled(bool(self._guidance_text))
             self.progress.setValue(100)
         else:
             self.status.setText(f'안전 중지했습니다 · 지금까지 소요 시간 {format_duration(result.get("seconds",0))}\n'
@@ -295,6 +351,8 @@ class RefinementRunDialog(QDialog):
         self._timer.stop()
         self.worker=None
         self.pick.setEnabled(True)
+        if not self._guidance_text:
+            self._refresh_guidance()      # a stopped run keeps its sample analysis
         self._fill_engines()
         self.cancel.setText('닫기')
         self.start.setEnabled(self._routes_ready)

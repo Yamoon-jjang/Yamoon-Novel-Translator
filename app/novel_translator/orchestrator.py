@@ -85,7 +85,6 @@ class TranslationOrchestrator:
         # repair_script: one follow-up request that replaces Chinese characters/kana a model left
         # inside its Korean output (common with small local models). Never fails the chunk.
         self.repair_script = bool(repair_script)
-        self.last_repaired = 0
         self.sleep_fn = self._interruptible_sleep
         self.clock_fn = clock_fn
         self._group_cooldown: dict[str, float] = {}
@@ -251,7 +250,6 @@ class TranslationOrchestrator:
         self._record_usage(repaired > 0)
         if not repaired:
             return translated
-        self.last_repaired = repaired
         self._event(f'남은 한자·가나 정리 · 문단 {repaired}개를 한글로 다시 고침')
         return '\n\n'.join(f'<P{k:06d}>\n{v}' for k, v in out.items())
 
@@ -296,7 +294,7 @@ class TranslationOrchestrator:
             if self.key_selected_fn is not None:
                 try:self.key_selected_fn(key)
                 except Exception:pass
-            recorded = False; usage_done = False
+            usage_done = False
             try:
                 self._pace()
                 try:
@@ -305,7 +303,7 @@ class TranslationOrchestrator:
                         key.secret,
                     )
                 except ProviderError:
-                    recorded = True; self._record_usage(False)
+                    self._record_usage(False)
                     raise
                 normalized=normalize_translation_output(resp.text, protected.text)
                 forms=id_forms(resp.text, protected.text)
@@ -328,7 +326,6 @@ class TranslationOrchestrator:
                     # (typical of small local models) gets the leftover repair before rejecting.
                     residue = (self.repair_script and profile.source_language in ('zh','ja')
                                and '번역되지 않고 남아' in verr.message)
-                    recorded = True
                     if not residue:
                         self._record_usage(False)
                         raise
@@ -354,17 +351,15 @@ class TranslationOrchestrator:
                 try:
                     restored=restore_literals(normalized,protected.mapping)
                 except ValueError as exc:
-                    recorded = True; self._record_usage(False)
+                    self._record_usage(False)
                     raise ProviderError(ErrorKind.FORMAT,str(exc)) from exc
                 try:
                     validate_translation(chunk_text,restored,ignore_pids=skipped,check_residue=False)
                 except ProviderError:
-                    recorded = True; self._record_usage(False)
+                    self._record_usage(False)
                     raise
-                recorded = True
                 if not usage_done:
                     self._record_usage(True)
-                self.last_repaired = 0
                 if self.repair_script and profile.source_language in ('zh','ja'):
                     fixed = self._repair_leftover(protected.text, normalized, terms, key, set(skipped))
                     if fixed is not normalized:
@@ -373,7 +368,7 @@ class TranslationOrchestrator:
                             validate_translation(chunk_text, candidate, ignore_pids=skipped, check_residue=False)
                             restored = candidate
                         except (ValueError, ProviderError):
-                            self.last_repaired = 0
+                            pass   # keep the validated answer without the repair
                 if skipped:
                     restored_parsed=parse_tagged_translation(restored)
                     self.last_excluded=[(spid,restored_parsed.get(spid,'')) for spid in skipped]

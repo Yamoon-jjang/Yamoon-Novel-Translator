@@ -1,7 +1,7 @@
 """Bounded, scrollable per-term review of conflicting extraction proposals."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QTableWidget,
-    QTableWidgetItem,QHeaderView,QComboBox,QPushButton,QDialogButtonBox,QLineEdit)
+    QTableWidgetItem,QHeaderView,QPushButton,QDialogButtonBox,QLineEdit)
 from .table_combo import TableComboBox
 
 

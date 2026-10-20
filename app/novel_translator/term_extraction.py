@@ -180,22 +180,6 @@ class GlossaryParseError(ValueError):
     """The model answered, but no JSON object could be read from the answer."""
 
 
-def _json_objects(raw: str):
-    """Every JSON object in the text (prose, <think> blocks or code fences around it are fine)."""
-    dec = json.JSONDecoder()
-    i = raw.find('{')
-    while i >= 0:
-        for candidate in (raw[i:], re.sub(r',\s*([}\]])', r'\1', raw[i:])):   # also tolerate trailing commas
-            try:
-                obj, _ = dec.raw_decode(candidate)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
-            break
-        i = raw.find('{', i + 1)
-
-
 _SRC_KEYS = ('source', 'original', 'term', 'name', 'src', 'chinese', 'japanese', 'english', '원문', '중국어', '일본어', '영어', '이름')
 _KO_KEYS = ('korean', 'ko', 'translation', 'rendering', 'target', 'hangul', '한국어', '번역', '표기', '한글')
 _PAREN = re.compile(r'\s*[(（\[［]([^)）\]］]*)[)）\]］]')
@@ -258,6 +242,35 @@ def _top_json(raw: str):
     return found
 
 
+# Kinship addresses after a name depend on who speaks: 丹丹姐 is "단단 누나" from a man and
+# "단단 언니" from a woman (哥 형/오빠 likewise). A glossary entry is a fixed rendering for
+# every speaker, so such an entry keeps only the name; the address is left to the context.
+_ZH_ADDRESS = ('姐姐', '哥哥', '妹妹', '弟弟', '姐', '哥', '妹', '弟')
+_JA_ADDRESS = ('お姉ちゃん', 'お兄ちゃん', '姉ちゃん', '兄ちゃん', '姉さん', '兄さん', '姉様', '兄様', '姉', '兄')
+_KO_ADDRESS_END = re.compile(r'^(?P<name>.*?[가-힣A-Za-z])\s*(?:언니|누나|누님|오빠|오라버니|형님|형|여동생|남동생|동생|아우)$')
+
+
+def split_address(source: str, korean: str) -> tuple[str, str] | None:
+    """(name, Korean name) when an entry is a name plus a kinship address that the
+    Korean also renders (丹丹姐 = 단단 언니 -> 丹丹 = 단단); None otherwise.
+    A transliterated name that only ends in such a character (李小妹 = 이소매) is kept."""
+    src = str(source or '').strip(); ko = str(korean or '').strip()
+    suffix = next((x for x in _ZH_ADDRESS + _JA_ADDRESS if src.endswith(x)), '')
+    if not suffix:
+        return None
+    base = src[:-len(suffix)].rstrip('・ ')
+    if len(base) < 2:
+        return None          # 姐姐 itself, or a bare surname (林姐): nothing safe to keep
+    m = _KO_ADDRESS_END.match(ko)
+    if not m:
+        return None
+    name = m.group('name').strip()
+    spaced = ko[len(m.group('name')):][:1].isspace()
+    if not spaced and len(re.findall(r'[가-힣]', name)) < 2:
+        return None          # 이형: one syllable left, more likely a name than name+address
+    return base, name
+
+
 def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict: bool = False,
                    known: dict[str, str] | None = None, report: dict | None = None) -> dict[str, str]:
     """Parse the model's JSON answer; keep only candidates that really exist.
@@ -282,7 +295,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             report.update(answer=0)
         return {}
     allowed = {k for k, _ in (cands or [])}
-    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0}
+    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0}
     out: dict[str, str] = {}
     keys = set()
     for k, v in pairs:
@@ -302,6 +315,14 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         if not valid_rendering(k, v):
             why['bad_rendering'] += 1; continue
         out[k] = v
+    for k, v in list(out.items()):
+        split = split_address(k, v)
+        if split:
+            del out[k]
+            why['address'] += 1
+            name, name_ko = split
+            if name not in out and name not in (known or {}):
+                out[name] = name_ko
     kept = drop_name_phrases(out, known)
     why['phrase'] = len(out) - len(kept)
     if report is not None:

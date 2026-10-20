@@ -1,5 +1,4 @@
 from __future__ import annotations
-import re
 import requests
 from .base import *
 
@@ -63,7 +62,7 @@ class OpenAIProvider(TranslationProvider):
             r=requests.post(self.endpoint,headers={
                 'Authorization':f'Bearer {api_key}',
                 'Content-Type':'application/json',
-                'User-Agent':'NovelTranslator/2.4',
+                'User-Agent':'NovelTranslator/2.41',
             },json=payload,timeout=request.timeout)
         except requests.Timeout as e:
             raise ProviderError(ErrorKind.TRANSIENT,'OpenAI 요청 시간 초과') from e

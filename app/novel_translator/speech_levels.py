@@ -174,6 +174,9 @@ def role_parse_names(roles: dict[str, str]) -> dict[str, str]:
     out = {}
     for label, ko in (roles or {}).items():
         out[ko] = ko
+        if '·' in ko:
+            for part in ko.split('·'):      # an answer may already pick 누나 or 언니
+                out.setdefault(part.strip(), ko)
         for part in label.replace(' (1인칭 화자)', '').split('/'):
             if part.strip():
                 out[part.strip()] = ko
@@ -367,8 +370,65 @@ def parse_table(text: str, names: dict[str, str]) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------- 1인칭 화자의 성별
+# 姐/姐姐 is 누나 to a man and 언니 to a woman (哥 형/오빠 likewise). The relation notes of
+# the narrator's own rows say which one the narrator is (나 ↔ 엄마: 모자 = a son).
+_MALE_NOTE = re.compile(r'모자|부자|형제|아들')
+_FEMALE_NOTE = re.compile(r'모녀|부녀|자매|딸')
+_MALE_ROLE = {'누나', '누님', '형', '형님', '아내'}
+_FEMALE_ROLE = {'언니', '오빠', '오라버니', '남편'}
+_ROLE_BY_GENDER = {'언니·누나': {'male': '누나', 'female': '언니'},
+                   '오빠·형': {'male': '형', 'female': '오빠'}}
+_KO_ADDRESS_TAIL = re.compile(r'(?:^|[\s가-힣])(언니|누나|누님|오빠|오라버니|형님|형)$')
+
+
+def narrator_gender(rows) -> str:
+    """'male' / 'female' for the first-person narrator (나) from the narrator's own rows,
+    '' when the table does not say or says both."""
+    votes = {'male': 0, 'female': 0}
+    for r in rows or []:
+        try:
+            sp = str(r.get('speaker') or '').strip(); li = str(r.get('listener') or '').strip()
+            note = str(r.get('note') or '')
+        except AttributeError:
+            continue
+        if NARRATOR not in (sp, li):
+            continue
+        other = li if sp == NARRATOR else sp
+        if _MALE_NOTE.search(note):
+            votes['male'] += 1
+        if _FEMALE_NOTE.search(note):
+            votes['female'] += 1
+        # The narrator calls this person 누나/형 (a man) or 언니/오빠 (a woman).
+        if sp == NARRATOR or li == NARRATOR:
+            if other in _MALE_ROLE:
+                votes['male'] += 1
+            elif other in _FEMALE_ROLE:
+                votes['female'] += 1
+    if votes['male'] and not votes['female']:
+        return 'male'
+    if votes['female'] and not votes['male']:
+        return 'female'
+    return ''
+
+
+def address_mismatches(gender: str, names) -> list[str]:
+    """Korean names that end in an address the narrator of that gender would not use
+    (단단 언니 for a male narrator, who says 단단 누나)."""
+    wrong = {'male': ('언니', '오빠', '오라버니'), 'female': ('누나', '누님', '형', '형님')}.get(gender, ())
+    out = []
+    for n in names or ():
+        n = str(n or '').strip()
+        m = _KO_ADDRESS_TAIL.search(n)
+        if m and m.group(1) in wrong and len(n) > len(m.group(1)) and n not in out:
+            out.append(n)
+    return out
+
+
 def clean_rows(rows) -> list[dict]:
-    """Rows as edited by the user: keep complete, valid, unique rows only."""
+    """Rows as edited by the user: keep complete, valid, unique rows only. A combined
+    family role (언니·누나, 오빠·형) becomes the one the narrator uses once the table
+    says whether the narrator is a man or a woman."""
     out, seen = [], set()
     for r in rows or []:
         try:
@@ -379,6 +439,16 @@ def clean_rows(rows) -> list[dict]:
         if not sp or not li or sp == li or not lv or (sp, li) in seen:
             continue
         seen.add((sp, li)); out.append({'speaker': sp, 'listener': li, 'level': lv, 'note': note})
+    gender = narrator_gender(out)
+    if gender:
+        resolved, seen = [], set()
+        for r in out:
+            sp = _ROLE_BY_GENDER.get(r['speaker'], {}).get(gender, r['speaker'])
+            li = _ROLE_BY_GENDER.get(r['listener'], {}).get(gender, r['listener'])
+            if sp == li or (sp, li) in seen:
+                continue
+            seen.add((sp, li)); resolved.append(dict(r, speaker=sp, listener=li))
+        out = resolved
     return out[:60]
 
 
@@ -391,6 +461,15 @@ def render_instruction(rows) -> str:
     if NARRATOR in roles or roles & {ko for pairs in ROLE_TERMS.values() for ko, _ in pairs}:
         body += (f'\n({NARRATOR} = the first-person narrator; 엄마, 아빠, 오빠·형 and the like are the family/address '
                  'roles as the narrator\'s dialogue uses them)')
+    gender = narrator_gender(rows)
+    if gender == 'male':
+        body += (f'\n({NARRATOR} is a man: when {NARRATOR} speaks to or about an older woman of the family or one he calls '
+                 '姐/姐姐/〇〇姐 (姉/姉さん), write 누나 (〇〇 누나); an older man he calls 哥/哥哥/〇〇哥 (兄/兄さん) is 형 (〇〇 형). '
+                 'Other characters keep their own address words.)')
+    elif gender == 'female':
+        body += (f'\n({NARRATOR} is a woman: when {NARRATOR} speaks to or about an older woman she calls '
+                 '姐/姐姐/〇〇姐 (姉/姉さん), write 언니 (〇〇 언니); an older man she calls 哥/哥哥/〇〇哥 (兄/兄さん) is 오빠 (〇〇 오빠). '
+                 'Other characters keep their own address words.)')
     return ('CHARACTER SPEECH LEVELS (confirmed for this book; in dialogue, when the speaker and the listener are one of these '
             'pairs, use exactly this Korean speech level and keep it the same throughout the book; narration is not affected; '
             'when the speaker or the listener is unclear, infer them from context first; these override the reader\'s style '

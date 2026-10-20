@@ -52,13 +52,6 @@ class PdfText:
         return note
 
 
-def is_pdf(path) -> bool:
-    try:
-        return Path(path).suffix.casefold() == PDF_SUFFIX
-    except Exception:
-        return False
-
-
 # ------------------------------------------------------------------ reading
 
 def _reader(path: Path):

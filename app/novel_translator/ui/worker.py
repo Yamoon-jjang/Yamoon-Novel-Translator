@@ -1087,11 +1087,6 @@ class TranslationWorker(QThread):
             raise last
         raise ProviderError(ErrorKind.AUTH,'사용 가능한 번역 엔진이 없습니다.')
 
-    def _translate_with_fallback(self, gemini_orch, openai_orch, chunk, prev: str, local_orch=None):
-        """Compatibility wrapper used by older call sites/tests."""
-        engines=self._engines({'gemini':gemini_orch,'openai':openai_orch,'local':local_orch})
-        return self._translate_with_engines(engines, chunk, prev)
-
     def _write_snapshot(self, db, project_id: int):
         rows=db.all_chunks(project_id)
         preferred_dir=self.output_dir or self.source_path.parent
@@ -1139,7 +1134,6 @@ class TranslationWorker(QThread):
                 return            # other settings changed too: not a pure rename
             n = db.rename_in_translations(int(row['id']), renames)
             db.rekey_project(int(row['id']), fingerprint, settings_key)
-            self.renamed_terms = dict(renames)
             pairs = ', '.join(f'{a}→{b}' for a, b in list(renames.items())[:6]) + (' …' if len(renames) > 6 else '')
             self.issue.emit(f'확정 용어 이름 변경 · 다시 번역하지 않고 저장된 번역에 반영: {pairs} ({n:,}곳) · 이전 결과 파일은 백업됩니다')
             self._rename_common_terms(old_terms)

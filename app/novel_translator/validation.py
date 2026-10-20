@@ -132,7 +132,7 @@ def id_forms(raw: str, source: str) -> dict[str,int]:
     return forms
 
 
-SKIP_MARKER = '⟦NT_SKIP⟧'
+from .prompting import SKIP_MARKER  # the one marker the prompt asks for
 
 _KO_SERVICE_TOPIC = r"(?:요청|콘텐츠|컨텐츠|내용|텍스트|번역|원문|문단|성적|노골적|선정적|해당 부분|이 부분)"
 _KO_SERVICE_DENY = (r"(?:번역(?:해 드릴|해드릴|할|하기) 수 없|번역(?:해 드리기|해드리기|하기) 어렵|제공(?:할|해 드릴|해드릴) 수 없|"

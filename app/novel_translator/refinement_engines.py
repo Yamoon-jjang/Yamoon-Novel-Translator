@@ -1,7 +1,9 @@
-"""Two independently configured engines for Korean novel preparation and editing."""
+"""Refinement engine settings of builds before v2.0 (a separate routing file).
+
+Only read now, to carry an older choice over into API settings the first time."""
 from __future__ import annotations
 from pathlib import Path
-from .config import DATA_DIR,load_json,save_json
+from .config import DATA_DIR,load_json
 
 FILENAME='korean_refinement_engines.json'
 STAGES=(('analysis','인물·용어·말투 분석'),('editing','문학적 윤문·이야기 연속성'))
@@ -38,17 +40,3 @@ def load_routes(path:Path|None=None):
     if data.get('schema') not in (1,2) or not isinstance(data.get('routes'),dict):
         raise ValueError('지원하지 않는 재정비 설정입니다.')
     return migrate_routes(data['routes'])
-
-def save_routes(routes,path:Path|None=None):
-    save_json(path or DATA_DIR/FILENAME,{'schema':2,'routes':validate_routes(routes)})
-
-def resolve_routes(routes,live_models,enabled_providers):
-    enabled=set(enabled_providers)
-    out={}
-    for key,row in validate_routes(routes).items():
-        provider=row['provider']
-        if provider not in enabled: raise ValueError(f'{key}: {provider} 엔진을 API 설정에서 활성화하세요.')
-        model=row['model'] or str(live_models.get(provider) or '').strip()
-        if not model: raise ValueError(f'{key}: 사용할 모델을 선택하세요.')
-        out[key]={'provider':provider,'model':model}
-    return out

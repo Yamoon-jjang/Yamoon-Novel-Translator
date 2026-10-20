@@ -157,7 +157,7 @@ def test_glossary_checks_stay_strict_and_are_reported():
     got = parse_glossary('{"秦岚":"진란","公司":"회사","王八":"王팔","不存在":"부존재","台湾":"台灣"}',
                          CANDS + [('公司', 30), ('王八', 9)], strict=True, report=rep)
     assert got == {'秦岚': '진란'}
-    assert rep == {'answer': 5, 'kept': 1, 'not_candidate': 1, 'bad_rendering': 2, 'common_word': 1, 'phrase': 0}
+    assert rep == {'answer': 5, 'kept': 1, 'not_candidate': 1, 'bad_rendering': 2, 'common_word': 1, 'phrase': 0, 'address': 0}
 
 
 def test_term_run_logs_where_the_entries_went(qt_app, sandbox, monkeypatch):
@@ -168,8 +168,10 @@ def test_term_run_logs_where_the_entries_went(qt_app, sandbox, monkeypatch):
     try:
         w._extract_terms()
         assert _wait(qt_app, lambda: w._term_thread is None, 10)
-        assert w._terms() == {'单单姐': '단단 언니'}
+        # 单单姐 = "단단 언니" depends on who speaks (누나 from a son): only the name is fixed.
+        assert w._terms() == {'单单': '단단'}
         log = w.error_view.toPlainText()
         assert '답에 든 항목 3개 중 1개 사용' in log and '후보 목록에 없는 원문 2개' in log
+        assert '호칭(姐·哥 등)을 뗀 이름만 확정 1개' in log
     finally:
         w.close()

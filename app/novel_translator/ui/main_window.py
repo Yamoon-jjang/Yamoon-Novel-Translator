@@ -62,6 +62,7 @@ def _save_analysis_answer(kind: str, what: str, engine: str, model: str, text) -
     try:
         from ..config import LOG_DIR
         p=LOG_DIR/'analysis_answers.txt'
+        p.parent.mkdir(parents=True,exist_ok=True)   # the logs folder may have been deleted while running
         if p.exists() and p.stat().st_size>1_000_000:
             p.write_text(p.read_text(encoding='utf-8',errors='replace')[-500_000:],encoding='utf-8')
         with open(p,'a',encoding='utf-8') as f:
@@ -890,10 +891,6 @@ class MainWindow(QMainWindow):
         from .refinement_run_dialog import RefinementRunDialog
         RefinementRunDialog(self).exec()
 
-    def open_refinement_engines(self):
-        # Compatibility entry point for callers using the old separate settings action.
-        self.open_api()
-
     def open_api(self, first_provider=None):
         raw=(self.secrets.get('gemini') or {}).get('keys',[]); records=normalize_key_records(raw)
         oai=dict(self.secrets.get('openai') or {})
@@ -1624,10 +1621,6 @@ class MainWindow(QMainWindow):
                     break
         return out
 
-    def _extraction_engine(self):
-        engines=self._extraction_engines('terms')
-        return engines[0] if engines else None
-
     def _extract_terms(self):
         if self._extracting():
             if isinstance(self._term_thread, TermExtractThread):
@@ -1724,7 +1717,8 @@ class MainWindow(QMainWindow):
                      (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절')]
             left=' · '.join(f'{t} {n}개' for n,t in reasons if n)
             self._analysis_log(f"인명·용어 추출 · {report.get('engine','')} 답에 든 항목 {report['answer']}개 중 {report.get('kept',0)}개 사용"
-                               +(f' · 걸러 냄: {left} (원래 답: logs\\analysis_answers.txt)' if left else ''), auto)
+                               +(f' · 걸러 냄: {left} (원래 답: logs\\analysis_answers.txt)' if left else '')
+                               +(f" · 호칭(姐·哥 등)을 뗀 이름만 확정 {report['address']}개 (누나/언니는 문맥으로)" if report.get('address') else ''), auto)
         took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
@@ -1840,7 +1834,7 @@ class MainWindow(QMainWindow):
     def _common_terms_for_job(self) -> dict:
         if not self._common_enabled(): return {}
         from .. import common_terms
-        try: return common_terms.load(self.pm.active.source_language, DATA_DIR)
+        try: return common_terms.usable(common_terms.load(self.pm.active.source_language, DATA_DIR))
         except Exception: return {}
 
     def _common_hits(self, source: str) -> dict[str,str]:
@@ -2011,6 +2005,28 @@ class MainWindow(QMainWindow):
             rows.append({'speaker':cell(0),'listener':cell(1),'level':combo.currentText() if combo else '','note':cell(3)})
         return clean_rows(rows)
 
+    def _address_note(self) -> str:
+        """The narrator's gender from the speech table, and glossary/speech-table names whose
+        address word that narrator would not use (단단 언니 when the narrator is a man)."""
+        try:
+            from ..speech_levels import narrator_gender, address_mismatches, NARRATOR
+            rows=self._speech_rows() if hasattr(self,'speech_table') else []
+            gender=narrator_gender(rows)
+            if not gender: return ''
+            terms=self._terms() if hasattr(self,'term_table') else {}
+            names=list(terms.values())+[r[k] for r in rows for k in ('speaker','listener')]
+            wrong=address_mismatches(gender,names)
+            who,sis,bro=('남자','누나','형') if gender=='male' else ('여자','언니','오빠')
+            note=f'1인칭 화자({NARRATOR}): {who} (말투표의 관계 메모로 판단) · 화자가 부르는 姐는 {sis}, 哥는 {bro}로 번역'
+            if wrong:
+                src={b:a for a,b in terms.items()}
+                shown=', '.join(f"{n}({src[n]})" if n in src else n for n in wrong[:5])
+                note+=(f' · 맞지 않는 호칭: {shown} — 확정 용어집에서 이름만 남기거나(예: 丹丹 → 단단) '
+                       f'{sis}·{bro}로 고치고, 말투표 이름도 같게 고치세요')
+            return note
+        except Exception:
+            return ''
+
     def _set_speech_rows(self, rows):
         from ..speech_levels import clean_rows
         if not hasattr(self,'speech_table'): return
@@ -2157,6 +2173,9 @@ class MainWindow(QMainWindow):
                   if any(k in str(res) for k in ('POLICY','SAFETY','REFUSAL')) else '')
             note=('인물 말투표 만들기 실패 · 말투표 없이 번역합니다 · '+str(res)[:160]+hint) if not stale else '원문이 바뀌어 말투표 결과를 쓰지 않았습니다'
         note+=f' · 걸린 시간 {took}' if took else ''
+        address=self._address_note() if rows else ''
+        if address and not auto:
+            note+='\n'+address      # an automatic start logs it once when the translation starts
         if auto:
             self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+lines+[note]); self._auto_notes=[]
             return
@@ -2635,9 +2654,6 @@ class MainWindow(QMainWindow):
             self.status.setText(f'준비됨 · {len(self.chunks):,} 청크 · 결과: {out}')
 
     # ------------------------------------------------------------ main-engine model box
-    def _main_engine(self) -> str:
-        order=self._engine_order(); return order[0] if order else ''
-
     def _alt_model_id(self) -> str:
         idx=self.alt_model.currentIndex(); typed=self.alt_model.currentText().strip()
         if idx>=0 and typed==self.alt_model.itemText(idx): return str(self.alt_model.itemData(idx) or typed).strip()
@@ -3042,6 +3058,8 @@ class MainWindow(QMainWindow):
             self.worker.pause()   # folder run paused between files: the next file waits too
         self.pause_btn.setEnabled(True)
         self.worker.start()
+        note=self._address_note()
+        if note: self.on_worker_issue(note)
 
     def on_worker_issue(self,message):
         label=(self.source_path.name+' · ') if self.source_path else ''
@@ -3076,11 +3094,27 @@ class MainWindow(QMainWindow):
         elif self.input_mode=='folder' and self.tabs.currentWidget() is self.preview_tab:
             self._show_preview('result')   # the source pane is empty in folder mode: show the live translation
 
+    def _link_result_for_refinement(self, path):
+        """Remember the speech table and glossary this result was translated with, so
+        Korean refinement of the result can use them instead of a fresh guess."""
+        if not path or not self.worker:
+            return
+        try:
+            from ..refinement_links import record_translation
+            from ..textio import read_txt
+            text,_=read_txt(Path(path))
+            record_translation(path,text,getattr(self.worker,'speech_table',None),
+                               getattr(self.worker,'terms',None),
+                               Path(str(self.source_path)).name if self.source_path else '')
+        except Exception:
+            pass
+
     def on_result_ready(self,status,path,failed_count):
         self._last_worker_status=status
         if status in ('completed','partial'): self._grow_common_terms(); self._log_style_check(path,status)
         self._last_leftover=int(getattr(self.worker,'leftover_count',0) or 0) if status in ('completed','partial') else 0
         self._last_failed=int(failed_count or 0)
+        self._link_result_for_refinement(path)
         if (self.input_mode=='folder' and self.source_path and status in ('completed','partial')
                 and (status=='partial' or self._last_leftover) and str(self.source_path) not in self._batch_retried):
             self._batch_retry_pending=True   # retried once in _worker_thread_finished, before moving on

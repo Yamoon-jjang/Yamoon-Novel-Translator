@@ -63,3 +63,25 @@ def test_online_engine_is_blocked_without_changing_api_settings():
         assert str(h.secrets)==before
     finally:
         d.close()
+
+
+def test_dialog_shows_which_reference_table_a_run_uses(tmp_path, monkeypatch):
+    import novel_translator.refinement_links as links
+    import novel_translator.refinement_runtime as runtime
+    monkeypatch.setattr(links, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(runtime, 'DATA_DIR', tmp_path)
+    app=QApplication.instance() or QApplication([])
+    linked=tmp_path/'book.ko.txt'; linked.write_text('“어디 가세요?” 은지가 물었다.\n민수가 웃었다.',encoding='utf-8')
+    links.record_translation(linked, linked.read_text(encoding='utf-8'),
+                             [{'speaker':'은지','listener':'민수','level':'해요체'}], {'恩智':'은지'})
+    plain=tmp_path/'other.txt'; plain.write_text('“그래.” 그가 말했다.\n밤이 깊었다.',encoding='utf-8')
+    d=RefinementRunDialog(Host())
+    try:
+        d._set_source(linked)
+        assert '번역 기록에서 가져옴' in d.guidance_info.text() and '말투 1쌍' in d.guidance_info.text()
+        assert d.guidance_view.isEnabled() and '은지 → 민수: 해요체' in d._guidance_text
+        d._set_source(plain)
+        assert '샘플 분석' in d.guidance_info.text()
+        assert not d.guidance_view.isEnabled()
+    finally:
+        d.close()
