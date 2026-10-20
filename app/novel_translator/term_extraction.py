@@ -138,14 +138,18 @@ def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = ''
     system = (
         'You build a translation glossary for a professional Korean translator. '
         'You receive only a frequency-ranked list of strings extracted from a ' + lang_name + ' novel, not the novel itself. '
-        'Select only personal names, nicknames, place names, organizations/sects/guilds, titles used as names, and recurring '
-        'fictional terms (skills, items, ranks). Be complete: include EVERY character name in the list, main and minor, '
-        'given-name-only forms and nicknames (小雪, 老王, 阿强) as separate entries; a full novel usually has dozens. '
+        'Select only personal names, nicknames, place names, organizations/sects/guilds, titles used as names, and terms '
+        'particular to this novel (its named skills, items, ranks). Be complete: include EVERY character name in the list, main and minor, '
+        'even common-sounding ones, given-name-only forms and nicknames (小雪, 阿强) as separate entries; a full novel usually has dozens. '
+        'Real sects and places that recur (少林, 武当, 华山) may be selected so their Korean stays fixed. '
+        'Do not select generic genre vocabulary that any reader of the genre knows (内功 internal energy, 丹田, 长老 elder, 弟子 disciple, '
+        '剑气 sword energy, 江湖, 武林), nor descriptive phrases, idioms, adjectives or verbs. '
         'If a candidate is a broken piece of a longer name (阳明 from 欧阳明月), return the full name as it appears instead. '
         'Ignore ordinary vocabulary, grammar fragments, and broken substrings. '
         'Never select ordinary words even if frequent (e.g. 公司 company, 学校 school, 老师 teacher, 手机 phone, 会社, 先輩). '
-        'A surname followed by a kinship or address word (叔, 阿姨, 伯, 哥, 姐, 爷, 奶奶, 总, 老师, 先輩, さん) is a form of address: '
-        'render that word by meaning, not by its Chinese-character reading (郝叔 -> 학 아저씨, 王总 -> 왕 사장, 李老师 -> 이 선생님). '
+        'Do not select forms of address or kinship words, alone or with a surname, a birth-order or a familiar prefix '
+        '(哥哥, 姐姐, 阿姨, 嫂子, 二哥, 二姐, 老二, 老李, 郝叔, 王总, 李老师, お姉さん): their Korean depends on who speaks. '
+        'These are examples; treat every similar word the same way. '
         'Give one natural Korean rendering for each selected string, consistent across related names (same surname, same reading system). '
         'Write every rendering entirely in Hangul: no Chinese characters or kana may remain, and render every character of the name '
         '(郝江化 -> 학강화 or 하오장화, never 郝장화). '
@@ -163,6 +167,8 @@ def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = ''
                 'Select one only if, in this novel too, it is a name or recurring term by the usual meaning of the string; '
                 'a string that is an ordinary word here (慢慢 slowly, 微微 slightly, 老太太 old lady, 小妹 little sister) is NOT selected. '
                 'If selected, use exactly this Korean:\n' + '\n'.join(f'{a} => {b}' for a, b in list(earlier.items())[:200]))
+    if lang == 'zh':
+        system += ' Never select a single-character string.'
     policy = f'\n\nNAME POLICY: {name_policy}' if name_policy else ''
     user = f'CANDIDATES (string<TAB>count):\n{rows}{keep}{seen}{policy}\n\nReturn the JSON object now.'
     return system, user
@@ -250,6 +256,45 @@ _JA_ADDRESS = ('お姉ちゃん', 'お兄ちゃん', '姉ちゃん', '兄ちゃ�
 _KO_ADDRESS_END = re.compile(r'^(?P<name>.*?[가-힣A-Za-z])\s*(?:언니|누나|누님|오빠|오라버니|형님|형|여동생|남동생|동생|아우)$')
 
 
+# Address words alone (老姨, 姨姐, 李哥, 小妹, 阿姨, 二舅妈, お姉さん) are not names: who says them
+# decides the Korean (이모 · 처제 · 언니 …), and as a fixed entry they become pseudo-names
+# read out in hanja sounds (노이, 이저, 이가). The extraction leaves them to the context.
+_ZH_KIN = set('姐哥妹弟姨姑舅叔伯婶嫂爷奶妈爸娘爹母父夫妻婿侄甥孙公婆兄')
+_ZH_KIN_PREFIX = set('老小大阿二三四五六七八九十表堂亲干后继')
+_JA_KIN = {'姉', '兄', '妹', '弟', '母', '父', '叔母', '叔父', '伯母', '伯父', '祖母', '祖父', '婆', '爺', '義姉', '義兄', '義母', '義父'}
+_JA_KIN_KANA = {'ママ', 'パパ', 'おばさん', 'おじさん', 'おばあさん', 'おじいさん', 'おばあちゃん', 'おじいちゃん', 'ねえさん', 'にいさん'}
+
+
+def is_address_term(source: str) -> bool:
+    """A source that is only a kinship/address word, optionally after an order or
+    familiarity prefix (老 · 小 · 二 · 表 …) and/or a one-character surname (李哥, 王小妹)."""
+    s = str(source or '').strip()
+    if not s or len(s) > 6:
+        return False
+    if s in _JA_KIN_KANA or s in ('妈咪', '爹地', '媳妇', '闺女', '老幺'):
+        return True
+    if len(s) >= 2 and s.endswith('子') and s[-2] in _ZH_KIN and is_address_term(s[:-1]):
+        return True       # 嫂子 · 婶子 · 舅子 · 小姑子: a kinship word with the familiar 子
+    if re.fullmatch(r'老[一-龥]', s):
+        return True       # 老二 · 老大 (birth order), 老李 · 老王 (surname): who calls decides 둘째 · 이 씨 · 여보
+    core = s[1:] if s.startswith('お') else s
+    for suffix in ('さん', 'ちゃん', 'さま', '様', 'くん'):
+        if core.endswith(suffix) and len(core) > len(suffix):
+            core = core[:-len(suffix)]
+            break
+    if core in _JA_KIN or core in _JA_KIN_KANA:
+        return True
+    if not re.fullmatch(r'[一-龥]+', s):
+        return False
+    i = len(s)
+    while i > 0 and s[i - 1] in _ZH_KIN:
+        i -= 1
+    if i == len(s):
+        return False                      # does not end in a kinship word
+    rest = [c for c in s[:i] if c not in _ZH_KIN_PREFIX]
+    return len(rest) <= 1                 # nothing, a prefix, or a bare surname before it
+
+
 def split_address(source: str, korean: str) -> tuple[str, str] | None:
     """(name, Korean name) when an entry is a name plus a kinship address that the
     Korean also renders (丹丹姐 = 단단 언니 -> 丹丹 = 단단); None otherwise.
@@ -272,7 +317,7 @@ def split_address(source: str, korean: str) -> tuple[str, str] | None:
 
 
 def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict: bool = False,
-                   known: dict[str, str] | None = None, report: dict | None = None) -> dict[str, str]:
+                   known: dict[str, str] | None = None, report: dict | None = None, lang: str = '') -> dict[str, str]:
     """Parse the model's JSON answer; keep only candidates that really exist.
     strict=True raises GlossaryParseError when the answer holds no JSON at all.
     `report` (optional) receives how many entries the answer held and why some were left out."""
@@ -295,7 +340,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             report.update(answer=0)
         return {}
     allowed = {k for k, _ in (cands or [])}
-    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0}
+    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0, 'address_only': 0, 'single': 0}
     out: dict[str, str] = {}
     keys = set()
     for k, v in pairs:
@@ -312,6 +357,12 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         # left in it (郝장화), and never an ordinary word (公司 -> 회사).
         if k in COMMON_WORDS:
             why['common_word'] += 1; continue
+        # One Chinese character alone is a surname or a word (李, 剑), almost never a name used
+        # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.
+        if lang == 'zh' and len(k) == 1:
+            why['single'] += 1; continue
+        if is_address_term(k):
+            why['address_only'] += 1; continue
         if not valid_rendering(k, v):
             why['bad_rendering'] += 1; continue
         out[k] = v

@@ -157,7 +157,7 @@ def test_glossary_checks_stay_strict_and_are_reported():
     got = parse_glossary('{"秦岚":"진란","公司":"회사","王八":"王팔","不存在":"부존재","台湾":"台灣"}',
                          CANDS + [('公司', 30), ('王八', 9)], strict=True, report=rep)
     assert got == {'秦岚': '진란'}
-    assert rep == {'answer': 5, 'kept': 1, 'not_candidate': 1, 'bad_rendering': 2, 'common_word': 1, 'phrase': 0, 'address': 0}
+    assert rep == {'answer': 5, 'kept': 1, 'not_candidate': 1, 'bad_rendering': 2, 'common_word': 1, 'phrase': 0, 'address': 0, 'address_only': 0, 'single': 0}
 
 
 def test_term_run_logs_where_the_entries_went(qt_app, sandbox, monkeypatch):

@@ -57,6 +57,16 @@ def _answer_excerpt(text, limit: int = 160) -> str:
     return f' · 답 앞부분: "{t[:limit]}'+('…' if len(t)>limit else '')+'" (전체: logs\\analysis_answers.txt)'
 
 
+def _ro(word: str) -> str:
+    """word + 으로/로 (형으로, 오빠로, 길로)."""
+    w=str(word or '')
+    if w and '가'<=w[-1]<='힣':
+        jong=(ord(w[-1])-0xAC00)%28
+        if jong and jong!=8:      # a final consonant other than ㄹ
+            return w+'으로'
+    return w+'로'
+
+
 def _save_analysis_answer(kind: str, what: str, engine: str, model: str, text) -> None:
     """Keep an unusable analysis answer in logs/analysis_answers.txt (latest ~1 MB)."""
     try:
@@ -216,6 +226,7 @@ class TermExtractThread(QThread):
         self.engines=list(engines or [(provider_id,secret,model,endpoint,local_options)])
         self.system=system; self.user=user; self.cands=cands; self.parse=parse
         self.known={}   # current glossary (set by the window): its names are bases for the name-phrase guard
+        self.lang=''    # source language (set by the window): one-character entries are dropped for Chinese
     def requestInterruption(self):
         self._cancel_requested=True
         super().requestInterruption()
@@ -238,7 +249,7 @@ class TermExtractThread(QThread):
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
                 rep={}
-                result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known,report=rep)
+                result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known,report=rep,lang=self.lang)
                 self.report=dict(rep,engine=ENGINE_LABELS.get(provider_id,provider_id))
                 if rep and rep.get('kept',0)<rep.get('answer',0):
                     _save_analysis_answer('인명·용어 추출', f"모델 답 {rep.get('answer',0)}개 중 {rep.get('kept',0)}개 사용", ENGINE_LABELS.get(provider_id,provider_id), model, resp.text)
@@ -1677,6 +1688,7 @@ class MainWindow(QMainWindow):
             self.on_api_state(f'{ {"gemini":"Gemini","openai":"OpenAI","local":"로컬 LLM"}.get(provider_id,provider_id)} · {model} · 번역 전 인명·용어 자동 추출 (요청 1회)')
         self._term_thread=TermExtractThread(provider_id,secret,model,endpoint,system,user,cands,self,local_options=local_opts)
         self._term_thread.known=self._terms()
+        self._term_thread.lang=self.pm.active.source_language
         self._term_thread.engines=analysis_engines
         self._connect_stage(self._term_thread)
         self._term_result=(False,'추출이 종료되었습니다.')
@@ -1714,11 +1726,13 @@ class MainWindow(QMainWindow):
             # Where the model's entries went: kept, or left out and why (shown for every run,
             # so "the glossary did not grow" is never a mystery).
             reasons=[(report.get('not_candidate',0),'후보 목록에 없는 원문'),(report.get('bad_rendering',0),'한국어 표기 문제(한자·가나 남음 등)'),
-                     (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절')]
+                     (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절'),
+                     (report.get('single',0),'한 글자')]
             left=' · '.join(f'{t} {n}개' for n,t in reasons if n)
             self._analysis_log(f"인명·용어 추출 · {report.get('engine','')} 답에 든 항목 {report['answer']}개 중 {report.get('kept',0)}개 사용"
                                +(f' · 걸러 냄: {left} (원래 답: logs\\analysis_answers.txt)' if left else '')
-                               +(f" · 호칭(姐·哥 등)을 뗀 이름만 확정 {report['address']}개 (누나/언니는 문맥으로)" if report.get('address') else ''), auto)
+                               +(f" · 호칭(姐·哥 등)을 뗀 이름만 확정 {report['address']}개 (누나/언니는 문맥으로)" if report.get('address') else '')
+                               +(f" · 호칭이라 넣지 않음 {report['address_only']}개 (老姨·李哥 등, 부르는 사람에 따라 번역)" if report.get('address_only') else ''), auto)
         took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
@@ -1995,6 +2009,18 @@ class MainWindow(QMainWindow):
         for r in sorted({i.row() for i in self.speech_table.selectedIndexes()} | ({self.speech_table.currentRow()} if self.speech_table.currentRow()>=0 else set()), reverse=True):
             self.speech_table.removeRow(r)
         self._save_workspace()
+        if not self.speech_table.rowCount(): self._forget_speech_attempt()
+
+    def _forget_speech_attempt(self):
+        """An emptied speech table (or a fresh start) lets the next translation start build it
+        again. Without this, an earlier attempt in this session (automatic or the button)
+        kept the automatic one from running until the program was restarted."""
+        if not hasattr(self,'speech_table') or self._speech_rows(): return
+        try:
+            key=self._source_sha() or hashlib.sha256(self._speech_source().encode('utf-8')).hexdigest()
+            self._speech_tried.discard(key)
+        except Exception:
+            pass
 
     def _speech_rows(self) -> list[dict]:
         from ..speech_levels import clean_rows
@@ -2017,12 +2043,12 @@ class MainWindow(QMainWindow):
             names=list(terms.values())+[r[k] for r in rows for k in ('speaker','listener')]
             wrong=address_mismatches(gender,names)
             who,sis,bro=('남자','누나','형') if gender=='male' else ('여자','언니','오빠')
-            note=f'1인칭 화자({NARRATOR}): {who} (말투표의 관계 메모로 판단) · 화자가 부르는 姐는 {sis}, 哥는 {bro}로 번역'
+            note=f'1인칭 화자({NARRATOR}): {who} (말투표의 관계 메모로 판단) · 화자가 부르는 姐는 {sis}, 哥는 {_ro(bro)} 번역'
             if wrong:
                 src={b:a for a,b in terms.items()}
                 shown=', '.join(f"{n}({src[n]})" if n in src else n for n in wrong[:5])
                 note+=(f' · 맞지 않는 호칭: {shown} — 확정 용어집에서 이름만 남기거나(예: 丹丹 → 단단) '
-                       f'{sis}·{bro}로 고치고, 말투표 이름도 같게 고치세요')
+                       f'{sis}·{_ro(bro)} 고치고, 말투표 이름도 같게 고치세요')
             return note
         except Exception:
             return ''
@@ -2951,6 +2977,7 @@ class MainWindow(QMainWindow):
         if self._resume_timer.isActive():
             self._cancel_auto_resume(); return
         self._force_restart=bool(force_restart)
+        if self._force_restart: self._forget_speech_attempt()
         self._auto_resumes={}
         if not (self.worker and self.worker.isRunning()) and self.input_mode=='folder': self._batch_retried=set()
         if self._preview_edited() and not (self.worker and self.worker.isRunning()):
@@ -2974,6 +3001,7 @@ class MainWindow(QMainWindow):
                     self._force_restart=False; return
                 if answer=='extract':
                     plan='extract'; force_restart=True; self._force_restart=True; self._auto_terms_dialog_force=True
+                    self._forget_speech_attempt()
                 else:
                     self._auto_terms_declined.add(self._source_sha())
                     note='인명·용어 자동 추출 생략 · 용어집 없이 이어서 번역 (선택함)'

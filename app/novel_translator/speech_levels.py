@@ -461,15 +461,22 @@ def render_instruction(rows) -> str:
     if NARRATOR in roles or roles & {ko for pairs in ROLE_TERMS.values() for ko, _ in pairs}:
         body += (f'\n({NARRATOR} = the first-person narrator; 엄마, 아빠, 오빠·형 and the like are the family/address '
                  'roles as the narrator\'s dialogue uses them)')
+    body += ('\n(Forms of address and kinship words — 哥/姐/弟/妹, 叔/伯/姨/姑/舅/嫂, birth order such as 二哥 · 老二, '
+             '老/小 + surname such as 老李 — have no fixed Korean rendering. Write what THIS speaker would actually call THIS '
+             'listener in Korean, from their genders, ages and relationship: 二姐 is 둘째 누나 from a younger brother and '
+             '둘째 언니 from a younger sister; 老李 is 이 씨 or 이 형 between colleagues and 여보 from his wife. These are '
+             'illustrations, not a list: handle every similar word the same way.)')
     gender = narrator_gender(rows)
     if gender == 'male':
         body += (f'\n({NARRATOR} is a man: when {NARRATOR} speaks to or about an older woman of the family or one he calls '
-                 '姐/姐姐/〇〇姐 (姉/姉さん), write 누나 (〇〇 누나); an older man he calls 哥/哥哥/〇〇哥 (兄/兄さん) is 형 (〇〇 형). '
-                 'Other characters keep their own address words.)')
+                 '姐/姐姐/〇〇姐 (姉/姉さん), write 누나 (〇〇 누나, 二姐 = 둘째 누나); an older man he calls 哥/哥哥/〇〇哥 (兄/兄さん) '
+                 'is 형 (〇〇 형, 二哥 = 둘째 형). '
+                 'The same holds for every similar address he uses; other characters keep their own address words.)')
     elif gender == 'female':
         body += (f'\n({NARRATOR} is a woman: when {NARRATOR} speaks to or about an older woman she calls '
-                 '姐/姐姐/〇〇姐 (姉/姉さん), write 언니 (〇〇 언니); an older man she calls 哥/哥哥/〇〇哥 (兄/兄さん) is 오빠 (〇〇 오빠). '
-                 'Other characters keep their own address words.)')
+                 '姐/姐姐/〇〇姐 (姉/姉さん), write 언니 (〇〇 언니, 二姐 = 둘째 언니); an older man she calls 哥/哥哥/〇〇哥 (兄/兄さん) '
+                 'is 오빠 (〇〇 오빠, 二哥 = 둘째 오빠). '
+                 'The same holds for every similar address she uses; other characters keep their own address words.)')
     return ('CHARACTER SPEECH LEVELS (confirmed for this book; in dialogue, when the speaker and the listener are one of these '
             'pairs, use exactly this Korean speech level and keep it the same throughout the book; narration is not affected; '
             'when the speaker or the listener is unclear, infer them from context first; these override the reader\'s style '
