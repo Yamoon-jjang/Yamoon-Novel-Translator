@@ -36,6 +36,9 @@ _ALIASES = {
     '하오체': '하오체', '하오': '하오체',
     '하게체': '하게체', '하게': '하게체',
     '해라체': '해라체', '해라': '해라체',
+    # Wordings local models use instead of the six names.
+    '존대': '해요체', '높임말': '해요체', '높임': '해요체', '경어': '해요체', '공손': '해요체',
+    '하대': '반말', '낮춤말': '반말', '편한말': '반말',
 }
 
 _QUOTES = re.compile(r'[“”"「」『』‘’﹁﹂﹃﹄]')
@@ -49,6 +52,17 @@ def normalize_level(raw: str) -> str:
         if key.lower() in s:
             return _ALIASES[key]
     return ''
+
+
+def _first_level(text: str) -> str:
+    """The speech level named FIRST in `text` (a note written after it may mention another)."""
+    s = str(text or '').lower()
+    best = None
+    for key in sorted(_ALIASES, key=len, reverse=True):
+        i = s.find(key.lower())
+        if i >= 0 and (best is None or i < best[0]):
+            best = (i, _ALIASES[key])
+    return best[1] if best else ''
 
 
 def sample_dialogue(text: str, names: dict[str, str], limit: int = SAMPLE_CHARS, cues=()) -> str:
@@ -114,6 +128,58 @@ def sample_dialogue(text: str, names: dict[str, str], limit: int = SAMPLE_CHARS,
     return '\n'.join(out)
 
 
+# The first-person narrator and family/address roles, for books whose main relationships
+# are "나 ↔ 엄마" rather than two named characters (memoirs, family stories). These go to the
+# speech-table roster only, never into the confirmed glossary.
+NARRATOR = '나'
+ROLE_TERMS = {
+    'zh': [('엄마', ('妈妈', '母亲', '妈咪', '老妈', '娘亲')), ('아빠', ('爸爸', '父亲', '老爸', '爹爹')),
+           ('오빠·형', ('哥哥',)), ('언니·누나', ('姐姐',)), ('남동생', ('弟弟',)), ('여동생', ('妹妹',)),
+           ('남편', ('老公', '丈夫')), ('아내', ('老婆', '妻子')), ('아들', ('儿子',)), ('딸', ('女儿',)),
+           ('할아버지', ('爷爷',)), ('할머니', ('奶奶',)), ('사부', ('师父', '师傅')), ('선생님', ('老师',))],
+    'ja': [('엄마', ('お母さん', '母さん', 'ママ', 'お袋')), ('아빠', ('お父さん', '父さん', 'パパ', '親父')),
+           ('오빠·형', ('お兄ちゃん', '兄さん', 'お兄さん')), ('언니·누나', ('お姉ちゃん', '姉さん', 'お姉さん')),
+           ('선생님', ('先生',)), ('선배', ('先輩',))],
+    'en': [('엄마', ('Mom', 'Mum', 'Mother', 'Mama')), ('아빠', ('Dad', 'Father', 'Papa')),
+           ('선생님', ('Teacher', 'Professor'))],
+}
+_NARRATOR_MARK = {'zh': ('我',), 'ja': ('僕', '俺', '私'), 'en': (' I ', ' my ', ' me ')}
+
+
+def role_entries(text: str, lang: str, taken=()) -> dict[str, str]:
+    """{source label: Korean role} for the narrator (when the narration is in the first
+    person) and the family/address roles used in the dialogue at least 3 times. A source
+    already in the glossary (`taken`) stays a named character."""
+    lines = [ln.strip() for ln in (text or '').splitlines() if ln.strip()]
+    if not lines:
+        return {}
+    quoted = [ln for ln in lines if _QUOTES.search(ln)]
+    narration = ' '.join(_QUOTES.sub(' ', re.sub(r'[“"「『‘][^”"」』’]*[”"」』’]', ' ', ln)) for ln in lines)
+    dialogue = '\n'.join(quoted)
+    out = {}
+    marks = _NARRATOR_MARK.get(lang, ())
+    hits = sum(narration.count(m) for m in marks)
+    if marks and hits >= 20 and hits * 400 >= len(narration):   # roughly once per 400 characters of narration
+        out[(marks[0].strip() if lang != 'en' else 'I') + ' (1인칭 화자)'] = NARRATOR
+    taken = set(taken or ())
+    for ko, surfaces in ROLE_TERMS.get(lang, []):
+        used = [s for s in surfaces if s not in taken and dialogue.count(s)]
+        if used and sum(dialogue.count(s) for s in used) >= 3:
+            out['/'.join(used)] = ko
+    return out
+
+
+def role_parse_names(roles: dict[str, str]) -> dict[str, str]:
+    """Every way an answer may name a role: the Korean role, each source word, 我/僕/I."""
+    out = {}
+    for label, ko in (roles or {}).items():
+        out[ko] = ko
+        for part in label.replace(' (1인칭 화자)', '').split('/'):
+            if part.strip():
+                out[part.strip()] = ko
+    return out
+
+
 def rank_names(text: str, names: dict[str, str], limit: int = ROSTER_MAX) -> dict[str, str]:
     """The characters to show the model: glossary entries ranked by how often they appear
     in dialogue (a quoted line or the narration line right before it), then by how often
@@ -159,7 +225,7 @@ def split_samples(samples: str, parts: int = 3) -> list[str]:
     return [o for o in out if o.strip()]
 
 
-def build_prompts(samples: str, names: dict[str, str], lang: str) -> tuple[str, str]:
+def build_prompts(samples: str, names: dict[str, str], lang: str, as_json: bool = False) -> tuple[str, str]:
     lang_name = {'zh': 'Chinese', 'ja': 'Japanese', 'en': 'English'}.get(lang, 'source-language')
     roster = '\n'.join(f'- {src} = {ko}' for src, ko in list(names.items())[:60])
     levels = '\n'.join(f'- {lv}: {LEVEL_HINTS[lv]}' for lv in LEVELS)
@@ -191,36 +257,111 @@ One line per directed pair, at most {MAX_ROWS} lines, using the Korean names exa
 화자<TAB>상대<TAB>말투<TAB>관계(짧은 한국어)
 말투 must be one of: {', '.join(LEVELS)}.
 List only pairs where the excerpts make the speaker and the listener clear. If nothing is clear, output nothing."""
+    if any(v == NARRATOR for v in (names or {}).values()) or any(k.count('/') for k in (names or {})):
+        user = user.replace('[KOREAN SPEECH LEVELS]', '[ROLES IN THE LIST]\n'
+                            f'- {NARRATOR}: the first-person narrator (我/僕/I in the narration).\n'
+                            '- 엄마, 아빠, 오빠·형 … : family/address roles as the dialogue uses them (妈妈, 哥哥 …); '
+                            'use the role exactly as written in the list as the speaker/listener name.\n\n[KOREAN SPEECH LEVELS]', 1)
+    if as_json:
+        # Local models: Ollama's JSON mode keeps the answer readable (a tab-separated table is
+        # often rewritten with spaces, arrows or a literal "<TAB>"). Same question, same rules.
+        user = user.split('[OUTPUT]')[0] + f"""[OUTPUT]
+Return ONLY one JSON object: {{"pairs": [{{"speaker": "...", "listener": "...", "level": "...", "relation": "..."}}]}}
+- speaker / listener: the Korean names exactly as listed above
+- level: one of {', '.join(LEVELS)}
+- relation: a short Korean note (모녀, 사제, 친구 …)
+At most {MAX_ROWS} pairs. List only pairs where the excerpts make the speaker and the listener clear.
+If nothing is clear, return {{"pairs": []}}."""
+        system = system.replace('Output plain text lines only.', 'Output one JSON object only.')
     return system, user
 
 
+_JSON_ITEM = re.compile(r'\{[^{}]*\}')
+_KEY = {'speaker': 'speaker', '화자': 'speaker', 'from': 'speaker',
+        'listener': 'listener', '상대': 'listener', 'to': 'listener',
+        'level': 'level', '말투': 'level', 'speech_level': 'level',
+        'relation': 'note', '관계': 'note', 'note': 'note'}
+
+
+def _json_rows(raw: str) -> list[tuple[str, str, str, str]]:
+    """(speaker, listener, level, note) from every {...} item in a JSON answer, also when
+    the answer was cut off before the closing brackets."""
+    import json
+    out = []
+    for m in _JSON_ITEM.finditer(raw):
+        try:
+            obj = json.loads(m.group(0))
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        row = {}
+        for k, v in obj.items():
+            field = _KEY.get(str(k).strip().lower()) or _KEY.get(str(k).strip())
+            if field and isinstance(v, str):
+                row[field] = v
+        if 'speaker' in row and 'listener' in row:
+            out.append((row['speaker'], row['listener'], row.get('level', ''), row.get('note', '')))
+    return out
+
+
+def _clean_name(part: str) -> str:
+    part = re.sub(r'[(（\[［].*?[)）\]］]', '', str(part or ''))      # 소매(小妹) -> 소매
+    return part.strip().strip('"“”\'‘’*`').strip()
+
+
 def parse_table(text: str, names: dict[str, str]) -> list[dict]:
-    """Strict parse: both people must be known characters (Korean or original name),
-    the level must be one of LEVELS, no self-pairs, one row per directed pair."""
+    """Strict about the content, tolerant about the shape: both people must be known
+    characters (Korean or original name), the level must be one of LEVELS, no self-pairs,
+    one row per directed pair. Accepted shapes: the requested tab-separated lines, a JSON
+    answer, and the ways local models rewrite the lines (spaces, a literal "<TAB>", arrows,
+    commas, colons, dashes, a name with its original in brackets)."""
     ko_names = {ko.strip(): ko.strip() for ko in (names or {}).values() if ko and ko.strip()}
     for src, ko in (names or {}).items():
         if src and ko:
             ko_names.setdefault(src.strip(), ko.strip())
     raw = re.sub(r'(?is)<think>.*?</think>', '', str(text or ''))
+    found = list(_json_rows(raw)) if '{' in raw else []
+    if not found:
+        known = sorted(ko_names, key=len, reverse=True)
+        for line in raw.splitlines():
+            line = line.replace('<TAB>', '\t').replace('＜TAB＞', '\t').strip().strip('|').strip()
+            if not line or line.startswith(('#', '```')) or set(line) <= set('|-: '):
+                continue
+            line = re.sub(r'^(?:[-*•]|\d+[.)])\s*', '', line)
+            parts = [p.strip() for p in re.split(r'\t|\s*\|\s*|\s*→\s*|\s*->\s*|\s*=>\s*', line) if p.strip()]
+            if len(parts) >= 3 and _clean_name(parts[0]) in ko_names and _clean_name(parts[1]) in ko_names:
+                found.append((_clean_name(parts[0]), _clean_name(parts[1]), parts[2], parts[3] if len(parts) > 3 else ''))
+                continue
+            # Any other shape: the first two known names in the line, in order, are the
+            # speaker and the listener; the first speech level after them is the level.
+            hits, pos = [], 0
+            while len(hits) < 2:
+                best = None
+                for nm in known:
+                    i = line.find(nm, pos)
+                    if i >= 0 and (best is None or i < best[0] or (i == best[0] and len(nm) > len(best[1]))):
+                        best = (i, nm)
+                if best is None:
+                    break
+                hits.append(best[1]); pos = best[0] + len(best[1])
+            row_like = (bool(re.search(r'[\t|,，:：→\-–=]', line)) and len(line) <= 120) or len(line) <= 30
+            if len(hits) == 2 and row_like:   # a row, not a sentence of commentary
+                rest = line[pos:]
+                note = ' '.join(re.findall(r'[(（]([^)）]{1,30})[)）]', rest))
+                found.append((hits[0], hits[1], rest, note))
     rows, seen = [], set()
-    for line in raw.splitlines():
-        line = line.strip().strip('|').strip()
-        if not line or line.startswith(('#', '```')):
-            continue
-        line = re.sub(r'^[-*•\d.)\s]+', '', line)
-        parts = [p.strip() for p in re.split(r'\t|\s*\|\s*|\s*→\s*|\s*->\s*', line) if p.strip()]
-        if len(parts) < 3:
-            continue
-        speaker, listener, level = parts[0], parts[1], normalize_level(parts[2])
-        note = parts[3] if len(parts) > 3 else ''
-        speaker = ko_names.get(speaker, ''); listener = ko_names.get(listener, '')
+    for speaker, listener, level_text, note in found:
+        speaker = ko_names.get(_clean_name(speaker), ''); listener = ko_names.get(_clean_name(listener), '')
+        level = normalize_level(level_text) if level_text in LEVELS else _first_level(level_text)
         if not speaker or not listener or speaker == listener or not level:
             continue
         key = (speaker, listener)
         if key in seen:
             continue
         seen.add(key)
-        rows.append({'speaker': speaker, 'listener': listener, 'level': level, 'note': re.sub(r'\s+', ' ', note)[:40]})
+        note = re.sub(r'\s+', ' ', str(note or '')).strip(' ,:;-')
+        rows.append({'speaker': speaker, 'listener': listener, 'level': level, 'note': note[:40]})
         if len(rows) >= MAX_ROWS:
             break
     return rows
@@ -246,6 +387,10 @@ def render_instruction(rows) -> str:
     if not rows:
         return ''
     body = '\n'.join(f"- {r['speaker']} → {r['listener']}: {r['level']}" + (f" ({r['note']})" if r['note'] else '') for r in rows)
+    roles = {r['speaker'] for r in rows} | {r['listener'] for r in rows}
+    if NARRATOR in roles or roles & {ko for pairs in ROLE_TERMS.values() for ko, _ in pairs}:
+        body += (f'\n({NARRATOR} = the first-person narrator; 엄마, 아빠, 오빠·형 and the like are the family/address '
+                 'roles as the narrator\'s dialogue uses them)')
     return ('CHARACTER SPEECH LEVELS (confirmed for this book; in dialogue, when the speaker and the listener are one of these '
             'pairs, use exactly this Korean speech level and keep it the same throughout the book; narration is not affected; '
             'when the speaker or the listener is unclear, infer them from context first; these override the reader\'s style '

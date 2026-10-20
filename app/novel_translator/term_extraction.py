@@ -196,48 +196,117 @@ def _json_objects(raw: str):
         i = raw.find('{', i + 1)
 
 
+_SRC_KEYS = ('source', 'original', 'term', 'name', 'src', 'chinese', 'japanese', 'english', '원문', '중국어', '일본어', '영어', '이름')
+_KO_KEYS = ('korean', 'ko', 'translation', 'rendering', 'target', 'hangul', '한국어', '번역', '표기', '한글')
+_PAREN = re.compile(r'\s*[(（\[［]([^)）\]］]*)[)）\]］]')
+
+
+def _clean_rendering(v: str) -> str:
+    """진란(秦岚) -> 진란 · Qin Lan (진란) -> 진란: a note in brackets is not part of the rendering."""
+    v = str(v or '').strip()
+    inner = [m.group(1).strip() for m in _PAREN.finditer(v)]
+    outside = _PAREN.sub('', v).strip()
+    if _HANGUL.search(outside) or not inner:
+        return outside
+    hangul = [x for x in inner if _HANGUL.search(x) and not _CJK_IN_KOREAN.search(x)]
+    return hangul[0] if hangul else outside
+
+
+def _answer_pairs(node, out: list):
+    """Every (source, Korean) pair in a JSON answer, whatever its shape: a mapping, a list of
+    {"source": .., "korean": ..} items, mappings grouped by kind, or {"林雨": {"korean": ..}}."""
+    if isinstance(node, list):
+        for x in node:
+            _answer_pairs(x, out)
+        return
+    if not isinstance(node, dict):
+        return
+    low = {str(k).strip().lower(): v for k, v in node.items()}
+    src = next((low[k] for k in _SRC_KEYS if isinstance(low.get(k), str)), None)
+    ko = next((low[k] for k in _KO_KEYS if isinstance(low.get(k), str)), None)
+    if src and ko:
+        out.append((src, ko)); return
+    for k, v in node.items():
+        if isinstance(v, str):
+            out.append((str(k), v))
+        elif isinstance(v, dict):
+            inner = {str(a).strip().lower(): b for a, b in v.items()}
+            ko2 = next((inner[a] for a in _KO_KEYS if isinstance(inner.get(a), str)), None)
+            if ko2 is not None:
+                out.append((str(k), ko2))
+            else:
+                _answer_pairs(v, out)
+        elif isinstance(v, list):
+            _answer_pairs(v, out)
+
+
+def _top_json(raw: str):
+    """The outermost JSON values in the text (object or list)."""
+    dec = json.JSONDecoder(); i = 0; found = []
+    while i < len(raw):
+        j = min([x for x in (raw.find('{', i), raw.find('[', i)) if x >= 0], default=-1)
+        if j < 0:
+            break
+        for candidate in (raw[j:], re.sub(r',\s*([}\]])', r'\1', raw[j:])):
+            try:
+                obj, end = dec.raw_decode(candidate)
+            except ValueError:
+                continue
+            found.append(obj); i = j + end; break
+        else:
+            i = j + 1
+    return found
+
+
 def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict: bool = False,
-                   known: dict[str, str] | None = None) -> dict[str, str]:
+                   known: dict[str, str] | None = None, report: dict | None = None) -> dict[str, str]:
     """Parse the model's JSON answer; keep only candidates that really exist.
-    strict=True raises GlossaryParseError when the answer holds no JSON object at all."""
+    strict=True raises GlossaryParseError when the answer holds no JSON at all.
+    `report` (optional) receives how many entries the answer held and why some were left out."""
     raw = re.sub(r'<(think|thinking|reasoning)>.*?</\1>', '', (text or ''), flags=re.S | re.I)
     raw = re.split(r'</(?:think|thinking|reasoning)>', raw, flags=re.I)[-1].strip()
-    objects = [o for o in _json_objects(raw) if o]
-    # The real answer is the object with the most string values (not a stray {公司} in a note).
-    data = max(objects, key=lambda o: sum(isinstance(v, str) for v in o.values()), default=None)
-    if data is None:
+    pairs: list[tuple[str, str]] = []
+    for obj in _top_json(raw):
+        _answer_pairs(obj, pairs)
+    if not pairs:
         # A cut-off answer ({"林雨": "린위", "苏晴": "쑤…): keep its complete "key": "value" pairs.
-        pairs = re.findall(r'"((?:[^"\\]|\\.){1,40})"\s*:\s*"((?:[^"\\]|\\.){1,40})"', raw)
-        if pairs:
-            data = {}
-            for k, v in pairs:
-                try:
-                    data.setdefault(json.loads(f'"{k}"'), json.loads(f'"{v}"'))
-                except ValueError:
-                    continue
-            data = data or None
-    if data is None:
-        if strict and not re.search(r'\{\s*\}', raw):
+        for k, v in re.findall(r'"((?:[^"\\]|\\.){1,40})"\s*:\s*"((?:[^"\\]|\\.){1,60})"', raw):
+            try:
+                pairs.append((json.loads(f'"{k}"'), json.loads(f'"{v}"')))
+            except ValueError:
+                continue
+    if not pairs:
+        if strict and not re.search(r'[{\[]\s*[}\]]', raw):
             raise GlossaryParseError('모델 답에서 용어 목록(JSON)을 찾지 못했습니다')
+        if report is not None:
+            report.update(answer=0)
         return {}
     allowed = {k for k, _ in (cands or [])}
+    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0}
     out: dict[str, str] = {}
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if not isinstance(v, str):
-                continue   # {"林雨": {"korean": "린위"}} etc.: never store a dict's text as a term
-            k = str(k).strip(); v = v.strip()
-            if not k or not v or len(k) > 40 or len(v) > 40:
-                continue
-            # The full name may be returned for a broken candidate (欧阳明月 for 阳明月).
-            if allowed and k not in allowed and not (len(k) <= 8 and any(len(c) >= 2 and c in k for c in allowed)):
-                continue
-            # A Korean rendering must be Korean (or a deliberate Latin name) with no Chinese/kana
-            # left in it (郝장화), and never an ordinary word (公司 -> 회사).
-            if not valid_rendering(k, v) or k in COMMON_WORDS:
-                continue
-            out[k] = v
-    return drop_name_phrases(out, known)
+    keys = set()
+    for k, v in pairs:
+        k = str(k).strip(); v = _clean_rendering(v)
+        if not k or k.lower() in _SRC_KEYS or k.lower() in _KO_KEYS or k in keys:
+            continue
+        keys.add(k)
+        if not v or len(k) > 40 or len(v) > 40:
+            why['bad_rendering'] += 1; continue
+        # The full name may be returned for a broken candidate (欧阳明月 for 阳明月).
+        if allowed and k not in allowed and not (len(k) <= 8 and any(len(c) >= 2 and c in k for c in allowed)):
+            why['not_candidate'] += 1; continue
+        # A Korean rendering must be Korean (or a deliberate Latin name) with no Chinese/kana
+        # left in it (郝장화), and never an ordinary word (公司 -> 회사).
+        if k in COMMON_WORDS:
+            why['common_word'] += 1; continue
+        if not valid_rendering(k, v):
+            why['bad_rendering'] += 1; continue
+        out[k] = v
+    kept = drop_name_phrases(out, known)
+    why['phrase'] = len(out) - len(kept)
+    if report is not None:
+        report.update(answer=len(keys), kept=len(kept), **why)
+    return kept
 
 
 # Korean particles that follow a name inside a phrase (진서가 놓다, 심소영의 몸, 진서를 보다).

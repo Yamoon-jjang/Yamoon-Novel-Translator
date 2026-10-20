@@ -161,7 +161,7 @@ def test_openai_flagged_prompt_is_a_content_outcome(monkeypatch):
     ('<think>먼저 후보를 본다 {예시}</think>\n```json\n{"林雨":"린위"}\n```',{'林雨':'린위'}),
     ('{"林雨":"린위",}\n참고: {公司}는 일반 단어라 뺐습니다.',{'林雨':'린위'}),
     ('Okay, the user wants names.\n</think>{"林雨":"린위"}',{'林雨':'린위'}),
-    ('{"林雨":{"korean":"린위"}}',{}),
+    ('{"林雨":{"korean":"린위"}}',{'林雨':'린위'}),   # v2.4: the "korean" field is read (never the dict's text)
     ('{}',{}),
 ])
 def test_glossary_reply_parsing(reply,expected):

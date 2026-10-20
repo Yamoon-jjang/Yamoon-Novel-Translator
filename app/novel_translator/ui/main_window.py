@@ -50,6 +50,26 @@ def _make_provider(provider_id, endpoint='', local_options=None):
     from ..providers.openai import OpenAIProvider; return OpenAIProvider(endpoint or None)
 
 
+def _answer_excerpt(text, limit: int = 160) -> str:
+    """The start of a model answer for the log, so an unusable answer can be seen."""
+    t=re.sub(r'\s+',' ',str(text or '')).strip()
+    if not t: return ' · 답이 비어 있음'
+    return f' · 답 앞부분: "{t[:limit]}'+('…' if len(t)>limit else '')+'" (전체: logs\\analysis_answers.txt)'
+
+
+def _save_analysis_answer(kind: str, what: str, engine: str, model: str, text) -> None:
+    """Keep an unusable analysis answer in logs/analysis_answers.txt (latest ~1 MB)."""
+    try:
+        from ..config import LOG_DIR
+        p=LOG_DIR/'analysis_answers.txt'
+        if p.exists() and p.stat().st_size>1_000_000:
+            p.write_text(p.read_text(encoding='utf-8',errors='replace')[-500_000:],encoding='utf-8')
+        with open(p,'a',encoding='utf-8') as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} · {kind}"+(f' · {what}' if what else '')+f' · {engine} · {model}\n{text or ""}\n')
+    except Exception:
+        pass
+
+
 def _call_until_cancelled(provider, request, secret, cancelled):
     """Run one analysis request in a helper thread so a cancel (or "skip") takes effect at
     once instead of after the request ends. The request carries the same check, so a local
@@ -82,11 +102,14 @@ class SpeechExtractThread(QThread):
     done = Signal(bool, object)
     stage = Signal(str)   # what is being asked right now (shown with the elapsed time)
     attempt_failed = Signal(str)   # one engine's failed attempt, logged as it happens
-    def __init__(self, engines, prompts, parse, parent=None, fallback_prompts=None):
+    def __init__(self, engines, prompts, parse, parent=None, fallback_prompts=None, local_prompts=None, local_fallback_prompts=None):
         super().__init__(parent)
         self.engines=list(engines)
         self.prompts=list(prompts)
         self.fallback_prompts=list(fallback_prompts or [])
+        # Same questions asking for a JSON answer, for a local LLM (Ollama JSON mode).
+        self.local_prompts=list(local_prompts or [])
+        self.local_fallback_prompts=list(local_fallback_prompts or [])
         self.parse=parse
 
     def requestInterruption(self):
@@ -101,7 +124,7 @@ class SpeechExtractThread(QThread):
         from ..speech_levels import MAX_ROWS
         errors=[]; used=set(); requests=0
 
-        def analyse(system, user, what):
+        def analyse(system, user, what, local=None):
             nonlocal requests
             for provider_id,secret,model,endpoint,opts in self.engines:
                 if self._cancelled():
@@ -111,8 +134,10 @@ class SpeechExtractThread(QThread):
                     label=ENGINE_LABELS.get(provider_id,provider_id)
                     self.stage.emit(f'{what} · {label} 요청 중 (AI 요청 {requests}회째)'
                                     +(' · 앞 엔진: '+errors[-1] if errors else ''))
+                    as_json=provider_id=='local' and local is not None
+                    sys_p,user_p=local if as_json else (system,user)
                     resp=_call_until_cancelled(_make_provider(provider_id,endpoint,opts),
-                        TranslationRequest(model,system,user,timeout=40,purpose='analysis',cancel=self._cancelled,
+                        TranslationRequest(model,sys_p,user_p,timeout=40,purpose='json' if as_json else 'analysis',cancel=self._cancelled,
                                            max_output=SPEECH_ANSWER_TOKENS,partial_ok=True),
                         secret,self._cancelled)
                     if self._cancelled():
@@ -130,12 +155,14 @@ class SpeechExtractThread(QThread):
                     used.add(provider_id)
                     return parsed
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} 유효한 인물 관계 0쌍')
-                self.attempt_failed.emit(f'{what} · {label} (AI 요청 {requests}회째) · 답은 왔지만 쓸 수 있는 인물 관계 0쌍 (인물 이름이 용어집과 다르거나 관계가 불분명)')
+                self.attempt_failed.emit(f'{what} · {label} (AI 요청 {requests}회째) · 답은 왔지만 쓸 수 있는 인물 관계 0쌍 (인물 이름이 용어집과 다르거나 관계가 불분명)'
+                                         +_answer_excerpt(resp.text))
+                _save_analysis_answer('인물 말투표', what, label, model, resp.text)
             return []
 
         # One 6,000-character sample supplies a coherent view of all the evidence.
-        for system,user in self.prompts:
-            result=analyse(system,user,'전체 대사 분석')
+        for n,(system,user) in enumerate(self.prompts):
+            result=analyse(system,user,'전체 대사 분석',self.local_prompts[n] if n<len(self.local_prompts) else None)
             if result is None:
                 self.done.emit(False,'사용자 취소'); return
             if result:
@@ -152,7 +179,8 @@ class SpeechExtractThread(QThread):
         for part_no,(system,user) in enumerate(self.fallback_prompts,1):
             if self._cancelled():
                 self.done.emit(False,'사용자 취소'); return
-            result=analyse(system,user,f'나눠서 분석 {part_no}/{len(self.fallback_prompts)}묶음')
+            result=analyse(system,user,f'나눠서 분석 {part_no}/{len(self.fallback_prompts)}묶음',
+                           self.local_fallback_prompts[part_no-1] if part_no<=len(self.local_fallback_prompts) else None)
             if result is None:
                 self.done.emit(False,'사용자 취소'); return
             if not result:
@@ -208,11 +236,16 @@ class TermExtractThread(QThread):
                     secret,self._cancelled)
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
-                result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known)
+                rep={}
+                result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known,report=rep)
+                self.report=dict(rep,engine=ENGINE_LABELS.get(provider_id,provider_id))
+                if rep and rep.get('kept',0)<rep.get('answer',0):
+                    _save_analysis_answer('인명·용어 추출', f"모델 답 {rep.get('answer',0)}개 중 {rep.get('kept',0)}개 사용", ENGINE_LABELS.get(provider_id,provider_id), model, resp.text)
                 if result:
                     self.done.emit(True,result); return
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} 유효한 용어 0개')
-                self.attempt_failed.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} · 답은 왔지만 쓸 수 있는 용어 0개')
+                self.attempt_failed.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} · 답은 왔지만 쓸 수 있는 용어 0개'+_answer_excerpt(resp.text))
+                _save_analysis_answer('인명·용어 추출', '', ENGINE_LABELS.get(provider_id,provider_id), model, resp.text)
             except Exception as e:
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
@@ -1681,8 +1714,17 @@ class MainWindow(QMainWindow):
 
     def _extract_terms_finished(self):
         ok,res=self._term_result; thread=self._term_thread; self._term_thread=None
+        report=dict(getattr(thread,'report',{}) or {})
         if thread is not None: thread.deleteLater()
         auto=getattr(self,'_term_auto',False); self._term_auto=False
+        if report.get('answer'):
+            # Where the model's entries went: kept, or left out and why (shown for every run,
+            # so "the glossary did not grow" is never a mystery).
+            reasons=[(report.get('not_candidate',0),'후보 목록에 없는 원문'),(report.get('bad_rendering',0),'한국어 표기 문제(한자·가나 남음 등)'),
+                     (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절')]
+            left=' · '.join(f'{t} {n}개' for n,t in reasons if n)
+            self._analysis_log(f"인명·용어 추출 · {report.get('engine','')} 답에 든 항목 {report['answer']}개 중 {report.get('kept',0)}개 사용"
+                               +(f' · 걸러 냄: {left} (원래 답: logs\\analysis_answers.txt)' if left else ''), auto)
         took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
@@ -1991,6 +2033,20 @@ class MainWindow(QMainWindow):
             out[src]=ko.strip()
         return out
 
+    def _speech_roster(self, source: str, names: dict, lang: str):
+        """(roster for the prompt, names the answer may use, narrator/family roles)."""
+        from ..speech_levels import rank_names, role_entries, role_parse_names, ROSTER_MAX
+        roles=role_entries(source,lang,taken=names.keys())
+        roster={**roles,**rank_names(source,names,limit=max(2,ROSTER_MAX-len(roles)))}
+        return roster,{**role_parse_names(roles),**names},roles
+
+    def _speech_people(self) -> int:
+        """Glossary names plus narrator/family roles available for a speech table."""
+        from ..speech_levels import role_entries
+        names=self._speech_names()
+        if len(names)>=2: return len(names)
+        return len(names)+len(role_entries(self._speech_source(),self.pm.active.source_language,taken=names.keys()))
+
     def _speech_source(self) -> str:
         return self.preview.toPlainText() if self._preview_edited() else (self.source_text if self.input_mode=='single' else '')
 
@@ -1998,7 +2054,7 @@ class MainWindow(QMainWindow):
         if not (hasattr(self,'auto_speech') and self.auto_speech.isChecked()) or self.input_mode!='single': return False
         if self._speech_rows() or self.pm.active.source_language not in ('zh','en','ja'): return False
         key=self._source_sha() or hashlib.sha256(self._speech_source().encode('utf-8')).hexdigest()
-        return key not in self._speech_tried and len(self._speech_names())>=2
+        return key not in self._speech_tried and self._speech_people()>=2
 
     def _generate_speech(self):
         if self._extracting():
@@ -2008,8 +2064,8 @@ class MainWindow(QMainWindow):
                 self.status.setText('말투표 생성 취소 요청 · 중단하는 중…')
             return
         if self.worker and self.worker.isRunning(): return
-        if len(self._speech_names())<2:
-            QMessageBox.information(self,'인물 이름 필요','말투표는 확정 용어집의 인물 이름을 바탕으로 만듭니다. 먼저 확정 용어집 탭에서 [인명·용어 자동 추출]로 이름을 채워 주세요.'); return
+        if self._speech_people()<2:
+            QMessageBox.information(self,'인물 이름 필요','말투표는 확정 용어집의 인물 이름(그리고 1인칭 화자·가족 호칭)을 바탕으로 만듭니다. 먼저 확정 용어집 탭에서 [인명·용어 자동 추출]로 이름을 채워 주세요.'); return
         if not self._speech_source().strip():
             QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요.'); return
         if self._speech_rows():
@@ -2019,15 +2075,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self,'말투표 자동 생성',self._speech_fail)
 
     def _begin_speech_extraction(self, auto: bool) -> bool:
-        from ..speech_levels import sample_dialogue, build_prompts, parse_table, split_samples, rank_names
+        from ..speech_levels import sample_dialogue, build_prompts, parse_table, split_samples
         from ..lexical_guidance import extra_pack
         self._speech_fail=''
         names=self._speech_names(); source=self._speech_source(); lang=self.pm.active.source_language
         key=self._source_sha() or hashlib.sha256(source.encode('utf-8')).hexdigest(); self._speech_tried.add(key); self._speech_key=key
         cues=[c for c in list(getattr(self.pm.active,'lexical_guidance',{}) or {})+list(extra_pack(lang)) if 0<len(c)<=(12 if lang=='en' else 4)]
-        # The characters shown to the model: the ones most present in this book's dialogue
-        # (never the first rows of the glossary table). Answers may still name any glossary entry.
-        roster=rank_names(source,names)
+        # The characters shown to the model: the first-person narrator and family roles when the
+        # book has them, then the glossary names most present in this book's dialogue (never the
+        # first rows of the glossary table). Answers may name any glossary entry or role.
+        roster,parse_names,roles=self._speech_roster(source,names,lang)
         samples=sample_dialogue(source,roster,cues=cues) if len(roster)>=2 else ''
         if not samples:
             self._speech_fail='인물 말투표 · 원문에서 인물 이름이 나오는 대사를 찾지 못해 말투표 없이 번역합니다'; return False
@@ -2036,10 +2093,14 @@ class MainWindow(QMainWindow):
             self._speech_fail='인물 말투표 · 쓸 수 있는 엔진이 없어 말투표 없이 번역합니다'; return False
         provider_id=engines[0][0]
         prompts=[build_prompts(samples,roster,lang)]
-        fallback_prompts=[build_prompts(part,roster,lang) for part in split_samples(samples)]
+        parts=split_samples(samples)
+        fallback_prompts=[build_prompts(part,roster,lang) for part in parts]
+        local_prompts=[build_prompts(samples,roster,lang,as_json=True)]
+        local_fallback=[build_prompts(part,roster,lang,as_json=True) for part in parts]
         self._speech_auto=auto; self._term_source_sha=self._source_sha()
         self._analysis_kind='인물 말투표'; self._analysis_is_auto=auto; self._analysis_lines=[]
-        self._analysis_log(('번역 전 ' if auto else '')+f'인물 말투표 만들기 시작 · 용어집 {len(names)}개 중 대사에 많이 나오는 인물 {len(roster)}명'
+        self._analysis_log(('번역 전 ' if auto else '')+f'인물 말투표 만들기 시작 · 용어집 {len(names)}개 중 대사에 많이 나오는 인물 {len(roster)-len(roles)}명'
+                           +(f' + 화자·가족 호칭 {len(roles)}개' if roles else '')
                            +(' ('+', '.join(list(roster.values())[:8])+(' …' if len(roster)>8 else '')+')' if roster else '')
                            +f' · 대사 표본 {len(samples):,}자 · 엔진 '+self._analysis_engine_text(engines), auto)
         self._lock_inputs(True); self.start.setEnabled(False)
@@ -2047,8 +2108,9 @@ class MainWindow(QMainWindow):
         self._speech_skip=False
         self._set_analysis_busy(True, '말투표 건너뛰고 번역 시작' if auto else '말투표 검출 중…',
                                 ('번역 전 ' if auto else '')+f'인물 말투표 만드는 중 · 인물 {len(names)}명')
-        self._term_thread=SpeechExtractThread(engines,prompts,lambda text,n=dict(names): parse_table(text,n),self,
-                                              fallback_prompts=fallback_prompts)
+        self._term_thread=SpeechExtractThread(engines,prompts,lambda text,n=dict(parse_names): parse_table(text,n),self,
+                                              fallback_prompts=fallback_prompts,local_prompts=local_prompts,
+                                              local_fallback_prompts=local_fallback)
         self._connect_stage(self._term_thread)
         self._speech_result=(False,'말투표 만들기가 종료되었습니다.')
         self._term_thread.done.connect(lambda ok,res:setattr(self,'_speech_result',(ok,res)))
