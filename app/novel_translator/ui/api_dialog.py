@@ -332,7 +332,7 @@ class ApiDialog(QDialog):
         af.addWidget(QLabel('작업'),0,0); af.addWidget(QLabel('엔진'),0,1); af.addWidget(QLabel('모델'),0,2)
         af.addWidget(QLabel('용어·말투 분석 · 공통'),1,0); af.addWidget(self.analysis_engine,1,1); af.addWidget(self.analysis_model,1,2)
         af.addWidget(QLabel('문학적 윤문·연속성 · 재정비'),2,0); af.addWidget(self.editing_engine,2,1); af.addWidget(self.editing_model,2,2)
-        self.analysis_hint=QLabel('인명·용어·말투 분석은 번역과 한국어 재정비가 함께 사용합니다. 자동은 준비된 번역 엔진 순서를 따릅니다.')
+        self.analysis_hint=QLabel('인명·용어·말투 분석은 번역과 한국어 재정비가 함께 사용합니다. 엔진을 고르면 번역 엔진과 상관없이 그 엔진(과 모델)만 씁니다. 자동이면 위에서 체크한 번역 엔진만 그 순서대로 씁니다.')
         self.analysis_hint.setWordWrap(True); af.addWidget(self.analysis_hint,3,0,1,3)
         if self._legacy_analysis_conflict:
             self.analysis_hint.setText('기존 용어 검출과 말투표 엔진이 서로 다릅니다. 저장하면 위에서 선택한 하나의 분석 엔진으로 통합합니다. 취소하면 기존 값은 유지됩니다.')

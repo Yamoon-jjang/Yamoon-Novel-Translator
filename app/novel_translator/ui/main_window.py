@@ -80,6 +80,7 @@ class SpeechExtractThread(QThread):
     """
     done = Signal(bool, object)
     stage = Signal(str)   # what is being asked right now (shown with the elapsed time)
+    attempt_failed = Signal(str)   # one engine's failed attempt, logged as it happens
     def __init__(self, engines, prompts, parse, parent=None, fallback_prompts=None):
         super().__init__(parent)
         self.engines=list(engines)
@@ -120,11 +121,14 @@ class SpeechExtractThread(QThread):
                         return None
                     kind=getattr(getattr(e,'kind',None),'value','') or type(e).__name__
                     errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} {kind}')
+                    detail=str(e).strip().replace('\n',' ')[:100]
+                    self.attempt_failed.emit(f'{what} · {label} (AI 요청 {requests}회째) 실패 · {kind}'+(f' · {detail}' if detail and detail!=kind else ''))
                     continue
                 if parsed:
                     used.add(provider_id)
                     return parsed
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} 유효한 인물 관계 0쌍')
+                self.attempt_failed.emit(f'{what} · {label} (AI 요청 {requests}회째) · 답은 왔지만 쓸 수 있는 인물 관계 0쌍 (인물 이름이 용어집과 다르거나 관계가 불분명)')
             return []
 
         # One 6,000-character sample supplies a coherent view of all the evidence.
@@ -175,6 +179,7 @@ class TermExtractThread(QThread):
     """Try configured analysis models in order without changing translation settings."""
     done = Signal(bool, object)
     stage = Signal(str)
+    attempt_failed = Signal(str)
     def __init__(self, provider_id, secret, model, endpoint, system, user, cands, parent=None, local_options=None, parse=None, engines=None):
         super().__init__(parent)
         self.engines=list(engines or [(provider_id,secret,model,endpoint,local_options)])
@@ -205,11 +210,13 @@ class TermExtractThread(QThread):
                 if result:
                     self.done.emit(True,result); return
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} 유효한 용어 0개')
+                self.attempt_failed.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} · 답은 왔지만 쓸 수 있는 용어 0개')
             except Exception as e:
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
                 kind=getattr(getattr(e,'kind',None),'value','')
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} '+(kind+' · ' if kind else '')+str(e)[:120])
+                self.attempt_failed.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} 실패 · '+(kind+' · ' if kind else '')+str(e).strip().replace('\n',' ')[:100])
         self.done.emit(False,'사용자 취소' if self._cancelled() else (' · '.join(errors) or '응답 없음'))
 
 
@@ -646,6 +653,28 @@ class MainWindow(QMainWindow):
     def _connect_stage(self, thread):
         stage=getattr(thread,'stage',None)
         if stage is not None: stage.connect(self._analysis_stage_changed)
+        failed=getattr(thread,'attempt_failed',None)
+        if failed is not None: failed.connect(self._analysis_attempt_failed)
+
+    def _analysis_log(self, line: str, auto: bool):
+        """Name/speech analysis log line. A run started by [번역 시작] keeps its lines and
+        writes them after the start (which clears the log for the new job); a run started
+        from its own button writes them at once."""
+        if auto: self._analysis_lines.append(line)
+        else: self.on_worker_issue(line)
+
+    def _analysis_attempt_failed(self, text: str):
+        label=getattr(self,'_analysis_kind','')
+        self._analysis_log(f'{label} · {text}' if label else text, getattr(self,'_analysis_is_auto',False))
+
+    def _analysis_took(self) -> str:
+        t0=getattr(self,'_analysis_t0',None)
+        if t0 is None: return ''
+        sec=int(time.monotonic()-t0)
+        return f'{sec//60}분 {sec%60:02d}초' if sec>=60 else f'{sec}초'
+
+    def _analysis_engine_text(self, engines) -> str:
+        return ' → '.join(f'{ENGINE_LABELS.get(e[0],e[0])}({e[2]})' for e in engines) or '없음'
 
     def _analysis_stage_changed(self, text: str):
         self._analysis_stage=str(text or ''); self._refresh_analysis_status()
@@ -1538,9 +1567,10 @@ class MainWindow(QMainWindow):
         choices=dict(self.secrets.get('extraction_engines') or {})
         preferred=choices.get(purpose,'auto')
         explicit_model=str(choices.get('model') or '').strip()
-        order=self._engine_order()+[n for n in ('gemini','openai','local') if n not in self._engine_order()]
-        if preferred in ('gemini','openai','local'):
-            order=[preferred]+[n for n in order if n!=preferred]
+        # An engine chosen for 용어·말투 분석 in API 설정 is the ONLY engine asked (with its own
+        # model), whatever the translation engines are. 자동 uses the engines checked for
+        # translation, in that order; an unchecked engine is never asked, even with a saved key.
+        order=[preferred] if preferred in ('gemini','openai','local') else list(self._engine_order())
         out=[]
         for name in order:
             if name=='gemini' and self._enabled_keys() and self._selected_model_id():
@@ -1602,6 +1632,8 @@ class MainWindow(QMainWindow):
             self._common_pulled=self._pull_common_terms(source)
         system,user=term_prompts(cands,self.pm.active.source_language,policy,{} if (getattr(self,'_term_replace',False) or not auto) else self._terms())
         self._term_auto=auto; self._term_source_sha=self._source_sha()
+        self._analysis_kind='인명·용어 추출'; self._analysis_is_auto=auto; self._analysis_lines=[]
+        self._analysis_log(('번역 전 ' if auto else '')+f'인명·용어 추출 시작 · 후보 {len(cands)}개 · 엔진 '+self._analysis_engine_text(analysis_engines), auto)
         self._lock_inputs(True); self.start.setEnabled(False)
         self.term_extract.setEnabled(True); self.term_extract.setText('용어 추출 취소')
         self.status.setText(('번역 전 ' if auto else '')+f'인명·용어 후보 {len(cands)}개 분석 중 · {provider_id}')
@@ -1642,10 +1674,12 @@ class MainWindow(QMainWindow):
         ok,res=self._term_result; thread=self._term_thread; self._term_thread=None
         if thread is not None: thread.deleteLater()
         auto=getattr(self,'_term_auto',False); self._term_auto=False
+        took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
         self._set_analysis_busy(False)
         if not ok and res=='사용자 취소':
+            if not auto: self.on_worker_issue(f'인명·용어 추출 취소됨 · 걸린 시간 {took}')
             self._term_replace=False
             self._auto_terms_sha=''
             self._update_ready_state()
@@ -1671,16 +1705,18 @@ class MainWindow(QMainWindow):
                 # of paying for the whole book again.
                 force=False; note+=' · 추가된 용어가 없어 처음부터 다시 하지 않고 이어서 번역합니다'
             self._auto_terms_dialog_force=False
+            note+=f' · 걸린 시간 {took}' if took else ''
             if self._speech_auto_due():
-                self._auto_terms_force=force; self._auto_notes=[note]
+                self._auto_terms_force=force; self._auto_notes=lines+[note]
                 if self._begin_speech_extraction(auto=True):
                     return
                 note=' · '.join(x for x in (note,getattr(self,'_speech_fail','')) if x)
-            self._auto_start(force,[note])
+            self._auto_start(force,lines+[note])
             return
         self._update_ready_state()
         if not ok:
             self._term_replace=False
+            self.on_worker_issue(f'인명·용어 추출 실패 · 걸린 시간 {took} · {str(res)[:200]}')
             QMessageBox.warning(self,'자동 추출 실패',str(res)); self.status.setText('인명·용어 자동 추출 실패'); return
         replace=getattr(self,'_term_replace',False); self._term_replace=False
         # Never ask about a source whose current rendering has already been locked.
@@ -1720,6 +1756,7 @@ class MainWindow(QMainWindow):
         msg=(f'확정 용어 {len(added)}개를 새로 추가하거나 변경했습니다.' if added
              else '새로 추가하거나 바꿀 인명·용어가 없습니다.')
         self.status.setText(msg)
+        self.on_worker_issue(f'인명·용어 추출 완료 · 걸린 시간 {took} · '+msg+(': '+', '.join(f'{a}→{b}' for a,b in added[:12])+(' …' if len(added)>12 else '') if added else ''))
         if added: QMessageBox.information(self,'자동 추출 완료',msg+'\n\n자동 제안이므로 표기를 확인하고, 틀린 항목은 고치거나 삭제한 뒤 번역을 시작하세요.')
 
     # ------------------------------------------------------------ 내 공용 용어집
@@ -1875,7 +1912,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab,'인물 말투'); self.speech_tab=tab
         for sig in (self.speech_table.model().rowsInserted, self.speech_table.model().rowsRemoved, self.speech_table.model().modelReset):
             sig.connect(lambda *_: self._update_speech_tab_title())
-        self._speech_tried=set(); self._speech_fail=''; self._auto_notes=[]
+        self._speech_tried=set(); self._speech_fail=''; self._auto_notes=[]; self._analysis_lines=[]
         self.speech_table.itemChanged.connect(lambda _i: self._save_workspace() if not getattr(self,'_filling_speech',False) else None)
 
     def _update_speech_tab_title(self):
@@ -1965,6 +2002,7 @@ class MainWindow(QMainWindow):
         if self._speech_rows():
             if QMessageBox.question(self,'말투표 다시 만들기','지금 말투표를 새로 만든 것으로 바꿀까요?')!=QMessageBox.Yes: return
         if not self._begin_speech_extraction(auto=False) and self._speech_fail:
+            self.on_worker_issue(self._speech_fail)
             QMessageBox.warning(self,'말투표 자동 생성',self._speech_fail)
 
     def _begin_speech_extraction(self, auto: bool) -> bool:
@@ -1984,6 +2022,8 @@ class MainWindow(QMainWindow):
         prompts=[build_prompts(samples,names,lang)]
         fallback_prompts=[build_prompts(part,names,lang) for part in split_samples(samples)]
         self._speech_auto=auto; self._term_source_sha=self._source_sha()
+        self._analysis_kind='인물 말투표'; self._analysis_is_auto=auto; self._analysis_lines=[]
+        self._analysis_log(('번역 전 ' if auto else '')+f'인물 말투표 만들기 시작 · 인물 {len(names)}명 · 대사 표본 {len(samples):,}자 · 엔진 '+self._analysis_engine_text(engines), auto)
         self._lock_inputs(True); self.start.setEnabled(False)
         self.speech_generate.setEnabled(True); self.speech_generate.setText('말투표 생성 취소'); self.status.setText(('번역 전 ' if auto else '')+f'인물 말투표 만드는 중 · 인물 {len(names)}명 · {provider_id}')
         self._speech_skip=False
@@ -2003,6 +2043,7 @@ class MainWindow(QMainWindow):
         if thread is not None: thread.deleteLater()
         auto=getattr(self,'_speech_auto',False); self._speech_auto=False
         skipped=bool(getattr(self,'_speech_skip',False)); self._speech_skip=False
+        took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False); self.speech_generate.setText('말투표 자동 생성'); self._set_analysis_busy(False)
         if getattr(self,'_close_after_extract',False):
             self.close(); return
@@ -2010,13 +2051,14 @@ class MainWindow(QMainWindow):
         if not ok and res=='사용자 취소' and auto and skipped:
             # [말투표 건너뛰고 번역 시작]: this book's automatic attempt is over (it is not
             # asked again on resume); the button on the 인물 말투 tab can still build it later.
-            self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+[
-                '인물 말투표 · 건너뜀 (사용자 선택) · 말투표 없이 번역합니다 · 필요하면 인물 말투 탭의 [말투표 자동 생성]으로 나중에 만들 수 있습니다'])
+            self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+lines+[
+                f'인물 말투표 · 건너뜀 (사용자 선택) · {took} 경과 · 말투표 없이 번역합니다 · 필요하면 인물 말투 탭의 [말투표 자동 생성]으로 나중에 만들 수 있습니다'])
             self._auto_notes=[]
             return
         if not ok and res=='사용자 취소':
             # A cancelled attempt is not a finished one: the next start tries again.
             self._speech_tried.discard(getattr(self,'_speech_key',''))
+            if not auto: self.on_worker_issue(f'인물 말투표 만들기 취소됨 · 걸린 시간 {took}')
             self._update_ready_state()
             self.status.setText('말투표 자동 생성 취소됨 · 번역은 시작하지 않았습니다')
             return
@@ -2031,12 +2073,14 @@ class MainWindow(QMainWindow):
             note=(f'인물 말투표 자동 생성 · {len(rows)}쌍{how} (인물 말투 탭에서 확인·수정할 수 있음): '+', '.join(f"{r['speaker']}→{r['listener']} {r['level']}" for r in rows[:6])+(' …' if len(rows)>6 else '')
                   if rows else '인물 말투표 · 대사에서 확실한 관계를 찾지 못해 말투표 없이 번역합니다'+how)
         else:
-            hint=(' · 엔진이 대사 내용을 거부했습니다. API 설정에서 로컬 LLM이나 OpenAI를 보조 엔진으로 켜 두면 그 엔진이 만듭니다. [말투 추가]로 직접 넣어도 됩니다.'
+            hint=(' · 엔진이 대사 내용을 거부했습니다. API 설정의 용어·말투 분석 엔진을 로컬 LLM(검열 해제 모델)으로 고르면 그 엔진이 만듭니다. [말투 추가]로 직접 넣어도 됩니다.'
                   if any(k in str(res) for k in ('POLICY','SAFETY','REFUSAL')) else '')
             note=('인물 말투표 만들기 실패 · 말투표 없이 번역합니다 · '+str(res)[:160]+hint) if not stale else '원문이 바뀌어 말투표 결과를 쓰지 않았습니다'
+        note+=f' · 걸린 시간 {took}' if took else ''
         if auto:
-            self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+[note]); self._auto_notes=[]
+            self._auto_start(getattr(self,'_auto_terms_force',False), list(getattr(self,'_auto_notes',[]))+lines+[note]); self._auto_notes=[]
             return
+        self.on_worker_issue(note)
         self._update_ready_state(); self.status.setText(note[:120])
         if ok and rows:
             self.tabs.setCurrentWidget(self.speech_tab)
