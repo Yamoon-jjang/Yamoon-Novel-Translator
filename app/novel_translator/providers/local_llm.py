@@ -81,7 +81,7 @@ class LocalLLMProvider(TranslationProvider):
         return self._translate_compat(request, api_key)
 
     def _headers(self, api_key: str) -> dict:
-        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.3.1'}
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.4'}
         if api_key and api_key not in {'local', 'none', '-'}:
             headers['Authorization'] = f'Bearer {api_key}'
         return headers
@@ -124,7 +124,13 @@ class LocalLLMProvider(TranslationProvider):
             raise ProviderError(ErrorKind.TRANSIENT, f'로컬 LLM 일시 오류: {msg}', r.status_code)
         raise ProviderError(ErrorKind.FATAL, f'로컬 LLM 오류: {msg}', r.status_code)
 
-    def _finish(self, text: str, finish: str, data) -> TranslationResponse:
+    def _finish(self, text: str, finish: str, data, partial_ok: bool = False) -> TranslationResponse:
+        if finish == 'length' and partial_ok and (text or '').strip():
+            # Analysis answer cut off (or stopped in a loop): hand over what arrived; the
+            # strict parser keeps only the complete, valid lines/entries in it.
+            clean = strip_reasoning(self._THINK_RE.sub('', text)).strip()
+            if clean:
+                return TranslationResponse(text=clean, finish_reason='length', raw=data)
         if finish == 'length':
             raise ProviderError(ErrorKind.FORMAT, f'로컬 LLM 출력 잘림 (답이 원문보다 지나치게 길거나 같은 말을 반복함 · 출력 한도 {self.output_budget_last:,}토큰 · 컨텍스트 {self.num_ctx:,})')
         if finish == 'content_filter':
@@ -150,7 +156,7 @@ class LocalLLMProvider(TranslationProvider):
         last = None
         for url in urls:
             try:
-                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.3.1'})
+                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.4'})
             except requests.ConnectionError as e:
                 raise ProviderError(ErrorKind.TRANSIENT, f'로컬 LLM 서버에 연결할 수 없습니다. Ollama 또는 LM Studio가 실행 중인지 확인하세요: {base}') from e
             except requests.RequestException as e:
@@ -185,7 +191,8 @@ class LocalLLMProvider(TranslationProvider):
             return 0
         source = request.user_prompt or ''
         need = self.estimate_tokens(request.system_prompt) + self.estimate_tokens(source)
-        need += int(self.estimate_tokens(source) * 0.6) + 512      # room for the Korean answer
+        cap = int(getattr(request, 'max_output', 0) or 0)
+        need += (cap if cap else int(self.estimate_tokens(source) * 0.6)) + 512      # room for the answer
         if need <= self.num_ctx:
             return self.num_ctx
         # Raise it for good (never back down): Ollama reloads the whole model whenever
@@ -325,7 +332,11 @@ class LocalLLMProvider(TranslationProvider):
         # With thinking on, the reasoning shares this limit: give it room on top of the answer.
         purpose = getattr(request, 'purpose', 'translate')
         options = self.sampling_for(request.model, purpose)
-        options['num_predict'] = self.output_budget(request) + (8192 if self.think else 0) + (16 * len(ids))
+        budget = self.output_budget(request)
+        cap = int(getattr(request, 'max_output', 0) or 0)
+        if cap:
+            budget = min(budget, cap)
+        options['num_predict'] = budget + (8192 if self.think else 0) + (16 * len(ids))
         options.update(extra)
         ctx = self.context_for(request)
         if ctx > 0:
@@ -386,7 +397,8 @@ class LocalLLMProvider(TranslationProvider):
         msg = data.get('message') if isinstance(data, dict) else None
         if not isinstance(msg, dict):
             raise ProviderError(ErrorKind.FORMAT, '로컬 LLM 응답 형식을 해석하지 못했습니다.')
-        response = self._finish(str(msg.get('content') or ''), str(data.get('done_reason') or ''), data)
+        response = self._finish(str(msg.get('content') or ''), str(data.get('done_reason') or ''), data,
+                                partial_ok=bool(getattr(request, 'partial_ok', False)))
         if ids:
             response = TranslationResponse(text=self.structured_to_tagged(response.text, ids),
                                            finish_reason=response.finish_reason, raw=response.raw)
@@ -415,6 +427,8 @@ class LocalLLMProvider(TranslationProvider):
                     if fresh >= self.LOOP_CHECK_EVERY:
                         fresh = 0
                         unit = self._loop_in(''.join(parts[-400:])[-1200:], request)
+                        if unit and getattr(request, 'partial_ok', False):
+                            final = {'done_reason': 'length'}; break   # keep what came before the loop
                         if unit:
                             raise ProviderError(ErrorKind.FORMAT, f'로컬 LLM {LOOP_MARK} · 같은 말을 끝없이 반복해 중단함 (반복: "{unit[:10]}")')
                 if isinstance(obj, dict) and obj.get('done'):
@@ -442,7 +456,8 @@ class LocalLLMProvider(TranslationProvider):
                 {'role': 'system', 'content': request.system_prompt},
                 {'role': 'user', 'content': request.user_prompt},
             ],
-            'max_tokens': self.output_budget(request) + 4096,   # room for a reasoning model's thinking (no stream: no loop check here)
+            'max_tokens': (min(self.output_budget(request), int(getattr(request, 'max_output', 0) or 0) or self.output_budget(request))
+                           + 4096),   # room for a reasoning model's thinking (no stream: no loop check here)
             'stream': False,
         }
         payload.update(self.sampling_for(request.model, getattr(request, 'purpose', 'translate')))
@@ -460,4 +475,4 @@ class LocalLLMProvider(TranslationProvider):
             finish = str(choice.get('finish_reason') or '')
         except Exception as e:
             raise ProviderError(ErrorKind.FORMAT, '로컬 LLM 응답 형식을 해석하지 못했습니다.') from e
-        return self._finish(text, finish, data)
+        return self._finish(text, finish, data, partial_ok=bool(getattr(request, 'partial_ok', False)))

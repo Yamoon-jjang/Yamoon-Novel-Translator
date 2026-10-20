@@ -132,7 +132,8 @@ def candidates(text: str, lang: str, limit: int = 300) -> list[tuple[str, int]]:
     return []
 
 
-def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = '', existing: dict | None = None) -> tuple[str, str]:
+def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = '', existing: dict | None = None,
+                  earlier: dict | None = None) -> tuple[str, str]:
     lang_name = {'zh': 'Chinese', 'ja': 'Japanese', 'en': 'English'}.get(lang, lang)
     system = (
         'You build a translation glossary for a professional Korean translator. '
@@ -154,8 +155,16 @@ def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = ''
     keep = ''
     if existing:
         keep = '\n\nALREADY CONFIRMED (do not change; stay consistent with these):\n' + '\n'.join(f'{a} => {b}' for a, b in list(existing.items())[:80])
+    seen = ''
+    if earlier:
+        # Shared-glossary entries found in this text: the model decides whether each is a
+        # name/term HERE (another book's 慢慢 "Manman" is the word "slowly" in most novels).
+        seen = ('\n\nSEEN AS NAMES/TERMS IN THE USER\'S EARLIER BOOKS (also in the candidate list above). '
+                'Select one only if, in this novel too, it is a name or recurring term by the usual meaning of the string; '
+                'a string that is an ordinary word here (慢慢 slowly, 微微 slightly, 老太太 old lady, 小妹 little sister) is NOT selected. '
+                'If selected, use exactly this Korean:\n' + '\n'.join(f'{a} => {b}' for a, b in list(earlier.items())[:200]))
     policy = f'\n\nNAME POLICY: {name_policy}' if name_policy else ''
-    user = f'CANDIDATES (string<TAB>count):\n{rows}{keep}{policy}\n\nReturn the JSON object now.'
+    user = f'CANDIDATES (string<TAB>count):\n{rows}{keep}{seen}{policy}\n\nReturn the JSON object now.'
     return system, user
 
 
@@ -196,6 +205,17 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
     objects = [o for o in _json_objects(raw) if o]
     # The real answer is the object with the most string values (not a stray {公司} in a note).
     data = max(objects, key=lambda o: sum(isinstance(v, str) for v in o.values()), default=None)
+    if data is None:
+        # A cut-off answer ({"林雨": "린위", "苏晴": "쑤…): keep its complete "key": "value" pairs.
+        pairs = re.findall(r'"((?:[^"\\]|\\.){1,40})"\s*:\s*"((?:[^"\\]|\\.){1,40})"', raw)
+        if pairs:
+            data = {}
+            for k, v in pairs:
+                try:
+                    data.setdefault(json.loads(f'"{k}"'), json.loads(f'"{v}"'))
+                except ValueError:
+                    continue
+            data = data or None
     if data is None:
         if strict and not re.search(r'\{\s*\}', raw):
             raise GlossaryParseError('모델 답에서 용어 목록(JSON)을 찾지 못했습니다')

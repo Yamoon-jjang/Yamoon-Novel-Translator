@@ -1390,10 +1390,10 @@ def test_finished_book_grows_the_shared_glossary_and_next_book_pulls_it(qt_app,s
         # a new book (sequel) that mentions 左京 twice: the extraction pulls it in first
         seq=root/'seq.txt'; seq.write_text('左京回家了。\n\n左京笑了。\n\n李萱诗来了。\n\n李萱诗走了。\n\n白颖笑了。\n\n他们很好。',encoding='utf-8')
         w._open_txt_path(str(seq)); assert w._terms()=={}
-        pulled=w._pull_common_terms(w.source_text)   # 2-char 左京 x2 stays out; 3-char 李萱诗 x2 comes in
-        assert pulled==[('李萱诗','이훤시')] and w._terms()=={'李萱诗':'이훤시'}
+        # 2-char 左京 x2 stays out; 3-char 李萱诗 x2 is a candidate (v2.4: only confirmed ones are added)
+        assert w._common_hits(w.source_text)=={'李萱诗':'이훤시'} and w._terms()=={}
         seq.write_text('左京回家了。\n\n'*5,encoding='utf-8'); w._open_txt_path(str(seq))
-        assert w._pull_common_terms(w.source_text)==[('左京','좌경')]
+        assert w._common_hits(w.source_text)=={'左京':'좌경'}
     finally: w.close()
 
 
@@ -1405,7 +1405,7 @@ def test_shared_glossary_off_neither_grows_nor_pulls(qt_app,sandbox,monkeypatch)
     try:
         w.start_translation()
         assert _wait(qt_app,lambda: '작업 끝' in w.error_view.toPlainText())   # the finished signals were handled
-        assert ct.load('zh',ui.DATA_DIR)=={} and w._pull_common_terms('左京左京')==[] and w._common_terms_for_job()=={}
+        assert ct.load('zh',ui.DATA_DIR)=={} and w._common_hits('左京左京')=={} and w._common_terms_for_job()=={}
     finally: w.close()
 
 

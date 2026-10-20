@@ -29,6 +29,7 @@ from ..power import set_translation_awake
 from ..protected_literals import count_protectable_literals
 from ..term_extraction import candidates as term_candidates, build_prompts as term_prompts, parse_glossary
 from ..language_options import prompt_instructions
+from ..speech_levels import ANSWER_TOKENS as SPEECH_ANSWER_TOKENS
 
 
 def _make_provider(provider_id, endpoint='', local_options=None):
@@ -111,7 +112,8 @@ class SpeechExtractThread(QThread):
                     self.stage.emit(f'{what} · {label} 요청 중 (AI 요청 {requests}회째)'
                                     +(' · 앞 엔진: '+errors[-1] if errors else ''))
                     resp=_call_until_cancelled(_make_provider(provider_id,endpoint,opts),
-                        TranslationRequest(model,system,user,timeout=40,purpose='analysis',cancel=self._cancelled),
+                        TranslationRequest(model,system,user,timeout=40,purpose='analysis',cancel=self._cancelled,
+                                           max_output=SPEECH_ANSWER_TOKENS,partial_ok=True),
                         secret,self._cancelled)
                     if self._cancelled():
                         return None
@@ -202,7 +204,7 @@ class TermExtractThread(QThread):
                 provider=_make_provider(provider_id,endpoint,options)
                 self.stage.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} 요청 중'+(' · 앞 엔진: '+errors[-1][:60] if errors else ''))
                 resp=_call_until_cancelled(provider,
-                    TranslationRequest(model,self.system,self.user,timeout=60,purpose='json',cancel=self._cancelled),
+                    TranslationRequest(model,self.system,self.user,timeout=60,purpose='json',cancel=self._cancelled,partial_ok=True),
                     secret,self._cancelled)
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
@@ -1611,6 +1613,12 @@ class MainWindow(QMainWindow):
         """Start one extraction request. auto=True: no dialogs; translation starts when it ends."""
         self._auto_terms_fail=''
         cands=term_candidates(source,self.pm.active.source_language)
+        # Shared-glossary entries in this text are no longer copied into the book's glossary
+        # as they are: they go to the model as candidates, and only those it confirms as
+        # names/terms of THIS book are added (with the shared rendering).
+        self._term_earlier=self._common_hits(source) if not getattr(self,'_term_replace',False) else {}
+        _known={k for k,_ in cands}
+        cands=cands+[(a,source.count(a)) for a in self._term_earlier if a not in _known]
         if not cands:
             if not auto: QMessageBox.information(self,'후보 없음','원문에서 반복되는 이름/용어 후보를 찾지 못했습니다.')
             self._auto_terms_fail='인명·용어 자동 추출 · 원문에서 여러 번 나오는 이름·용어 후보를 찾지 못해 용어집 없이 번역합니다'
@@ -1628,12 +1636,13 @@ class MainWindow(QMainWindow):
             opts[USER_GUIDELINES_KEY]=self.user_guide.toPlainText().strip()
         policy=' '.join(prompt_instructions(opts))
         self._common_pulled=[]
-        if not getattr(self,'_term_replace',False):
-            self._common_pulled=self._pull_common_terms(source)
-        system,user=term_prompts(cands,self.pm.active.source_language,policy,{} if (getattr(self,'_term_replace',False) or not auto) else self._terms())
+        system,user=term_prompts(cands,self.pm.active.source_language,policy,{} if (getattr(self,'_term_replace',False) or not auto) else self._terms(),
+                                 earlier=self._term_earlier)
         self._term_auto=auto; self._term_source_sha=self._source_sha()
         self._analysis_kind='인명·용어 추출'; self._analysis_is_auto=auto; self._analysis_lines=[]
-        self._analysis_log(('번역 전 ' if auto else '')+f'인명·용어 추출 시작 · 후보 {len(cands)}개 · 엔진 '+self._analysis_engine_text(analysis_engines), auto)
+        self._analysis_log(('번역 전 ' if auto else '')+f'인명·용어 추출 시작 · 후보 {len(cands)}개'
+                           +(f' (그중 공용 용어집 항목 {len(self._term_earlier)}개 · 이 책의 이름으로 확인된 것만 가져옴)' if self._term_earlier else '')
+                           +' · 엔진 '+self._analysis_engine_text(analysis_engines), auto)
         self._lock_inputs(True); self.start.setEnabled(False)
         self.term_extract.setEnabled(True); self.term_extract.setText('용어 추출 취소')
         self.status.setText(('번역 전 ' if auto else '')+f'인명·용어 후보 {len(cands)}개 분석 중 · {provider_id}')
@@ -1690,6 +1699,11 @@ class MainWindow(QMainWindow):
         if ok and getattr(self,'_term_source_sha','')!=self._source_sha():
             # The source changed meanwhile: these names belong to the previous text.
             self.status.setText('원문이 바뀌어 인명·용어 추출 결과를 쓰지 않았습니다'); self._update_ready_state(); return
+        earlier=dict(getattr(self,'_term_earlier',{}) or {})
+        if ok and isinstance(res,dict) and earlier:
+            # A shared entry the model confirmed keeps the shared rendering (a sequel's names stay the same).
+            res={a:earlier.get(a,b) for a,b in res.items()}
+            self._common_pulled=[(a,earlier[a]) for a in res if a in earlier]
         if auto:
             # Never block the translation on the extraction: log the outcome and start.
             added=[]
@@ -1756,7 +1770,7 @@ class MainWindow(QMainWindow):
         msg=(f'확정 용어 {len(added)}개를 새로 추가하거나 변경했습니다.' if added
              else '새로 추가하거나 바꿀 인명·용어가 없습니다.')
         self.status.setText(msg)
-        self.on_worker_issue(f'인명·용어 추출 완료 · 걸린 시간 {took} · '+msg+(': '+', '.join(f'{a}→{b}' for a,b in added[:12])+(' …' if len(added)>12 else '') if added else ''))
+        self.on_worker_issue(f'인명·용어 추출 완료 · 걸린 시간 {took} · '+self._common_note()+msg+(': '+', '.join(f'{a}→{b}' for a,b in added[:12])+(' …' if len(added)>12 else '') if added else ''))
         if added: QMessageBox.information(self,'자동 추출 완료',msg+'\n\n자동 제안이므로 표기를 확인하고, 틀린 항목은 고치거나 삭제한 뒤 번역을 시작하세요.')
 
     # ------------------------------------------------------------ 내 공용 용어집
@@ -1787,18 +1801,19 @@ class MainWindow(QMainWindow):
         try: return common_terms.load(self.pm.active.source_language, DATA_DIR)
         except Exception: return {}
 
-    def _pull_common_terms(self, source: str) -> list[tuple[str,str]]:
-        """Shared entries that occur in this text (2+ times) and are not in the book's glossary yet."""
-        if not self._common_enabled() or not source: return []
+    def _common_hits(self, source: str) -> dict[str,str]:
+        """Shared entries that occur in this text (2+ times; 5+ for two characters) and are not
+        in the book's glossary yet. They are only CANDIDATES for the extraction."""
+        if not self._common_enabled() or not source: return {}
         from .. import common_terms
         current=self._terms()
-        found={a:b for a,b in common_terms.present_in(source,self._common_terms_for_job()).items() if a not in current}
-        return self._merge_terms(found) if found else []
+        return {a:b for a,b in common_terms.present_in(source,self._common_terms_for_job()).items() if a not in current}
 
     def _common_note(self) -> str:
         got=getattr(self,'_common_pulled',[]) or []
-        if not got: return ''
-        return f'공용 용어집에서 {len(got)}개 가져옴: '+', '.join(f'{a}→{b}' for a,b in got[:8])+(' …' if len(got)>8 else '')+' · '
+        seen=len(getattr(self,'_term_earlier',{}) or {})
+        if not got and not seen: return ''
+        return (f'공용 용어집 항목 {seen}개 중 이 책의 이름·용어로 확인된 {len(got)}개 가져옴'+(': '+', '.join(f'{a}→{b}' for a,b in got[:8])+(' …' if len(got)>8 else '') if got else '')+' · ')
 
     def _grow_common_terms(self):
         if not self._common_enabled(): return
@@ -1965,11 +1980,9 @@ class MainWindow(QMainWindow):
         """Book glossary first; shared entries are considered only if they occur in this book."""
         from ..term_extraction import valid_rendering, COMMON_WORDS
         out={}
+        # The book's confirmed glossary only: a shared-glossary entry becomes a character of
+        # this book once the extraction confirms it (an unconfirmed 慢慢 is the word "slowly").
         merged=dict(self._terms())
-        if self._common_enabled():
-            from ..common_terms import present_in
-            for src, ko in present_in(self._speech_source(), self._common_terms_for_job()).items():
-                merged.setdefault(src, ko)
         from ..term_extraction import drop_name_phrases
         merged=drop_name_phrases(merged)   # 陈屿放 -> 진서가 놓다 is not a character
         for src,ko in merged.items():
@@ -2006,24 +2019,29 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self,'말투표 자동 생성',self._speech_fail)
 
     def _begin_speech_extraction(self, auto: bool) -> bool:
-        from ..speech_levels import sample_dialogue, build_prompts, parse_table, split_samples
+        from ..speech_levels import sample_dialogue, build_prompts, parse_table, split_samples, rank_names
         from ..lexical_guidance import extra_pack
         self._speech_fail=''
         names=self._speech_names(); source=self._speech_source(); lang=self.pm.active.source_language
         key=self._source_sha() or hashlib.sha256(source.encode('utf-8')).hexdigest(); self._speech_tried.add(key); self._speech_key=key
         cues=[c for c in list(getattr(self.pm.active,'lexical_guidance',{}) or {})+list(extra_pack(lang)) if 0<len(c)<=(12 if lang=='en' else 4)]
-        samples=sample_dialogue(source,names,cues=cues)
+        # The characters shown to the model: the ones most present in this book's dialogue
+        # (never the first rows of the glossary table). Answers may still name any glossary entry.
+        roster=rank_names(source,names)
+        samples=sample_dialogue(source,roster,cues=cues) if len(roster)>=2 else ''
         if not samples:
             self._speech_fail='인물 말투표 · 원문에서 인물 이름이 나오는 대사를 찾지 못해 말투표 없이 번역합니다'; return False
         engines=self._extraction_engines()
         if not engines:
             self._speech_fail='인물 말투표 · 쓸 수 있는 엔진이 없어 말투표 없이 번역합니다'; return False
         provider_id=engines[0][0]
-        prompts=[build_prompts(samples,names,lang)]
-        fallback_prompts=[build_prompts(part,names,lang) for part in split_samples(samples)]
+        prompts=[build_prompts(samples,roster,lang)]
+        fallback_prompts=[build_prompts(part,roster,lang) for part in split_samples(samples)]
         self._speech_auto=auto; self._term_source_sha=self._source_sha()
         self._analysis_kind='인물 말투표'; self._analysis_is_auto=auto; self._analysis_lines=[]
-        self._analysis_log(('번역 전 ' if auto else '')+f'인물 말투표 만들기 시작 · 인물 {len(names)}명 · 대사 표본 {len(samples):,}자 · 엔진 '+self._analysis_engine_text(engines), auto)
+        self._analysis_log(('번역 전 ' if auto else '')+f'인물 말투표 만들기 시작 · 용어집 {len(names)}개 중 대사에 많이 나오는 인물 {len(roster)}명'
+                           +(' ('+', '.join(list(roster.values())[:8])+(' …' if len(roster)>8 else '')+')' if roster else '')
+                           +f' · 대사 표본 {len(samples):,}자 · 엔진 '+self._analysis_engine_text(engines), auto)
         self._lock_inputs(True); self.start.setEnabled(False)
         self.speech_generate.setEnabled(True); self.speech_generate.setText('말투표 생성 취소'); self.status.setText(('번역 전 ' if auto else '')+f'인물 말투표 만드는 중 · 인물 {len(names)}명 · {provider_id}')
         self._speech_skip=False

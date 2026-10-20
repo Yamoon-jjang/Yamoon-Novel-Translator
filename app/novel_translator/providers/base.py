@@ -50,6 +50,11 @@ class TranslationRequest:
     # analysis passes one; a local LLM stream then stops at once instead of finishing a
     # long answer nobody is waiting for. Translation requests never set it.
     cancel: object = field(default=None, compare=False, repr=False)
+    # Name/speech analysis only: an upper bound for the answer (0 = the usual budget) and
+    # permission to return a cut-off or looping answer as it is, so the lines/entries it
+    # already holds are used instead of the whole answer being thrown away.
+    max_output: int = 0
+    partial_ok: bool = False
 
 @dataclass
 class TranslationResponse:

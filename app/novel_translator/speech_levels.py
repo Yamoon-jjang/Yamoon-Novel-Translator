@@ -16,6 +16,8 @@ import re
 SPEECH_KEY = '__speech_table__'
 MAX_ROWS = 30
 SAMPLE_CHARS = 6000
+ROSTER_MAX = 60          # characters shown to the model
+ANSWER_TOKENS = 3072     # a 30-row table is ~1k tokens; more is a model rambling or looping
 
 # Korean speech levels offered in the table (the order shown in the editor).
 LEVELS = ['반말', '해요체', '합쇼체', '하오체', '하게체', '해라체']
@@ -110,6 +112,33 @@ def sample_dialogue(text: str, names: dict[str, str], limit: int = SAMPLE_CHARS,
             out.append('…'); total += 2
         out.append(piece); total += len(piece) + 1; last = j
     return '\n'.join(out)
+
+
+def rank_names(text: str, names: dict[str, str], limit: int = ROSTER_MAX) -> dict[str, str]:
+    """The characters to show the model: glossary entries ranked by how often they appear
+    in dialogue (a quoted line or the narration line right before it), then by how often
+    they appear at all. Entries that never appear in this text are left out. The glossary
+    order (shared-glossary entries first, places and sects mixed in) is never used, so
+    the main characters of THIS book always make the roster."""
+    lines = [ln.strip() for ln in (text or '').splitlines() if ln.strip()]
+    keys = [s for s in (names or {}) if len(s) >= 2 or not s.isascii()]
+    if not lines or not keys:
+        return {}
+    near = []
+    for i, ln in enumerate(lines):
+        if _QUOTES.search(ln):
+            near.append(ln)
+            if i > 0 and not _QUOTES.search(lines[i - 1]):
+                near.append(lines[i - 1])
+    dialogue = '\n'.join(near); whole = '\n'.join(lines)
+    scored = []
+    for order, s in enumerate(keys):
+        total = whole.count(s)
+        if not total:
+            continue
+        scored.append((-dialogue.count(s), -total, order, s))
+    scored.sort()
+    return {s: names[s] for *_, s in scored[:limit]}
 
 
 def split_samples(samples: str, parts: int = 3) -> list[str]:

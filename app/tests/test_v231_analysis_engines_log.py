@@ -74,7 +74,7 @@ def test_manual_speech_run_is_logged_with_each_failed_attempt(qt_app, sandbox, m
         w._generate_speech()
         assert _wait(qt_app, lambda: w._term_thread is None and w._speech_rows(), 10)
         log = w.error_view.toPlainText()
-        assert '인물 말투표 만들기 시작 · 인물 4명' in log and '엔진 로컬 LLM(gemma) → Gemini(m)' in log
+        assert '인물 말투표 만들기 시작 · 용어집 4개 중 대사에 많이 나오는 인물 4명' in log and '엔진 로컬 LLM(gemma) → Gemini(m)' in log
         assert '인물 말투표 · 전체 대사 분석 · 로컬 LLM (AI 요청 1회째) · 답은 왔지만 쓸 수 있는 인물 관계 0쌍' in log
         assert '인물 말투표 자동 생성 · 2쌍' in log and 'AI 요청 2회' in log
     finally:
