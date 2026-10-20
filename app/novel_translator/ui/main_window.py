@@ -2798,7 +2798,7 @@ class MainWindow(QMainWindow):
             return float(self._last_job_seconds or 0)
         now=time.monotonic()
         paused=self._job_paused_total+((now-self._job_paused_at) if self._job_paused_at else 0.0)
-        return max(0.0, now-self._job_t0-paused)
+        return max(0.0, now-self._job_t0-paused)+float(getattr(self,'_job_carry',0.0) or 0.0)
 
     def _job_fraction(self) -> float:
         done,total=self._prog
@@ -2820,6 +2820,9 @@ class MainWindow(QMainWindow):
 
     def _job_clock_start(self):
         if self._job_t0 is not None: return
+        # An automatic retry of the untranslated parts goes on from the main run's time.
+        self._job_carry=float(self._last_job_seconds or 0) if getattr(self,'_job_continue',False) else 0.0
+        self._job_continue=False
         self._job_t0=time.monotonic(); self._job_paused_total=0.0; self._job_paused_at=None
         self._last_job_seconds=None; self._prog=(0,0); self._prog_start=None
         self.time_label.setText('경과 0:00:00'); self._clock.start()
@@ -2986,6 +2989,11 @@ class MainWindow(QMainWindow):
             self._guide_timer.stop(); self._save_user_guide()
         if self._resume_timer.isActive():
             self._cancel_auto_resume(); return
+        continuing=bool(getattr(self,'_auto_retrying',False)); self._auto_retrying=False
+        if continuing:
+            self._auto_terms_passed=True     # the glossary and speech table were settled by the main run
+        elif not (self.worker and self.worker.isRunning()):
+            self._retry_rounds=0; self._retry_prev_remaining=None
         self._force_restart=bool(force_restart)
         if self._force_restart: self._forget_speech_attempt()
         self._auto_resumes={}
@@ -3037,10 +3045,12 @@ class MainWindow(QMainWindow):
             return
         if not self._language_mismatch_warning(): return
         if not self._preflight_output(): return
+        self._job_continue=continuing
         self._set_running_ui(True)
         first=self._ready_engines()[0]
         first_model={'gemini':model,'openai':str((self.secrets.get('openai') or {}).get('model') or ''),'local':str((self.secrets.get('local') or {}).get('model') or '')}[first]
-        self.error_view.clear(); self.pending_view.clear(); self.api_runtime_label.setText(f'API 상태 · {ENGINE_LABELS[first]} · {first_model} · 번역 요청 준비 중')
+        if not continuing: self.error_view.clear()     # an automatic retry continues the same log
+        self.pending_view.clear(); self.api_runtime_label.setText(f'API 상태 · {ENGINE_LABELS[first]} · {first_model} · 번역 요청 준비 중')
         if getattr(self,'_auto_terms_note',''):
             self.on_worker_issue(self._auto_terms_note); self._auto_terms_note=''
         bad_terms=self._suspicious_terms()
@@ -3271,18 +3281,37 @@ class MainWindow(QMainWindow):
         if self.input_mode=='single':
             self.start.setText('번역 시작 / 계속'); self._set_running_ui(False); self._force_restart=False; self._update_ready_state()
             took=self._human_duration(self._last_job_seconds or 0)
-            self.on_worker_issue(f'작업 끝 · 걸린 시간 {took}')
+            status=self._last_worker_status
+            left=status in ('completed','partial') and (status=='partial' or self._last_leftover)
+            remaining=int(self._last_failed or 0)+int(self._last_leftover or 0)
+            prev=getattr(self,'_retry_prev_remaining',None)
+            if (self._completion_message and left and self._retry_rounds<self.AUTO_RETRY_ROUNDS
+                    and (prev is None or remaining<prev)):
+                # No dialog: the untranslated parts are tried again at once, in the same log,
+                # and the clock goes on, so the main run and its retries read as one job.
+                self._retry_rounds+=1; self._retry_prev_remaining=remaining
+                self._completion_message=''; self._last_worker_status=''
+                head='본문 번역 끝' if self._retry_rounds==1 else '재시도 끝'
+                self.on_worker_issue(f'↻ {head} · 미번역 '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
+                                     +f' · 남은 부분만 이어서 자동으로 다시 번역 ({self._retry_rounds}/{self.AUTO_RETRY_ROUNDS}회) · 지금까지 {took}')
+                self._auto_retrying=True
+                QTimer.singleShot(0,self.start_translation)
+                return
+            rounds=self._retry_rounds; self._retry_rounds=0; self._retry_prev_remaining=None
+            self.on_worker_issue(f'작업 끝 · 걸린 시간 {took}'+(f' (본문 번역 + 미번역 재시도 {rounds}회 포함)' if rounds else ''))
             if self._completion_message:
                 msg=self._completion_message+f'\n걸린 시간: {took}'; self._completion_message=''
-                status=self._last_worker_status; self._last_worker_status=''
-                if status in ('completed','partial') and (status=='partial' or self._last_leftover):
-                    if self._ask_retry_untranslated(msg):
-                        self._retry_rounds+=1
-                        self.on_worker_issue('↻ 미번역 부분 재시도 · 남은 부분만 다시 번역합니다')
-                        QTimer.singleShot(0,self.start_translation)
-                    return
-                self._retry_rounds=0
-                QMessageBox.information(self,'번역 완료',f'번역 결과를 저장했습니다.\n{msg}')
+                self._last_worker_status=''
+                if left:
+                    why=('자동 재시도로도 줄지 않아 멈췄습니다(같은 엔진이 계속 막는 부분일 수 있음). ' if rounds and prev is not None and remaining>=prev
+                         else f'자동 재시도 {rounds}회 뒤에도 남았습니다. ' if rounds else '')
+                    self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
+                                         +' · '+why+'[번역 시작 / 계속]으로 다시 시도할 수 있고, API 설정에서 다른 엔진을 켜 두면 더 잘 됩니다')
+                    QMessageBox.information(self,'번역 완료 · 일부 남음',
+                        '번역 결과를 저장했지만 번역되지 않은 부분이 남아 있습니다.\n'+self._untranslated_summary()+'\n\n'+why
+                        +'[번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.\n\n'+msg)
+                else:
+                    QMessageBox.information(self,'번역 완료',f'번역 결과를 저장했습니다.\n{msg}')
             return
         if self.input_mode=='folder':
             if self._batch_retry_pending and self.source_path:
@@ -3295,23 +3324,13 @@ class MainWindow(QMainWindow):
             else:self.batch_context=''
             self.batch_index+=1; QTimer.singleShot(0,lambda:self._start_next_batch_file(self._enabled_keys(),self._selected_model_id()))
 
+    AUTO_RETRY_ROUNDS = 2   # automatic retries of the untranslated parts after the main run (single file)
+
     def _untranslated_summary(self) -> str:
         parts=[]
         if self._last_failed: parts.append(f'· 원문으로 남은 부분이 있는 청크 {self._last_failed:,}개')
         if self._last_leftover: parts.append(f'· 한자·가나가 남은 문단 {self._last_leftover:,}개')
         return '\n'.join(parts)
-
-    def _ask_retry_untranslated(self, msg: str) -> bool:
-        """After a single-file / pasted-text run that left something untranslated: offer one click to retry it."""
-        again='\n이미 한 번 다시 시도했지만 아직 남아 있습니다.' if self._retry_rounds else ''
-        box=QMessageBox(self); box.setIcon(QMessageBox.Question); box.setWindowTitle('미번역 부분 있음')
-        box.setText('번역 결과를 저장했지만 번역되지 않은 부분이 있습니다.\n'+self._untranslated_summary()+again+'\n\n미번역 부분을 재시도할까요?')
-        box.setInformativeText('이미 번역된 부분은 다시 요청하지 않고 남은 부분만 보냅니다. 같은 엔진이 거부·차단한 부분은 다시 막힐 수 있으니, '
-                               'API 설정에서 다른 엔진(OpenAI·로컬 LLM)을 켜 두면 더 잘 됩니다. 나중에 [번역 시작 / 계속]을 눌러도 같습니다.')
-        box.setMinimumWidth(460)
-        yes=box.addButton('재시도',QMessageBox.YesRole); box.addButton('나중에',QMessageBox.NoRole); box.setDefaultButton(yes)
-        box.exec()
-        return box.clickedButton() is yes
 
     def _unattended_cfg(self) -> dict:
         try: cfg=dict(load_json(CONFIG_DIR/'app.json').get('unattended') or {})

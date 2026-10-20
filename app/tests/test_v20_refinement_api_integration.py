@@ -85,3 +85,44 @@ def test_dialog_shows_which_reference_table_a_run_uses(tmp_path, monkeypatch):
         assert not d.guidance_view.isEnabled()
     finally:
         d.close()
+
+
+def test_finished_run_shows_the_done_mark_instead_of_the_bar(tmp_path):
+    app=QApplication.instance() or QApplication([])
+    d=RefinementRunDialog(Host())
+    try:
+        d.show(); app.processEvents()
+        assert d.progress.isVisible() and not d.done_badge.isVisible()
+        d._finished({'status':'completed','done':3,'total':3,'changed':2,'identical':1,'preserved':0,
+                     'seconds':65,'output':'out.txt','report':'out.txt.review.txt','guidance_source':'analysis'})
+        app.processEvents()
+        assert d.done_badge.isVisible() and not d.progress.isVisible()
+        assert '정비 완료' in d.done_badge.text() and '총 소요 시간 1분 05초' in d.status.text()
+        # A stopped run never shows the done mark.
+        d._show_done(False); d._finished({'status':'stopped','seconds':5}); app.processEvents()
+        assert not d.done_badge.isVisible() and d.progress.isVisible()
+        # Choosing another TXT brings the bar back.
+        d._show_done(True); f=tmp_path/'next.txt'; f.write_text('다음 책.',encoding='utf-8'); d._set_source(f); app.processEvents()
+        assert d.progress.isVisible() and not d.done_badge.isVisible() and d.progress.value()==0
+    finally:
+        d.close()
+
+
+def test_job_clock_carries_the_main_run_into_an_automatic_retry():
+    from novel_translator.ui.main_window import MainWindow
+    import time
+
+    class Clock:
+        _job_t0=None; _last_job_seconds=120.0; _job_continue=True
+        class _clock:
+            @staticmethod
+            def start(): pass
+        class time_label:
+            @staticmethod
+            def setText(t): pass
+    c=Clock()
+    MainWindow._job_clock_start(c)
+    assert MainWindow._job_elapsed(c) >= 120.0          # continues from the main run
+    c2=Clock(); c2._job_continue=False
+    MainWindow._job_clock_start(c2)
+    assert MainWindow._job_elapsed(c2) < 5.0            # a new job starts from zero

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import time
-from PySide6.QtCore import QThread, Signal, QTimer
+from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit)
 from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_duration,
@@ -123,6 +123,14 @@ class RefinementRunDialog(QDialog):
         self.help.setWordWrap(True);layout.addWidget(self.help)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0)
         layout.addWidget(self.progress)
+        # Shown in the progress bar's place once a run has finished: a calm, readable mark.
+        self.done_badge=QLabel('✓  정비 완료')
+        self.done_badge.setObjectName('refineDone')
+        self.done_badge.setAlignment(Qt.AlignCenter)
+        self.done_badge.setStyleSheet('#refineDone{color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;'
+                                      'border-radius:8px;padding:7px 18px;font-size:15px;font-weight:600;letter-spacing:1px;}')
+        self.done_badge.hide()
+        layout.addWidget(self.done_badge)
         self.status=_StatusLabel('준비됨')
         self.status.setWordWrap(True);layout.addWidget(self.status)
         layout.addStretch(1)
@@ -219,6 +227,7 @@ class RefinementRunDialog(QDialog):
         self.output=Path(out_dir)/(stem+suffix)
         self.source_label.setText(self.source.name)
         self.source_label.setToolTip(str(self.source))
+        self._show_done(False)
         self.status.setText(f'결과는 별도 파일에 저장됩니다: {self.output}')
         self._refresh_guidance()
 
@@ -240,6 +249,13 @@ class RefinementRunDialog(QDialog):
         self._guidance_text=table
         self.guidance_info.setText(text)
         self.guidance_view.setEnabled(bool(table))
+
+    def _show_done(self, done: bool):
+        """The finished mark replaces the progress bar; a new file or a new run brings the bar back."""
+        self.done_badge.setVisible(done)
+        self.progress.setVisible(not done)
+        if not done:
+            self.progress.setValue(0)
 
     def _show_guidance(self):
         d=QDialog(self); d.setWindowTitle('재정비 기준표'); d.resize(560,420)
@@ -308,6 +324,7 @@ class RefinementRunDialog(QDialog):
         self._run_started=time.monotonic()
         self._timer.start()
         self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
+        self._show_done(False)
         self.worker.start()
 
     def _activity(self,message):
@@ -333,12 +350,14 @@ class RefinementRunDialog(QDialog):
             residue=(f' · 한자·가나 남은 문단 {result.get("residue_before",0)}→{result.get("residue_after",0)}개'
                      if result.get('residue_before') else '')
             retry=('\n보존한 문단은 같은 TXT로 다시 [재정비 시작]을 누르면 그 문단만 다시 시도합니다.' if preserved else '')
-            self.status.setText(f'완료 · 총 소요 시간 {format_duration(result.get("seconds",0))} · 기준표 {where}{residue}\n'
+            self.status.setText(f'총 소요 시간 {format_duration(result.get("seconds",0))} · 기준표 {where}{residue}\n'
                                 f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
                                 f'결과: {result["output"]}\n검토 기록: {result["report"]}{retry}')
             self._guidance_text=str(result.get('guidance') or '')
             self.guidance_view.setEnabled(bool(self._guidance_text))
+            self.guidance_info.setText(f'기준표: {where}' + (' · 이번 윤문에 쓴 표' if self._guidance_text else ''))
             self.progress.setValue(100)
+            self._show_done(True)
         else:
             self.status.setText(f'안전 중지했습니다 · 지금까지 소요 시간 {format_duration(result.get("seconds",0))}\n'
                                 '동일 TXT와 엔진으로 다시 실행하면 완료한 문단부터 이어지고, 소요 시간도 합산됩니다.')

@@ -1468,7 +1468,7 @@ class TranslationWorker(QThread):
             self.leftover_count=len(left)   # read by the window to offer / run one retry of the untranslated parts
             if left:
                 self.issue.emit(f'한자·가나가 남은 문단 {len(left)}개 ('+', '.join(f'P{x:06d}' for x in left[:8])+(' …' if len(left)>8 else '')+
-                                ') · 같은 파일로 [번역 시작 / 계속]을 다시 누르면 그 문단만 다시 번역합니다')
+                                ') · 그 문단만 다시 번역할 수 있습니다')
                 fallback_note += '\n'+summary
             if failed:
                 self.result_ready.emit('partial',str(out),len(failed))

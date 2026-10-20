@@ -991,68 +991,94 @@ def _single_file(root, name='book.txt'):
     p=root/name; p.write_text('第一章\n\n他静静地看着窗外的雨。',encoding='utf-8'); return p
 
 
-def test_single_file_partial_asks_and_retries_only_on_yes(qt_app,sandbox,monkeypatch):
+def test_single_file_partial_retries_automatically_in_the_same_log(qt_app,sandbox,monkeypatch):
     root,_=sandbox; started=[]
     monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('partial',2,0),('completed',0,0)]))
-    w=_window(monkeypatch); asked=[]; infos=[]
-    monkeypatch.setattr(w,'_ask_retry_untranslated',lambda msg:(asked.append(w._untranslated_summary()) or True))
+    w=_window(monkeypatch); infos=[]
     monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
+    monkeypatch.setattr(ui.QMessageBox,'question',lambda *a,**k: (_ for _ in ()).throw(AssertionError('asked')))
     try:
         w._open_txt_path(str(_single_file(root))); w.start_translation()
+        w.on_worker_issue('본문 기록 표식')
         assert _wait(qt_app,lambda: len(started)==2 and infos), (started,infos)
-        assert len(asked)==1 and '2개' in asked[0]          # asked once, then the retry run finished cleanly
+        log=w.error_view.toPlainText()
+        assert '본문 기록 표식' in log                                # the main run's log is kept
+        assert '↻ 본문 번역 끝 · 미번역 원문으로 남은 부분이 있는 청크 2개' in log and '(1/2회)' in log
+        assert log.count('작업 끝 · 걸린 시간')==1 and '미번역 재시도 1회 포함' in log
         assert infos==['번역 완료'] and w._retry_rounds==0
     finally:
         _wait(qt_app,lambda: not (w.worker and w.worker.isRunning())); w.close()
 
 
-def test_single_file_no_retry_when_user_says_later(qt_app,sandbox,monkeypatch):
+def test_retries_stop_when_nothing_gets_better(qt_app,sandbox,monkeypatch):
     root,_=sandbox; started=[]
-    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('partial',1,0)]))
-    w=_window(monkeypatch); asked=[]
-    monkeypatch.setattr(w,'_ask_retry_untranslated',lambda msg:(asked.append(1) or False))
+    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('partial',2,0),('partial',2,0),('partial',2,0)]))
+    w=_window(monkeypatch); infos=[]
+    monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
     try:
         w._open_txt_path(str(_single_file(root))); w.start_translation()
-        assert _wait(qt_app,lambda: asked)
+        assert _wait(qt_app,lambda: infos), infos
         for _ in range(30): qt_app.processEvents()
-        assert len(started)==1 and w.start.text()=='번역 시작 / 계속'
+        assert len(started)==2                                       # one retry, then no progress: stop
+        assert infos==['번역 완료 · 일부 남음']
+        log=w.error_view.toPlainText()
+        assert '줄지 않아 멈췄습니다' in log and w.start.text()=='번역 시작 / 계속'
     finally: w.close()
 
 
-def test_completed_with_leftover_script_also_asks(qt_app,sandbox,monkeypatch):
+def test_retries_are_capped(qt_app,sandbox,monkeypatch):
     root,_=sandbox; started=[]
-    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('completed',0,3)]))
-    w=_window(monkeypatch); asked=[]
-    monkeypatch.setattr(w,'_ask_retry_untranslated',lambda msg:(asked.append(w._untranslated_summary()) or False))
+    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('partial',5,0),('partial',3,0),('partial',1,0),('partial',0,1)]))
+    w=_window(monkeypatch); infos=[]
+    monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
     try:
         w._open_txt_path(str(_single_file(root))); w.start_translation()
-        assert _wait(qt_app,lambda: asked)
-        assert '한자·가나가 남은 문단 3개' in asked[0] and '청크' not in asked[0]
+        assert _wait(qt_app,lambda: infos), infos
+        for _ in range(30): qt_app.processEvents()
+        assert len(started)==1+ui.MainWindow.AUTO_RETRY_ROUNDS and infos==['번역 완료 · 일부 남음']
+        assert '(2/2회)' in w.error_view.toPlainText() and '재시도 2회 뒤에도 남았습니다' in w.error_view.toPlainText()
     finally: w.close()
 
 
-def test_clean_completion_does_not_ask(qt_app,sandbox,monkeypatch):
+def test_completed_with_leftover_script_also_retries(qt_app,sandbox,monkeypatch):
+    root,_=sandbox; started=[]
+    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('completed',0,3),('completed',0,0)]))
+    w=_window(monkeypatch); infos=[]
+    monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
+    try:
+        w._open_txt_path(str(_single_file(root))); w.start_translation()
+        assert _wait(qt_app,lambda: infos)
+        assert len(started)==2 and '한자·가나가 남은 문단 3개' in w.error_view.toPlainText()
+    finally:
+        _wait(qt_app,lambda: not (w.worker and w.worker.isRunning())); w.close()
+
+
+def test_clean_completion_does_not_retry(qt_app,sandbox,monkeypatch):
     root,_=sandbox; started=[]
     monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('completed',0,0)]))
     w=_window(monkeypatch); infos=[]
-    monkeypatch.setattr(w,'_ask_retry_untranslated',lambda msg:(_ for _ in ()).throw(AssertionError('asked')))
     monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: infos.append(a[1]))
     try:
         w._open_txt_path(str(_single_file(root))); w.start_translation()
         assert _wait(qt_app,lambda: infos==['번역 완료'])
+        for _ in range(20): qt_app.processEvents()
+        assert len(started)==1 and '↻' not in w.error_view.toPlainText()
     finally: w.close()
 
 
-def test_retry_prompt_dialog_text(qt_app,sandbox,monkeypatch):
+def test_a_new_start_by_hand_clears_the_log_and_the_clock(qt_app,sandbox,monkeypatch):
+    root,_=sandbox; started=[]
+    monkeypatch.setattr(ui,'TranslationWorker',_scripted_worker_class(started,[('completed',0,0)]))
     w=_window(monkeypatch)
+    monkeypatch.setattr(ui.QMessageBox,'information',lambda *a,**k: None)
     try:
-        seen={}
-        def fake_exec(box):
-            seen['text']=box.text(); seen['buttons']=[b.text() for b in box.buttons()]; return 0
-        monkeypatch.setattr(ui.QMessageBox,'exec',fake_exec)
-        w._last_failed=2; w._last_leftover=1
-        assert w._ask_retry_untranslated('detail') is False
-        assert '미번역 부분을 재시도할까요?' in seen['text'] and '재시도' in seen['buttons'] and '나중에' in seen['buttons']
+        w._open_txt_path(str(_single_file(root)))
+        w._last_job_seconds=500.0
+        w.on_worker_issue('이전 작업 기록')
+        w.start_translation()
+        assert _wait(qt_app,lambda: not (w.worker and w.worker.isRunning()) and '작업 끝' in w.error_view.toPlainText())
+        assert '이전 작업 기록' not in w.error_view.toPlainText()
+        assert (w._last_job_seconds or 0) < 100                       # nothing carried over
     finally: w.close()
 
 
