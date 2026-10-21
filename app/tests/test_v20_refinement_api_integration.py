@@ -126,3 +126,36 @@ def test_job_clock_carries_the_main_run_into_an_automatic_retry():
     c2=Clock(); c2._job_continue=False
     MainWindow._job_clock_start(c2)
     assert MainWindow._job_elapsed(c2) < 5.0            # a new job starts from zero
+
+
+def test_running_refinement_shows_elapsed_and_an_estimate(monkeypatch):
+    import novel_translator.ui.refinement_run_dialog as mod
+    app=QApplication.instance() or QApplication([])
+    d=RefinementRunDialog(Host())
+    clock=[1000.0]
+    monkeypatch.setattr(mod.time,'monotonic',lambda: clock[0])
+    try:
+        d._run_started=clock[0]; d._counts=(0,0,0); d._base=None
+        d._progress(40,400,0)                       # finished in an earlier run (resume)
+        d._activity('윤문 요청 중 · 41~60문단 · local')
+        assert '교정 40/400 문단' in d._time_text() and '남은 예상' not in d._time_text()
+        clock[0]+=100; d._progress(60,400,2)        # 20 paragraphs in 100 s
+        text=d._time_text()
+        assert '경과 0:01:40' in text and '원문 보존 2' in text
+        assert '남은 예상 약 0:28:20' in text         # 340 left at 5 s each
+    finally:
+        d.close()
+
+
+def test_time_line_fits_the_default_window_without_clipping():
+    app=QApplication.instance() or QApplication([])
+    d=RefinementRunDialog(Host())
+    try:
+        d.show(); app.processEvents()
+        d.time_info.show()
+        d.time_info.setText('교정 12,345/23,456 문단 · 원문 보존 1,234 · 경과 12:34:56 · 남은 예상 약 23:45:01')
+        app.processEvents()
+        assert d.time_info.heightForWidth(d.time_info.width()) <= d.time_info.height() + 1
+        assert d.layout().totalHeightForWidth(d.width()) <= d.height() + 1
+    finally:
+        d.close()

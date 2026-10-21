@@ -131,6 +131,13 @@ class RefinementRunDialog(QDialog):
                                       'border-radius:8px;padding:7px 18px;font-size:15px;font-weight:600;letter-spacing:1px;}')
         self.done_badge.hide()
         layout.addWidget(self.done_badge)
+        # Elapsed time and an estimate of what is left, as the translation window shows them.
+        self.time_info=_StatusLabel('')
+        self.time_info.setWordWrap(True)
+        self.time_info.setStyleSheet('color:#475569;')
+        self.time_info.hide()
+        layout.addWidget(self.time_info)
+        self._counts=(0,0,0); self._base=None
         self.status=_StatusLabel('준비됨')
         self.status.setWordWrap(True);layout.addWidget(self.status)
         layout.addStretch(1)
@@ -322,6 +329,8 @@ class RefinementRunDialog(QDialog):
         self._stage_text='재정비 시작 중'
         self._stage_started=time.monotonic()
         self._run_started=time.monotonic()
+        self._counts=(0,0,0); self._base=None
+        self.time_info.setText('경과 0:00:00'); self.time_info.show()
         self._timer.start()
         self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
         self._show_done(False)
@@ -330,16 +339,39 @@ class RefinementRunDialog(QDialog):
     def _activity(self,message):
         self._stage_text=message
         self._stage_started=time.monotonic()
+        if self._base is None and message.startswith('윤문 요청'):
+            # The estimate counts from the first editing request: paragraphs finished in an
+            # earlier run (resume) and the one-off analysis do not distort the pace.
+            self._base=(time.monotonic(), self._counts[0])
         self._tick()
+
+    @staticmethod
+    def _clock(sec: float) -> str:
+        sec=int(max(0,sec)); return f'{sec//3600}:{sec%3600//60:02d}:{sec%60:02d}'
+
+    def _time_text(self) -> str:
+        now=time.monotonic(); elapsed=now-getattr(self,'_run_started',now)
+        done,total,issues=self._counts
+        parts=[]
+        if total:
+            parts.append(f'교정 {done:,}/{total:,} 문단'+(f' · 원문 보존 {issues:,}' if issues else ''))
+        parts.append(f'경과 {self._clock(elapsed)}')
+        if self._base and total:
+            t0,d0=self._base; ran=now-t0; did=done-d0
+            if did>=max(1,total*0.02) and ran>=15 and done<total:
+                parts.append(f'남은 예상 약 {self._clock(ran/did*(total-done))}')
+        return ' · '.join(parts)
 
     def _tick(self):
         if self.worker and self.worker.isRunning():
             elapsed=int(time.monotonic()-self._stage_started)
             self.status.setText(f'{self._stage_text} · 응답 대기 {elapsed}초 (정책 차단은 응답이 도착해야 확인 가능)')
+            self.time_info.setText(self._time_text())
 
     def _progress(self,done,total,issues):
         self.progress.setValue(int(done*100/max(1,total)))
-        self.status.setText(f'교정 완료 {done}/{total} 문단 · 교정하지 못한 문단 {issues}개(원문 보존)')
+        self._counts=(done,total,issues)
+        self.time_info.setText(self._time_text())
 
     def _finished(self,result):
         if result['status']=='completed':
@@ -368,6 +400,7 @@ class RefinementRunDialog(QDialog):
 
     def _thread_stopped(self):
         self._timer.stop()
+        self.time_info.hide()      # the result line below says how long it took
         self.worker=None
         self.pick.setEnabled(True)
         if not self._guidance_text:
