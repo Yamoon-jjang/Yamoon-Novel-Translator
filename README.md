@@ -7,13 +7,15 @@
 중국어 · 일본어 · 영어 소설과 문서(TXT · PDF · EPUB)를 원문 그대로의 뜻과 수위, 문체로 한국어에 옮기는<br>
 **로컬 LLM 중심**의 Windows 소설 번역 프로그램
 
+<sub>A local-LLM-first Windows app that translates Chinese, Japanese and English novels (TXT · PDF · EPUB) into Korean — faithfully, without embellishment or omission. · <a href="#english">English summary</a></sub>
+
 [![Release](https://img.shields.io/github/v/release/Yamoon-jjang/Yamoon-Novel-Translator?label=%EB%B0%B0%ED%8F%AC%EB%B3%B8&color=2f5aa8)](https://github.com/Yamoon-jjang/Yamoon-Novel-Translator/releases/latest)
 ![Engine](https://img.shields.io/badge/%EC%A3%BC%20%EC%97%94%EC%A7%84-%EB%A1%9C%EC%BB%AC%20LLM%20(Ollama)-7c3aed)
 ![Languages](https://img.shields.io/badge/%EC%A4%91%20%C2%B7%20%EC%9D%BC%20%C2%B7%20%EC%98%81%20%E2%86%92%20%ED%95%9C%EA%B5%AD%EC%96%B4-0f766e)
 ![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-<img src="docs/screenshots/01-main-result.png" alt="번역 결과 화면" width="100%">
+<img src="docs/screenshots/01-main-result.png" alt="야문 Novel Translator 번역 결과 화면" width="100%">
 
 </div>
 
@@ -32,7 +34,7 @@
 - **없는 내용을 만들지 않고, 있는 내용을 빠뜨리지 않는다** — 모든 문단에 번호를 붙여 보내고, 같은 번호가 하나도 빠짐없이 그대로 돌아왔는지 검사합니다. 원문에 없는 생략 표기나 남은 한자 · 가나도 잡아냅니다.
 - **원문을 바꿔 보내지 않는다** — 검열을 피하려고 단어를 가리거나 바꿔치기하거나 프롬프트로 속이지 않습니다. 원문은 원문 그대로 보냅니다. 그래서 온라인 AI에서는 거부되는 문단이 생길 수 있고, 이 때문에 **로컬 LLM을 주 엔진으로** 설계했습니다.
 
-<img src="docs/screenshots/02-source-vs-translation.png" alt="원문과 번역 비교" width="100%">
+<img src="docs/screenshots/02-source-vs-translation.png" alt="원문과 번역문 문단 대응 비교" width="100%">
 
 <sub>화면 예시 — 원문 문단 하나하나가 번역문 문단 하나하나와 그대로 대응합니다. 인명 · 지명 · 호칭은 확정 용어집대로, 사형↔사매 · 제자↔스승의 말투는 인물 말투표대로.</sub>
 
@@ -40,7 +42,7 @@
 
 Gemini · GPT 같은 온라인 AI는 빠르고 똑똑하지만, 원문을 있는 그대로 보내면 서비스 정책에 걸리는 장면에서 번역을 거부하는 일이 잦습니다. 원문을 고쳐 보내지 않는 이 프로그램에서는 그만큼 원문으로 남는 문단이 생깁니다.
 
-그래서 이 프로그램은 **내 PC에서 돌아가는 로컬 LLM(Ollama)을 주 엔진으로** 설계했습니다. Gemini · GPT는 속도가 필요할 때 거드는 보조 엔진입니다.
+그래서 이 프로그램은 **내 PC에서 돌아가는 로컬 LLM([Ollama](https://ollama.com))을 주 엔진으로** 설계했습니다. Gemini · GPT는 속도가 필요할 때 거드는 보조 엔진입니다.
 
 | | 로컬 LLM (주 엔진) | Gemini · GPT (보조) |
 |---|---|---|
@@ -62,7 +64,7 @@ Gemini · GPT 같은 온라인 AI는 빠르고 똑똑하지만, 원문을 있는
 
 Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)으로만** 답하도록 지정합니다. 모델이 문단을 건너뛰거나 두 문단을 하나로 합치기 어렵게 만드는 장치입니다. 그래도 하나가 빠지면 나머지 번역은 살리고 **빠진 문단만** 다시 요청합니다. Gemma 계열에는 Google 권장 샘플링 값을 요청마다 적용합니다.
 
-<img src="docs/screenshots/05-engine-settings-local-llm.png" alt="API 설정 — 로컬 LLM을 주 엔진으로" width="100%">
+<img src="docs/screenshots/05-engine-settings-local-llm.png" alt="API 설정 화면 — 로컬 LLM을 주 엔진으로 지정" width="100%">
 
 <sub>로컬 LLM을 1순위로, Gemini · OpenAI는 필요할 때만. 용어 · 말투 분석과 재정비 윤문 엔진도 따로 고를 수 있습니다.</sub>
 
@@ -70,8 +72,8 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/03-glossary.png" alt="확정 용어집"></td>
-<td width="50%"><img src="docs/screenshots/04-speech-levels.png" alt="인물 말투표"></td>
+<td width="50%"><img src="docs/screenshots/03-glossary.png" alt="확정 용어집 화면"></td>
+<td width="50%"><img src="docs/screenshots/04-speech-levels.png" alt="인물 말투표 화면"></td>
 </tr>
 <tr>
 <td><sub><b>확정 용어집</b> — 번역을 시작할 때 인명 · 지명 · 문파 이름을 자동으로 뽑아 고정합니다. 책마다 쌓이는 <b>공용 용어집</b>은 다음 책에도 그대로 쓰입니다.</sub></td>
@@ -120,7 +122,7 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 1. **[Releases](https://github.com/Yamoon-jjang/Yamoon-Novel-Translator/releases/latest)** 에서 최신 `Yamoon-Novel-Translator-…-Windows-Portable.zip`을 받습니다.
 2. zip 파일을 오른쪽 클릭 → 속성 → **차단 해제**에 체크한 뒤 원하는 폴더에 풉니다. (설치 과정은 없습니다)
 3. `NovelTranslator.exe`를 실행합니다. Windows가 "PC 보호" 창을 띄우면 **추가 정보 → 실행**을 누릅니다. 코드 서명을 하지 않은 개인 제작 프로그램이라 나오는 안내입니다.
-4. **Ollama**를 설치하고 모델을 받은 뒤, 오른쪽 위 **API 설정**에서 로컬 LLM을 1순위로 둡니다. Ollama를 켜 두면 등록된 모델 목록을 자동으로 불러옵니다. 설치부터 모델 등록까지는 `사용설명서.html` **11장**에 단계별로 있습니다.
+4. **[Ollama](https://ollama.com)** 를 설치하고 모델을 받은 뒤, 오른쪽 위 **API 설정**에서 로컬 LLM을 1순위로 둡니다. Ollama를 켜 두면 등록된 모델 목록을 자동으로 불러옵니다. 설치부터 모델 등록까지는 `사용설명서.html` **11장**에 단계별로 있습니다.
 
 - 지원: Windows 10 / 11 (64비트) · 로컬 LLM은 그래픽카드 메모리 16GB 권장
 - Gemini · OpenAI를 쓸 경우 이용료와 약관은 각 서비스를 따릅니다.
@@ -137,6 +139,29 @@ build_windows.bat
 
 `build_windows.bat`은 자동 테스트(580여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
 GitHub Actions(`.github/workflows/build.yml`)도 같은 과정으로 빌드하며, 새 버전이 main에서 모든 점검을 통과하면 Releases에 배포본을 자동으로 올립니다.
+
+---
+
+<a id="english"></a>
+
+## English
+
+**Yamoon Novel Translator** is a Windows desktop app that translates **Chinese, Japanese and English novels and documents (TXT, PDF, EPUB) into Korean**. It is built around a **local LLM via [Ollama](https://ollama.com)** as the main engine, with Google Gemini and OpenAI as optional secondary engines.
+
+Its goal is faithful translation: no embellishment, no rewriting, no omissions. The source text is always sent as-is — never masked or altered to get past content filters — which is why a local model is the primary engine.
+
+- **No missing paragraphs** — every paragraph is numbered and checked on return; Ollama is asked for structured output, and any missing paragraph is re-requested on its own
+- **Consistent names** — glossary of names, places and terms is extracted automatically and shared across books
+- **Consistent Korean speech levels** — a character speech-level table (honorific / casual, etc.) is applied across the whole book
+- **Refusal fallback** — refused paragraphs move to the next engine in your chosen order; successful paragraphs are never discarded
+- **Resumable** — translation memory lets you stop and continue; source files are never modified
+- **PDF / EPUB** — text extraction with header, footer and page-number cleanup and ruby (furigana) removal; export to reader-friendly PDF or EPUB
+- **Korean refinement** — polishes already-translated Korean text into natural prose with a local LLM, keeping plot, names and speech levels intact
+- Sexual content involving minors is always excluded from translation
+
+Download the portable zip from [Releases](https://github.com/Yamoon-jjang/Yamoon-Novel-Translator/releases/latest). Requires Windows 10/11 (64-bit); 16 GB of VRAM is recommended for the local LLM. The interface and manual are in Korean.
+
+---
 
 ## 라이선스 · 이용 안내
 
