@@ -86,7 +86,7 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 - **거부 대응 사다리** — 거부 · 차단이 나면 이전 문맥을 빼고 한 번 더, 그래도 막히면 문단 단위로 좁혀 **엔진 순서의 다음 엔진**이 이어받습니다. 성공한 문단은 절대 버리지 않습니다.
 - **번역 기억** — 조금씩 저장하며 번역하므로 중간에 멈추거나 PC가 꺼져도 번역한 곳부터 이어집니다. 파일 이름을 바꿔도 내용이 같으면 이미 번역한 부분은 다시 요청하지 않습니다.
 - **원본 보호** — 원본 파일은 고치지 않습니다. 결과는 `파일이름.ko.txt`, 덜 끝났으면 `파일이름.ko.partial.txt` (원문으로 남은 부분까지 빠짐없이 포함). PDF · EPUB으로 연 책도 같습니다.
-- **폴더 통째로** — 폴더 안의 TXT · PDF · EPUB을 순서대로 끝까지, 하위 폴더 구조 그대로.
+- **폴더 통째로** — 폴더 안의 TXT · PDF · EPUB을 순서대로 끝까지, 하위 폴더 구조 그대로. 파일마다 미번역 부분을 자동으로 다시 번역하고, 그래도 남은 것만 마지막에 모아 알려 줍니다.
 
 ### PDF · EPUB도 그대로
 
@@ -154,7 +154,7 @@ Its goal is faithful translation: no embellishment, no rewriting, no omissions. 
 - **Consistent names** — glossary of names, places and terms is extracted automatically and shared across books
 - **Consistent Korean speech levels** — a character speech-level table (honorific / casual, etc.) is applied across the whole book
 - **Refusal fallback** — refused paragraphs move to the next engine in your chosen order; successful paragraphs are never discarded
-- **Resumable** — translation memory lets you stop and continue; source files are never modified
+- **Resumable** — translation memory lets you stop and continue; untranslated parts are retried automatically (also for every file in a folder run), and only what is still left is reported; source files are never modified
 - **PDF / EPUB** — text extraction with header, footer and page-number cleanup and ruby (furigana) removal; export to reader-friendly PDF or EPUB
 - **Korean refinement** — polishes already-translated Korean text into natural prose with a local LLM, keeping plot, names and speech levels intact
 - Sexual content involving minors is always excluded from translation

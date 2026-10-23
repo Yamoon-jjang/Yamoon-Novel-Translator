@@ -1095,7 +1095,7 @@ def test_folder_retries_each_partial_file_once_then_moves_on(qt_app,sandbox,monk
         w.start_translation()
         assert _wait(qt_app,lambda: w.last_result_path is not None and w.last_result_path.name=='번역_요약.txt')
         assert [s.source_path.name for s in started]==['1.txt','1.txt','2.txt']
-        assert '미번역 부분 자동 재시도' in w.error_view.toPlainText()
+        assert '남은 부분만 이어서 자동으로 다시 번역 (1/2회)' in w.error_view.toPlainText()   # no progress after one retry: move on
     finally: w.close()
 
 

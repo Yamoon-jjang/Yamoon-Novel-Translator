@@ -337,7 +337,8 @@ class MainWindow(QMainWindow):
         self.worker=None; self._close_after_worker=False; self._stop_batch=False; self._completion_message=''; self._last_worker_status=''; self._force_restart=False
         # Unattended run: temporary pauses are resumed automatically, hopeless files are skipped.
         self._pending_pause=''; self._auto_resumes={}; self._resume_left=0; self._resume_reason=''
-        self._batch_retried=set(); self._batch_retry_pending=False; self._last_leftover=0; self._last_failed=0; self._retry_rounds=0
+        self._batch_retry_pending=False; self._last_leftover=0; self._last_failed=0; self._retry_rounds=0
+        self._reset_batch_retry_state()
         self._resume_timer=QTimer(self); self._resume_timer.setInterval(1000); self._resume_timer.timeout.connect(self._resume_tick)
         self._term_cache={}
         self._build_ui(); self._apply_interactive_cursors(); self._apply_profile(self.pm.active.id); self._update_ready_state()
@@ -2997,7 +2998,7 @@ class MainWindow(QMainWindow):
         self._force_restart=bool(force_restart)
         if self._force_restart: self._forget_speech_attempt()
         self._auto_resumes={}
-        if not (self.worker and self.worker.isRunning()) and self.input_mode=='folder': self._batch_retried=set()
+        if not (self.worker and self.worker.isRunning()) and self.input_mode=='folder': self._reset_batch_retry_state()
         if self._preview_edited() and not (self.worker and self.worker.isRunning()):
             if not self._use_preview_as_source(): return
         if self.worker and self.worker.isRunning():
@@ -3163,9 +3164,21 @@ class MainWindow(QMainWindow):
         self._last_leftover=int(getattr(self.worker,'leftover_count',0) or 0) if status in ('completed','partial') else 0
         self._last_failed=int(failed_count or 0)
         self._link_result_for_refinement(path)
-        if (self.input_mode=='folder' and self.source_path and status in ('completed','partial')
-                and (status=='partial' or self._last_leftover) and str(self.source_path) not in self._batch_retried):
-            self._batch_retry_pending=True   # retried once in _worker_thread_finished, before moving on
+        if self.input_mode=='folder' and self.source_path and status in ('completed','partial'):
+            # Same rule as a single file: the untranslated parts are tried again
+            # automatically (up to AUTO_RETRY_ROUNDS, only while they keep shrinking)
+            # before the queue moves on; only what is still left is reported at the end.
+            key=str(self.source_path)
+            remaining=self._last_failed+self._last_leftover
+            rounds=self._batch_rounds.get(key,0); prev=self._batch_prev.get(key)
+            if remaining and rounds<self.AUTO_RETRY_ROUNDS and (prev is None or remaining<prev):
+                self._batch_retry_pending=True   # run again in _worker_thread_finished, before moving on
+                self._batch_rounds[key]=rounds+1; self._batch_prev[key]=remaining
+            elif remaining:
+                stalled=bool(rounds and prev is not None and remaining>=prev)
+                self._batch_left[key]=(self._last_failed,self._last_leftover,rounds,stalled)
+            else:
+                self._batch_left.pop(key,None)
         if self.input_mode=='single' and path:
             try:
                 self._set_result(Path(path).read_text(encoding='utf-8-sig'))
@@ -3182,10 +3195,17 @@ class MainWindow(QMainWindow):
                     # The worker hands over the list (no .ko.failed.txt any more); an older
                     # build's file is read only if the worker has none.
                     detail=getattr(self.worker,'pending_report','') or legacy.read_text(encoding='utf-8-sig')
-                    self.pending_view.setPlainText(detail)
+                    if self.input_mode=='folder':
+                        # Folder: one list per file, kept for the whole run (not overwritten).
+                        self._batch_pending_reports[str(self.source_path)]=detail
+                        self._show_batch_pending()
+                    else:
+                        self.pending_view.setPlainText(detail)
                     self.on_worker_issue(f'미완료 {failed_count}개 · 상세 목록은 미완료 목록 탭에서 확인')
                 except Exception:
                     if not self.error_view.toPlainText().strip(): self.error_view.setPlainText(f'미완료 청크 {failed_count}개. 자세한 오류 목록은 결과 폴더를 확인하세요.')
+            elif self.input_mode=='folder' and self._batch_pending_reports.pop(str(self.source_path),None) is not None:
+                self._show_batch_pending()   # a retry finished this file: its list goes
             if self.input_mode=='folder' and not self._batch_retry_pending and status not in {'paused'} and not should_continue_after_result(self.batch_relation.currentData(),status):
                 # Continuous-volume queues must not advance across a missing section.
                 # Paused/stopped states already request a stop elsewhere; this also
@@ -3315,16 +3335,43 @@ class MainWindow(QMainWindow):
             return
         if self.input_mode=='folder':
             if self._batch_retry_pending and self.source_path:
-                self._batch_retry_pending=False; self._batch_retried.add(str(self.source_path))
-                self.on_worker_issue(f'↻ {self.source_path.name} · 미번역 부분 자동 재시도 (파일당 1회) · 남은 부분만 다시 번역합니다')
-                QTimer.singleShot(0,lambda:self._start_next_batch_file(self._enabled_keys(),self._selected_model_id())); return
+                self._batch_retry_pending=False
+                key=str(self.source_path); n=self._batch_rounds.get(key,1)
+                head='본문 번역 끝' if n==1 else '재시도 끝'
+                self.on_worker_issue(f'↻ {head} · 미번역 '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
+                                     +f' · 남은 부분만 이어서 자동으로 다시 번역 ({n}/{self.AUTO_RETRY_ROUNDS}회)')
+                QTimer.singleShot(0,self._retry_batch_file); return
             if self.batch_relation.currentData()=='continuous' and self.worker:
                 current=self.batch_results.get(str(self.source_path),('', '', 0))[0] if self.source_path else ''
                 self.batch_context=self.worker.final_context if (current=='완료' or current.startswith('부분 완료')) else ''
             else:self.batch_context=''
             self.batch_index+=1; QTimer.singleShot(0,lambda:self._start_next_batch_file(self._enabled_keys(),self._selected_model_id()))
 
-    AUTO_RETRY_ROUNDS = 2   # automatic retries of the untranslated parts after the main run (single file)
+    AUTO_RETRY_ROUNDS = 2   # automatic retries of the untranslated parts after the main run (single file and each folder file)
+
+    def _reset_batch_retry_state(self):
+        """Folder run: per-file automatic retry rounds, and what is still left at the end."""
+        self._batch_rounds={}; self._batch_prev={}; self._batch_left={}; self._batch_pending_reports={}
+
+    def _retry_batch_file(self):
+        """Run the same folder file again; finished chunks come from its saved job, so only
+        the untranslated parts are requested. A forced restart chosen for the whole run must
+        not wipe the file's own first pass, so it is off for this one start only."""
+        if self._stop_batch: return
+        forced=self._force_restart; self._force_restart=False
+        try: self._start_next_batch_file(self._enabled_keys(),self._selected_model_id())
+        finally: self._force_restart=forced
+
+    def _show_batch_pending(self):
+        """Folder run: the unfinished lists of every file, each under its file name."""
+        parts=[]
+        for p in self.batch_files:
+            detail=self._batch_pending_reports.get(str(p))
+            if not detail: continue
+            try: name=str(p.relative_to(self.batch_root))
+            except Exception: name=p.name
+            parts.append(f'── {name} ──\n'+detail.strip())
+        self.pending_view.setPlainText('\n\n'.join(parts))
 
     def _untranslated_summary(self) -> str:
         parts=[]
@@ -3404,15 +3451,41 @@ class MainWindow(QMainWindow):
             else:failed+=1
             try: rel=p.relative_to(self.batch_root)
             except Exception: rel=p.name
-            lines.append(f'{st}\t{rel}\t{path}')
+            lines.append(f'{st}\t{rel}\t{path}'+(('\t'+self._batch_left_note(p)) if str(p) in self._batch_left else ''))
         lines += ['',f'완료 {completed}개 · 부분 완료 {partial}개 · 오류/미처리 {failed}개']
+        left_files=[p for p in self.batch_files if str(p) in self._batch_left]
+        if left_files:
+            lines += [f'자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일 {len(left_files)}개 · 남은 부분은 결과 파일에 원문 그대로 들어 있습니다',
+                      '[번역 시작 / 계속]으로 같은 폴더를 다시 시작하면 남은 부분만 다시 번역합니다(API 설정에서 다른 엔진을 켜 두면 더 잘 됩니다)']
         took=self._human_duration(self._job_elapsed())
         lines += [f'걸린 시간: {took} (일시정지 시간 제외)']
         usage=self._batch_usage_lines()
         if usage: lines += ['']+usage
+        if left_files:
+            lines += ['','남은 미번역 상세 (청크 번호 · 원문으로 남은 문단 번호 P······)']
+            for p in left_files:
+                try: rel=p.relative_to(self.batch_root)
+                except Exception: rel=p.name
+                rows=[l for l in (self._batch_pending_reports.get(str(p)) or '').splitlines() if l.startswith('청크 ')]
+                lines += ['',f'── {rel} ──']+(rows or [self._batch_left_note(p)])
         summary=outroot/'번역_요약.txt'; atomic_write_text(summary,'\n'.join(map(str,lines))+'\n'); self.last_result_path=summary; self.open_result.setEnabled(True); self.cleanreader_btn.setEnabled(True)
         self.start.setText('번역 시작 / 계속'); self.start.setEnabled(True); self._set_running_ui(False); self._force_restart=False; self.status.setText(f'폴더 번역 완료 · 완료 {completed} · 부분 {partial} · 오류 {failed} · 걸린 시간 {took}')
-        QMessageBox.information(self,'폴더 번역 완료',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}')
+        if left_files:
+            names='\n'.join(f'· {p.name} · {self._batch_left_note(p)}' for p in left_files[:8])+(f'\n· … 외 {len(left_files)-8}개' if len(left_files)>8 else '')
+            self.error_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • 폴더 번역 끝 · 미번역 남음 · 자동 재시도 뒤에도 남은 파일 {len(left_files)}개 · 상세는 미완료 목록 탭과 번역_요약.txt')
+            QMessageBox.information(self,'폴더 번역 완료 · 일부 남음',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')
+                +f'\n\n자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일:\n{names}\n\n남은 부분은 결과 파일에 원문 그대로 들어 있습니다. [번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.'
+                +f'\n\n요약: {summary}')
+        else:
+            QMessageBox.information(self,'폴더 번역 완료',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}')
+
+    def _batch_left_note(self, p) -> str:
+        failed,leftover,rounds,stalled=self._batch_left.get(str(p),(0,0,0,False))
+        parts=[]
+        if failed: parts.append(f'원문으로 남은 부분이 있는 청크 {failed:,}개')
+        if leftover: parts.append(f'한자·가나가 남은 문단 {leftover:,}개')
+        why=('자동 재시도로도 줄지 않음' if stalled else f'자동 재시도 {rounds}회 뒤') if rounds else ''
+        return '남은 부분: '+' · '.join(parts)+(f' ({why})' if why else '')
 
     def on_key_disabled(self,provider_id,key_id,reason):
         self.on_worker_issue(f'API 키 비활성 · {provider_id} · {key_id} · {reason}')
