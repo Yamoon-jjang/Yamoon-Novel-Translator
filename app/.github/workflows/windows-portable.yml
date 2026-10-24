@@ -31,7 +31,7 @@ jobs:
       - name: Upload portable build
         uses: actions/upload-artifact@v4
         with:
-          name: NovelTranslator-v2.5-Windows-Portable
+          name: NovelTranslator-v2.5.2-Windows-Portable
           path: NovelTranslator_Windows_Portable.zip
           if-no-files-found: error
           retention-days: 14

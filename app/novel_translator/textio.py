@@ -147,7 +147,7 @@ def read_txt(path: Path, source_language: str | None = None) -> tuple[str, str]:
     return decode_txt_bytes(path.read_bytes(), source_language)
 
 
-def read_source_file(path: Path, source_language: str | None = None, forced_encoding: str | None = None, progress=None) -> tuple[str, str, bytes]:
+def read_source_file(path: Path, source_language: str | None = None, forced_encoding: str | None = None, progress=None, cache_dir=None) -> tuple[str, str, bytes]:
     """Text, reading label and source bytes of a file to translate.
 
     A TXT is decoded exactly as before. A PDF's or EPUB's text is taken out and cleaned
@@ -158,7 +158,7 @@ def read_source_file(path: Path, source_language: str | None = None, forced_enco
     from .source_formats import document_kind, extract_document
     path = Path(path)
     if document_kind(path):
-        result = extract_document(path, progress)
+        result = extract_document(path, progress, cache_dir=cache_dir)
         return result.text, result.label, result.text.encode('utf-8')
     raw = path.read_bytes()
     text, label = decode_txt_bytes(raw, source_language, forced_encoding)

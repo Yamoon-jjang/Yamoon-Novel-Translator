@@ -129,10 +129,74 @@ def _even_out_line_gaps(text: str) -> str:
     return '\n'.join(out)
 
 
-def read_pdf_pages(path, max_pages: int | None = None, progress=None) -> tuple[list[str], int]:
+# pypdf is pure Python and reads each page twice (plain and layout mode), so a long PDF
+# took minutes on one CPU core. From this many pages on, the pages are read by several
+# processes at once. Every page is read by exactly the same code, so the text is the
+# same as reading them one by one; any problem with the processes falls back to that.
+PARALLEL_MIN_PAGES = 40
+_BATCH_PAGES = 8
+
+
+def _parallel_workers(pages: int) -> int:
+    import os
+    if pages < PARALLEL_MIN_PAGES:
+        return 1
+    return max(1, min(6, (os.cpu_count() or 1) - 1, pages // _BATCH_PAGES))
+
+
+def _read_page_range(args) -> list[tuple[bool, str]]:
+    """In a helper process: (ok, text or error) for pages start..end-1."""
+    path, start, end = args
+    reader = _reader(Path(path))
+    out = []
+    for i in range(start, end):
+        try:
+            out.append((True, _page_text(reader.pages[i])))
+        except Exception as e:
+            out.append((False, str(e)))
+    return out
+
+
+def _aes_error(message: str) -> bool:
+    return 'cryptography' in message or 'AES' in message
+
+
+_AES_MESSAGE = ('암호화 방식(AES)이 걸린 PDF라 글자를 꺼낼 수 없습니다. '
+                'PDF 보기 프로그램에서 보안을 해제한 PDF로 다시 저장한 뒤 열어 주세요.')
+
+
+def _pages_parallel(path, limit: int, workers: int, progress=None, strict: bool = False) -> list[tuple[bool, str]] | None:
+    """Pages 0..limit-1 read by `workers` processes, in order; None when that is not possible
+    here (strict: raise instead, for the packaged program's self-test)."""
+    try:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        ctx = multiprocessing.get_context('spawn')
+        ranges = [(str(path), a, min(limit, a + _BATCH_PAGES)) for a in range(0, limit, _BATCH_PAGES)]
+        results: list[tuple[bool, str]] = []
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            futures = [pool.submit(_read_page_range, r) for r in ranges]
+            for f in futures:
+                results.extend(f.result())
+                if progress is not None:
+                    try:
+                        progress(len(results), limit)
+                    except Exception:
+                        pass
+        if len(results) != limit:
+            raise RuntimeError(f'{len(results)} of {limit} pages')
+        return results
+    except Exception:
+        if strict:
+            raise
+        return None
+
+
+def read_pdf_pages(path, max_pages: int | None = None, progress=None, workers: int | None = None) -> tuple[list[str], int]:
     """Raw text of each page (in order) and the file's page count.
 
     progress(done, total) is called after each page (the window keeps responding with it).
+    workers: processes reading pages (None = by page count and CPU cores, 1 = this process).
     """
     reader = _reader(Path(path))
     try:
@@ -143,21 +207,32 @@ def read_pdf_pages(path, max_pages: int | None = None, progress=None) -> tuple[l
         raise PdfTextError('쪽이 없는 PDF입니다.')
     pages: list[str] = []
     limit = total if max_pages is None else min(total, max(1, int(max_pages)))
+    n = _parallel_workers(limit) if workers is None else max(1, int(workers))
+    done = _pages_parallel(path, limit, n, progress) if n > 1 else None
     unreadable = 0
-    for i in range(limit):
-        try:
-            pages.append(_page_text(reader.pages[i]))
-        except Exception as e:
-            if 'cryptography' in str(e) or 'AES' in str(e):
-                raise PdfTextError('암호화 방식(AES)이 걸린 PDF라 글자를 꺼낼 수 없습니다. '
-                                   'PDF 보기 프로그램에서 보안을 해제한 PDF로 다시 저장한 뒤 열어 주세요.')
+    if done is not None:
+        for ok, value in done:
+            if ok:
+                pages.append(value)
+                continue
+            if _aes_error(value):
+                raise PdfTextError(_AES_MESSAGE)
             unreadable += 1
-            pages.append('')   # one damaged page must not lose the whole book
-        if progress is not None:
+            pages.append('')
+    else:
+        for i in range(limit):
             try:
-                progress(i + 1, limit)
-            except Exception:
-                pass
+                pages.append(_page_text(reader.pages[i]))
+            except Exception as e:
+                if _aes_error(str(e)):
+                    raise PdfTextError(_AES_MESSAGE)
+                unreadable += 1
+                pages.append('')   # one damaged page must not lose the whole book
+            if progress is not None:
+                try:
+                    progress(i + 1, limit)
+                except Exception:
+                    pass
     if unreadable == limit:
         raise PdfTextError('PDF의 어느 쪽에서도 글자를 읽지 못했습니다 (손상된 PDF일 수 있음).')
     return pages, total
@@ -415,9 +490,9 @@ def _looks_garbled(text: str) -> bool:
     return bad / len(chars) > 0.3
 
 
-def extract_pdf_text(path, max_pages: int | None = None, progress=None) -> PdfText:
+def extract_pdf_text(path, max_pages: int | None = None, progress=None, workers: int | None = None) -> PdfText:
     """Readable text of a PDF. Raises PdfNeedsOcrError for scanned PDFs, PdfTextError otherwise."""
-    pages, total = read_pdf_pages(path, max_pages, progress)
+    pages, total = read_pdf_pages(path, max_pages, progress, workers)
     letters = [_letters(p) for p in pages]
     text_pages = sum(1 for n in letters if n >= 10)
     any_text_pages = sum(1 for n in letters if n > 0)
@@ -437,7 +512,7 @@ def extract_pdf_text(path, max_pages: int | None = None, progress=None) -> PdfTe
 def pdf_sample_text(path, max_pages: int = 6) -> str:
     """The first pages' text, for a quick language check (empty when there is no text)."""
     try:
-        pages, _ = read_pdf_pages(path, max_pages)
+        pages, _ = read_pdf_pages(path, max_pages, workers=1)
         return clean_pdf_pages(pages)[0]
     except Exception:
         return ''

@@ -195,6 +195,50 @@ def build_system_prompt(profile: LanguageProfile, content_kind: str = 'novel', s
     return prompt
 
 
+# A long book's glossary can hold hundreds of confirmed terms. Sent whole with every
+# request, it makes each prompt thousands of tokens longer, so a local LLM's context
+# (num_ctx) is raised for good and every request gets slower. Above this size a request
+# carries only the terms that can matter for its own source text. A glossary of this size
+# or smaller is sent exactly as before. The job identity (resume) never changes: it uses
+# the whole glossary.
+TERM_FILTER_MIN = 80
+_HAN_KANA = re.compile(r'[぀-ヿ㐀-鿿豈-﫿]')
+_TERM_PARTS = re.compile(r'[\s·・\-–—=.,]+')
+
+
+def _term_matches(term: str, text: str, folded: str) -> bool:
+    if term in text or term.casefold() in folded:
+        return True
+    cjk = _HAN_KANA.findall(term)
+    if len(term) >= 3 and len(cjk) >= 2:
+        # A name used in part (林若雪 written 若雪, 田中太郎 written 太郎): any two
+        # neighbouring Han/kana characters of the term that appear in the source.
+        for i in range(len(term) - 1):
+            pair = term[i:i + 2]
+            if len(_HAN_KANA.findall(pair)) == 2 and pair in text:
+                return True
+    parts = [p for p in _TERM_PARTS.split(term) if p]
+    if len(parts) > 1:
+        # "John Smith" written "Smith", "アリス・ウェルズ" written "アリス".
+        for p in parts:
+            if (len(p) >= 2 if _HAN_KANA.search(p) else len(p) >= 3) and p.casefold() in folded:
+                return True
+    if not cjk and len(term) >= 5 and term[:-1].casefold() in folded:
+        return True   # Dwarf / Dwarves, Fairy / Fairies
+    return False
+
+
+def relevant_terms(terms: dict[str, str], source: str) -> dict[str, str]:
+    """The confirmed terms one request needs (all of them for a glossary of
+    TERM_FILTER_MIN or fewer). Generous on purpose: a term is kept when it, a part of a
+    multi-word name or two neighbouring characters of a Han/kana name appear in the source."""
+    if not terms or len(terms) <= TERM_FILTER_MIN:
+        return terms
+    text = source or ''
+    folded = text.casefold()
+    return {a: b for a, b in terms.items() if str(a).strip() and _term_matches(str(a).strip(), text, folded)}
+
+
 def build_user_prompt(chunk_text: str, terms: dict[str, str], previous_context: str = '', recovery_mode: bool = False, book_memory: str = '', language_options: dict | None = None, lexical_guidance: dict[str,str] | None = None, recovery_reason: str = 'format') -> str:
     term_text = '\n'.join(f'{a} => {b}' for a, b in terms.items()) or '(none confirmed)'
     confirmed={str(key).casefold() for key in terms}

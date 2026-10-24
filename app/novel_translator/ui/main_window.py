@@ -452,6 +452,8 @@ class MainWindow(QMainWindow):
             self.lang.setToolTip(self.lang.currentData(Qt.ToolTipRole) or '')
             single=self.input_mode=='single' and bool(self.source_bytes)
             if single: self._lang_chosen=False   # the language left behind is no longer this book's choice
+            if self.input_mode!='folder' and (not single or getattr(self,'_paste_active',False) or self._preview_edited()):
+                self._paste_lang_locked=True   # chosen by hand for pasted text: not detected over
             self._apply_profile(self.lang.currentData())
             if self.input_mode=='single' and self.source_bytes:
                 # Only a language the user picks here locks this book against automatic detection.
@@ -827,12 +829,7 @@ class MainWindow(QMainWindow):
         if hasattr(self,'term_table') and self.pm.active.id!=profile_id:
             self._save_workspace(); self._term_cache[self.pm.active.id]=self._terms()
         p=self.pm.set_active(profile_id); self._configure_language_option(profile_id)
-        if self.input_mode=='single' and self.source_bytes:
-            try:
-                self.source_text,enc=self._decode_source(p.source_language,self.encoding.currentData() if hasattr(self,'encoding') else 'auto')
-                self.file_label.setText(self._single_label(self.source_path.name,enc,self.source_text,self.source_bytes))
-                self._set_preview_source(self.source_text)
-            except Exception as e: self.status.setText(f'인코딩 재해석 실패: {e}')
+        # (The source is decoded and shown once, below, after this book's saved encoding is loaded.)
         idx=self.lang.findData(profile_id)
         if idx>=0 and self.lang.currentIndex()!=idx:
             self.lang.blockSignals(True); self.lang.setCurrentIndex(idx); self.lang.blockSignals(False)
@@ -988,6 +985,8 @@ class MainWindow(QMainWindow):
         self._origin_kind = ''
         self._auto_terms_sha = ''
         self._lang_chosen = False
+        self._terms_declined_saved = False; self._speech_done_saved = False
+        self._paste_lang_locked = False
         if hasattr(self,'view_result_btn'): self._set_result('')
 
     def open_txt(self):
@@ -1007,7 +1006,18 @@ class MainWindow(QMainWindow):
         kind=self._source_doc_kind()
         if kind:
             return self.source_bytes.decode('utf-8'), getattr(self,'_doc_label','') or f'{kind} · 글자 추출'
-        return decode_txt_bytes(self.source_bytes,language,encoding)
+        if getattr(self,'_paste_active',False):
+            # Text from the 원문 window was saved as UTF-8: never read it with a TXT encoding setting.
+            return self.source_bytes.decode('utf-8'), 'UTF-8'
+        # Opening a book decodes it once: the same bytes with the same language and
+        # encoding setting give the same text (a large TXT took seconds per decode).
+        key=(language, encoding or 'auto')
+        cache=getattr(self,'_decode_cache',None)
+        if cache and cache[0] is self.source_bytes and cache[1]==key:
+            return cache[2], cache[3]
+        text,label=decode_txt_bytes(self.source_bytes,language,encoding)
+        self._decode_cache=(self.source_bytes,key,text,label)
+        return text,label
 
     @staticmethod
     def _no_text_reason(p: Path) -> str:
@@ -1026,7 +1036,7 @@ class MainWindow(QMainWindow):
                 self.status.setText(f'{kind}에서 글자를 꺼내는 중 · {p.name} · {done:,}/{total:,}쪽'); QApplication.processEvents()
         try:
             QApplication.processEvents()
-            return read_source_file(p,self.pm.active.source_language,progress=progress)
+            return read_source_file(p,self.pm.active.source_language,progress=progress,cache_dir=DATA_DIR/'cache'/'pdf_text')
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1043,7 +1053,11 @@ class MainWindow(QMainWindow):
         self._prepare_new_input()
         self.input_mode='single'; self.batch_relation.setEnabled(False); self.include_sub.setEnabled(False); self._update_batch_memory_mode(); self.batch_root=None; self.batch_files=[]; self.batch_index=-1; self.batch_results={}; self.batch_selection=None
         self.source_path=p; self.source_bytes=raw; self.source_text=text; self._doc_label=enc if kind else ''; self._origin_kind=kind
-        self.file_label.setText(self._single_label(p.name,enc,text,raw)); self._set_preview_source(text); self._refresh_job_table()
+        if not kind:
+            self._decode_cache=(raw,(self.pm.active.source_language,self.encoding.currentData() or 'auto'),text,enc)
+        # The 원문 window is filled once, by _apply_profile below (it decodes with the book's
+        # saved encoding): filling it here too cost seconds for a large book.
+        self.file_label.setText(self._single_label(p.name,enc,text,raw)); self._refresh_job_table()
         target,note=self._auto_source_profile(p,raw)
         if target!=self.pm.active.id:
             # Switch before applying so no empty settings are saved for this book under the old language.
@@ -1468,6 +1482,10 @@ class MainWindow(QMainWindow):
                 'auto_terms_sha': getattr(self,'_auto_terms_sha',''),
                 'language_chosen': bool(getattr(self,'_lang_chosen',False)),
                 'speech': self._speech_rows() if hasattr(self,'speech_table') else [],
+                # The automatic glossary question / speech table attempt are over for this
+                # book: a restarted program does not ask or build again mid-book.
+                'auto_terms_declined': bool(getattr(self,'_terms_declined_saved',False)),
+                'speech_attempted': bool(getattr(self,'_speech_done_saved',False)),
             })
         except Exception:
             pass
@@ -1477,6 +1495,8 @@ class MainWindow(QMainWindow):
         if not key:return
         state=self.workspace_store.get(key)
         self._lang_chosen=bool(state.get('language_chosen')) if state else False
+        self._terms_declined_saved=bool(state.get('auto_terms_declined')) if state else False
+        self._speech_done_saved=bool(state.get('speech_attempted')) if state else False
         if not state:return
         if hasattr(self,'book_memory'): self.book_memory.setPlainText(str(state.get('book_memory') or ''))
         self._auto_terms_sha=str(state.get('auto_terms_sha') or '')
@@ -2022,6 +2042,8 @@ class MainWindow(QMainWindow):
             self._speech_tried.discard(key)
         except Exception:
             pass
+        if getattr(self,'_speech_done_saved',False):
+            self._speech_done_saved=False; self._save_workspace()
 
     def _speech_rows(self) -> list[dict]:
         from ..speech_levels import clean_rows
@@ -2107,7 +2129,20 @@ class MainWindow(QMainWindow):
         if not (hasattr(self,'auto_speech') and self.auto_speech.isChecked()) or self.input_mode!='single': return False
         if self._speech_rows() or self.pm.active.source_language not in ('zh','en','ja'): return False
         key=self._source_sha() or hashlib.sha256(self._speech_source().encode('utf-8')).hexdigest()
-        return key not in self._speech_tried and self._speech_people()>=2
+        if key in self._speech_tried or self._speech_people()<2: return False
+        if getattr(self,'_speech_done_saved',False) and self._book_has_progress():
+            # Tried (or skipped) before for this book, and part of it is already translated
+            # without a table: a table now would change the speech levels mid-book.
+            return False
+        return True
+
+    def _book_has_progress(self) -> bool:
+        if self.input_mode!='single' or not self.source_bytes: return False
+        try:
+            sha=hashlib.sha256(self.source_bytes).hexdigest()
+            return Database(DATA_DIR/'translations.db').has_progress_for_source(sha,self.pm.active.id)
+        except Exception:
+            return False
 
     def _generate_speech(self):
         if self._extracting():
@@ -2181,6 +2216,8 @@ class MainWindow(QMainWindow):
         if getattr(self,'_close_after_extract',False):
             self.close(); return
         self.speech_generate.setEnabled(True)
+        if not (not ok and res=='사용자 취소' and not skipped):
+            self._speech_done_saved=True; self._save_workspace()   # an attempt (or a skip) that finished
         if not ok and res=='사용자 취소' and auto and skipped:
             # [말투표 건너뛰고 번역 시작]: this book's automatic attempt is over (it is not
             # asked again on resume); the button on the 인물 말투 tab can still build it later.
@@ -2252,7 +2289,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 resume=False
             if resume:
-                if not have and self._source_sha() in self._auto_terms_declined:
+                if not have and (getattr(self,'_terms_declined_saved',False) or self._source_sha() in self._auto_terms_declined):
                     return 'skip','인명·용어 자동 추출 생략 · 이 파일은 용어집 없이 이어서 번역하기로 선택함'
                 if not have:
                     return 'ask',''
@@ -2263,11 +2300,13 @@ class MainWindow(QMainWindow):
         """'extract' (then restart from the beginning), 'resume' (no glossary) or 'cancel'."""
         box=QMessageBox(self); box.setIcon(QMessageBox.Question); box.setWindowTitle('인명·용어 자동 추출')
         box.setText('이 파일은 이전에 번역하던 기록이 있고, 확정 용어집이 비어 있습니다.\n\n'
-                    '지금 인명·용어를 추출하면 용어집이 바뀌므로 이전 번역을 이어 쓰지 않고 처음부터 다시 번역합니다.')
-        extract=box.addButton('추출 후 처음부터 번역',QMessageBox.AcceptRole)
-        resume=box.addButton('용어집 없이 이어서 번역',QMessageBox.ActionRole)
+                    '지금 인명·용어를 추출하면 용어집이 바뀌므로 이전 번역을 이어 쓰지 않고 처음부터 다시 번역합니다.\n'
+                    '(이어서 번역을 고르면 이 책에서는 다시 묻지 않습니다)')
+        resume=box.addButton('용어집 없이 이어서 번역',QMessageBox.AcceptRole)
+        extract=box.addButton('추출 후 처음부터 번역',QMessageBox.DestructiveRole)
         box.addButton('취소',QMessageBox.RejectRole)
-        box.setDefaultButton(extract); box.exec()
+        # Enter keeps the saved translation: starting over is never the default.
+        box.setDefaultButton(resume); box.exec()
         clicked=box.clickedButton()
         return 'extract' if clicked is extract else 'resume' if clicked is resume else 'cancel'
 
@@ -2290,9 +2329,58 @@ class MainWindow(QMainWindow):
         current=self.preview.toPlainText()
         return bool(current.strip()) and current!=self._preview_baseline
 
+    def _paste_language_candidate(self) -> bool:
+        """Text pasted (or typed) into the 원문 window as a new source, not an edit of an opened file."""
+        if self.input_mode=='folder':
+            return False
+        if self.input_mode=='single' and self.source_path and not getattr(self,'_paste_active',False):
+            return False   # an edited copy of the opened book keeps the book's language
+        if (self.worker and self.worker.isRunning()) or self._extracting():
+            return False
+        return self._preview_edited()
+
+    def _detect_paste_language(self) -> None:
+        """Pasted text gets the same automatic source language as an opened file, unless the
+        user picked the language for it themselves."""
+        t=getattr(self,'_paste_lang_timer',None)
+        if t is not None: t.stop()
+        if getattr(self,'_paste_lang_locked',False) or not self._paste_language_candidate():
+            return
+        text=self.preview.toPlainText()
+        sample=text[:120000]
+        try:
+            detected,confidence=detect_language(sample)
+        except Exception:
+            return
+        hangul=len(re.findall(r'[가-힣]',sample))
+        others=len(re.findall(r'[A-Za-z一-龥ぁ-ゟァ-ヺ]',sample))
+        if hangul and hangul>=others:
+            return   # mostly Korean text (a few English names must not make it English)
+        want=f'{detected}-ko' if detected in {'zh','ja','en'} and confidence>=0.70 else ''
+        if not want or want==self.pm.active.id or self.lang.findData(want)<0:
+            return
+        if self.input_mode=='single' and self.source_bytes:
+            # An earlier paste is the current source: this text becomes the source first, so
+            # switching the language keeps it in the window.
+            if not self._use_preview_as_source():
+                return
+        idx=self.lang.findData(want)
+        self.lang.blockSignals(True); self.lang.setCurrentIndex(idx); self.lang.blockSignals(False)
+        self.lang.setToolTip(self.lang.currentData(Qt.ToolTipRole) or '')
+        self._apply_profile(want)
+        names={'zh':'중국어','ja':'일본어','en':'영어'}
+        self.status.setText(f'원문 언어를 {names[detected]}로 자동 설정했습니다 (붙여넣은 글 분석) · 다르면 원문 언어 칸에서 바꾸세요')
+
     def _preview_changed(self):
         if self._preview_loading or self._preview_mode!='source':
             return
+        if not self.preview.document().isEmpty() and self._paste_language_candidate():
+            if getattr(self,'_paste_lang_timer',None) is None:
+                self._paste_lang_timer=QTimer(self); self._paste_lang_timer.setSingleShot(True); self._paste_lang_timer.setInterval(600)
+                self._paste_lang_timer.timeout.connect(self._detect_paste_language)
+            self._paste_lang_timer.start()
+        elif self.preview.document().isEmpty():
+            self._paste_lang_locked=False   # an emptied window: the next text is detected again
         if self._preview_edited():
             n=len(self.preview.toPlainText())
             base=f' (열린 파일 {self.source_path.name} 수정본)' if (self.input_mode=='single' and self.source_path and not self._paste_active) else ''
@@ -2317,6 +2405,7 @@ class MainWindow(QMainWindow):
         self.input_mode='single'; self.batch_root=None; self.batch_files=[]; self.batch_index=-1; self.batch_results={}; self.batch_selection=None
         self.batch_relation.setEnabled(False); self.include_sub.setEnabled(False); self._update_batch_memory_mode()
         self.source_path=path; self.source_bytes=raw; self.source_text=text; self._paste_active=True
+        self._terms_declined_saved=False; self._speech_done_saved=False   # a new text: nothing settled for it yet
         self._preview_baseline=self.preview.toPlainText()
         self._rechunk(); self._refresh_job_table(); self._update_output_label()
         self.file_label.setText(f'원문 창의 글 · {len(text):,}자 · 임시 원문 {path.name} (이미 번역한 부분은 번역 기억으로 재사용)')
@@ -2981,7 +3070,8 @@ class MainWindow(QMainWindow):
             return
         if self._preview_edited():
             # Text pasted/edited in the 원문 window counts as the source; no file needed.
-            if not self._use_preview_as_source(): return
+            self._detect_paste_language()
+            if self._preview_edited() and not self._use_preview_as_source(): return
         if self.input_mode not in {'single','folder'}:
             QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 파일·폴더를 선택하거나, 원문 창에 번역할 글을 붙여넣으세요.')
             return
@@ -3010,7 +3100,8 @@ class MainWindow(QMainWindow):
         self._auto_resumes={}
         if not (self.worker and self.worker.isRunning()) and self.input_mode=='folder': self._reset_batch_retry_state()
         if self._preview_edited() and not (self.worker and self.worker.isRunning()):
-            if not self._use_preview_as_source(): return
+            self._detect_paste_language()   # pasted and started at once: the language is set first
+            if self._preview_edited() and not self._use_preview_as_source(): return
         if self.worker and self.worker.isRunning():
             self._stop_batch=True; self.worker.stop(); self.start.setEnabled(False); self.status.setText('중지 처리 중 · 완료분 저장…'); return
         keys=self._enabled_keys() if 'gemini' in self._engine_order() else []
@@ -3033,6 +3124,7 @@ class MainWindow(QMainWindow):
                     self._forget_speech_attempt()
                 else:
                     self._auto_terms_declined.add(self._source_sha())
+                    self._terms_declined_saved=True; self._save_workspace()   # not asked again for this book
                     note='인명·용어 자동 추출 생략 · 용어집 없이 이어서 번역 (선택함)'
             if plan=='extract':
                 self._auto_terms_force=bool(force_restart)
@@ -3056,6 +3148,9 @@ class MainWindow(QMainWindow):
             return
         if not self._language_mismatch_warning(): return
         if not self._preflight_output(): return
+        self._identity_note=''
+        if self.input_mode=='single' and not self._force_restart and not continuing:
+            if not self._confirm_identity_change(keys, model): return
         self._job_continue=continuing
         self._set_running_ui(True)
         first=self._ready_engines()[0]
@@ -3064,6 +3159,8 @@ class MainWindow(QMainWindow):
         self.pending_view.clear(); self.api_runtime_label.setText(f'API 상태 · {ENGINE_LABELS[first]} · {first_model} · 번역 요청 준비 중')
         if getattr(self,'_auto_terms_note',''):
             self.on_worker_issue(self._auto_terms_note); self._auto_terms_note=''
+        if getattr(self,'_identity_note',''):
+            self.on_worker_issue(self._identity_note); self._identity_note=''
         bad_terms=self._suspicious_terms()
         if bad_terms:
             self.on_worker_issue(f'확정 용어집 확인 필요 {len(bad_terms)}개 (한자가 남은 표기·일반 단어): '+', '.join(f'{a}→{b}' for _,a,b in bad_terms[:8])+(' …' if len(bad_terms)>8 else '')+' · 확정 용어집 탭에 빨갛게 표시')
@@ -3103,12 +3200,77 @@ class MainWindow(QMainWindow):
                 raise
             self._skip_batch_file(p,f'작업을 시작하지 못함 · {type(e).__name__}: {e}',keys,model)
 
+    def _make_worker(self,p,raw,chunks,key_records,model):
+        seed_context=self.batch_context if self.input_mode=='folder' and self.batch_relation.currentData()=='continuous' else ''
+        return TranslationWorker(p,raw,self.pm.active,chunks,model,[r.to_dict() for r in key_records],self._terms(),self.mode.currentData() or 'balanced',self._output_dir_for(p),self._effective_book_memory(),self._language_options(),seed_context,restart_existing=self._force_restart,openai_settings=self._openai_worker_settings(),all_paragraphs=self.paragraphs,parent=self,local_settings=self._local_worker_settings(),engine_order=self._engine_order(),speech_table=self._speech_rows(),common_terms=self._common_terms_for_job(),sentence_style=self._sentence_style_value())
+
+    def _confirm_identity_change(self, keys, model) -> bool:
+        """Single file, user present: an earlier job on this source holds translation that the
+        current settings would throw away (they make a different job). Ask instead of
+        silently translating the whole book again. False = the user cancelled."""
+        if not callable(getattr(TranslationWorker,'identity_change',None)):
+            return True   # a stand-in worker (tests) has no job identity
+        try:
+            probe=self._make_worker(self.source_path,self.source_bytes,self.chunks,keys,model)
+            db=Database(DATA_DIR/'translations.db'); sha=hashlib.sha256(self.source_bytes).hexdigest()
+            info=probe.identity_change(db, sha)
+        except Exception as e:
+            self.on_worker_issue(f'이전 번역 기록 확인 생략 · {type(e).__name__}: {e}')
+            return True
+        finally:
+            try: probe.deleteLater()
+            except Exception: pass
+        if not info:
+            return True
+        answer=self._ask_identity_change(info)
+        if answer=='cancel':
+            return False
+        if answer=='continue':
+            try:
+                probe2=self._make_worker(self.source_path,self.source_bytes,self.chunks,keys,model)
+                probe2.adopt_previous(db, info); probe2.deleteLater()
+                self._identity_note=(f'이전 번역 이어 쓰기 · 이미 번역한 {info["done"]:,}청크는 그대로 두고, 바뀐 설정({", ".join(info["labels"]) or "설정"})은 남은 부분부터 적용합니다'
+                                     +(f' · 이름 표기만 바뀐 용어 {len(info["renames"])}개는 저장된 번역에도 반영' if info.get('renames') else ''))
+            except Exception as e:
+                QMessageBox.warning(self,'이전 번역 이어 쓰기 실패',f'이전 번역을 이어 쓰도록 바꾸지 못했습니다. 번역은 시작하지 않았습니다.\n{type(e).__name__}: {e}')
+                return False
+        else:
+            self._identity_note=f'설정이 바뀌어 처음부터 다시 번역합니다 (선택함 · 이전 번역 {info["done"]:,}청크는 번역 기록에 남아 있음)'
+        return True
+
+    def _ask_identity_change(self, info: dict) -> str:
+        """'continue' / 'restart' / 'cancel'."""
+        labels=list(info.get('labels') or [])
+        lines=[f'· {x}' for x in labels]
+        if info.get('unknown_other'):
+            lines.append('· 그 밖의 설정 (작품 메모·번역 모드·이름 표기·인코딩 또는 프로그램 버전 중 하나 이상)')
+        def names(keys):
+            return ', '.join(keys[:6])+(f' 외 {len(keys)-6}개' if len(keys)>6 else '')
+        detail=[]
+        if info.get('added'): detail.append(f'추가된 용어 {len(info["added"])}개: {names(info["added"])}')
+        if info.get('removed'): detail.append(f'지운 용어 {len(info["removed"])}개: {names(info["removed"])}')
+        if info.get('changed'): detail.append(f'표기를 바꾼 용어 {len(info["changed"])}개: {names(info["changed"])}')
+        done=info.get('done',0); total=info.get('total',0)
+        text=(f'이 원문은 이전에 {done:,}/{total:,}청크까지 번역한 기록이 있습니다.\n'
+              f'그 뒤 바뀐 설정:\n'+'\n'.join(lines or ['· 설정'])+('\n\n'+'\n'.join(detail) if detail else '')+
+              '\n\n바뀐 설정 그대로 시작하면 이미 번역한 부분까지 처음부터 다시 번역합니다(수십 MB 책이면 며칠이 걸릴 수 있음).\n\n'
+              '[이어서 번역]: 이미 번역한 부분은 그대로 두고, 바뀐 설정은 아직 번역하지 않은 부분부터 적용합니다.'
+              +(' 이름 표기만 바뀐 용어는 저장된 번역에서도 바꿉니다.' if info.get('renames') else '')+'\n'
+              '[처음부터 다시 번역]: 바뀐 설정으로 책 전체를 다시 번역합니다.')
+        box=QMessageBox(self); box.setIcon(QMessageBox.Question); box.setWindowTitle('이전 번역 이어 쓰기')
+        box.setText(text)
+        keep=box.addButton('이어서 번역',QMessageBox.AcceptRole)
+        again=box.addButton('처음부터 다시 번역',QMessageBox.DestructiveRole)
+        box.addButton('취소',QMessageBox.RejectRole)
+        box.setDefaultButton(keep); box.exec()
+        clicked=box.clickedButton()
+        return 'continue' if clicked is keep else 'restart' if clicked is again else 'cancel'
+
     def _start_one_worker(self,p,raw,text,chunks,key_records,model):
         self._grow_common_terms()   # the glossary the user starts with counts as reviewed
         self.start.setText('번역 중지'); self.start.setEnabled(True)
         self._save_workspace()
-        seed_context=self.batch_context if self.input_mode=='folder' and self.batch_relation.currentData()=='continuous' else ''
-        self.worker=TranslationWorker(p,raw,self.pm.active,chunks,model,[r.to_dict() for r in key_records],self._terms(),self.mode.currentData() or 'balanced',self._output_dir_for(p),self._effective_book_memory(),self._language_options(),seed_context,restart_existing=self._force_restart,openai_settings=self._openai_worker_settings(),all_paragraphs=self.paragraphs,parent=self,local_settings=self._local_worker_settings(),engine_order=self._engine_order(),speech_table=self._speech_rows(),common_terms=self._common_terms_for_job(),sentence_style=self._sentence_style_value())
+        self.worker=self._make_worker(p,raw,chunks,key_records,model)
         self.worker.progress.connect(self.on_progress); self.worker.failed.connect(self.on_failed); self.worker.paused.connect(self.on_paused); self.worker.finished_ok.connect(self.on_finished)
         self.worker.result_ready.connect(self.on_result_ready); self.worker.finished.connect(self._worker_thread_finished); self.worker.key_disabled.connect(self.on_key_disabled); self.worker.issue.connect(self.on_worker_issue); self.worker.api_state.connect(self.on_api_state)
         if hasattr(self.worker,'chunk_translated'): self.worker.chunk_translated.connect(self.on_chunk_translated)
@@ -3211,7 +3373,8 @@ class MainWindow(QMainWindow):
                         self._show_batch_pending()
                     else:
                         self.pending_view.setPlainText(detail)
-                    self.on_worker_issue(f'미완료 {failed_count}개 · 상세 목록은 미완료 목록 탭에서 확인')
+                    pend=getattr(self.worker,'pending_text',None)
+                    self.on_worker_issue((pend(int(failed_count or 0)) if callable(pend) else f'미완료 {failed_count}개')+' · 상세 목록은 미완료 목록 탭에서 확인')
                 except Exception:
                     if not self.error_view.toPlainText().strip(): self.error_view.setPlainText(f'미완료 청크 {failed_count}개. 자세한 오류 목록은 결과 폴더를 확인하세요.')
             elif self.input_mode=='folder' and self._batch_pending_reports.pop(str(self.source_path),None) is not None:
@@ -3525,4 +3688,29 @@ class MainWindow(QMainWindow):
             self._close_after_worker=True; self._stop_batch=True; self.worker.stop(); self.start.setEnabled(False); self.status.setText('종료를 위해 현재 요청 정리 중…'); event.ignore();return
         t=getattr(self,'_local_models_thread',None)
         if t is not None and t.isRunning(): t.wait(10000)   # short local model-list request (a few seconds at most)
+        self._save_window_state()
         event.accept()
+
+    # Window position and size (and maximized state) come back on the next start.
+    WINDOW_STATE_FILE = 'window_state.json'
+
+    def _save_window_state(self) -> None:
+        try:
+            import base64
+            DATA_DIR.mkdir(parents=True,exist_ok=True)
+            save_json(DATA_DIR/self.WINDOW_STATE_FILE,{'geometry':base64.b64encode(bytes(self.saveGeometry())).decode('ascii')})
+        except Exception:
+            pass
+
+    def restore_window_state(self) -> bool:
+        """Before the first show(). Qt keeps a restored window on a screen that exists now
+        (a monitor that was unplugged does not leave the window out of sight)."""
+        try:
+            import base64
+            from PySide6.QtCore import QByteArray
+            raw=str(load_json(DATA_DIR/self.WINDOW_STATE_FILE).get('geometry') or '')
+            if not raw:
+                return False
+            return bool(self.restoreGeometry(QByteArray(base64.b64decode(raw))))
+        except Exception:
+            return False

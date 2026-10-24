@@ -15,6 +15,13 @@ def _pdf_round_trip() -> tuple[bool, str]:
             body = '\n\n'.join(f'야문번역점검문단{i}입니다.' for i in range(12))
             pages = write_reading_pdf(out, '제1장 시작\n\n' + body + '\n\n제2장 끝\n\n' + body, '자체 점검')
             text = re.sub(r'\s+', '', extract_pdf_text(out).text)
+            # Pages read by helper processes (long PDFs) must work in the packaged program
+            # and give exactly the text of reading them one by one.
+            from .pdf_text import read_pdf_pages, _pages_parallel
+            single, _n = read_pdf_pages(out, workers=1)
+            helpers = _pages_parallel(out, len(single), 2, strict=True)
+            if [v for _ok, v in helpers] != single:
+                return False, 'PDF helper-process page text mismatch'
             if pages < 2 or '야문번역점검문단11입니다.' not in text or '제2장' not in text:
                 return False, f'PDF round trip text mismatch (pages={pages})'
             from .epub_export import write_reading_epub
@@ -24,7 +31,7 @@ def _pdf_round_trip() -> tuple[bool, str]:
             etext = extract_epub_text(epub).text
             if sections != 2 or '야문번역점검문단11입니다.' not in etext or '제2장 끝' not in etext:
                 return False, f'EPUB round trip text mismatch (sections={sections})'
-        return True, f'PDF=PASS pages={pages} · EPUB=PASS sections={sections}'
+        return True, f'PDF=PASS pages={pages} helpers=PASS · EPUB=PASS sections={sections}'
     except Exception as e:
         return False, f'PDF/EPUB round trip failed: {type(e).__name__}: {e}'
 
@@ -99,5 +106,5 @@ def main():
         QMessageBox.critical(None,'시작 점검 실패','필수 파일 또는 저장 환경에 문제가 있습니다.\n\n'+'\n'.join(issues))
         return 2
     from .ui.main_window import MainWindow
-    w=MainWindow(); w.show()
+    w=MainWindow(); w.restore_window_state(); w.show()
     return app.exec()

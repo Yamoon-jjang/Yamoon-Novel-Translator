@@ -54,6 +54,10 @@ def _native_error(message: str) -> None:
 
 
 if __name__ == '__main__':
+    # First of all: a helper process (long PDFs are read by several processes) runs its
+    # task here and exits; it never starts the window or the start-up checks.
+    import multiprocessing
+    multiprocessing.freeze_support()
     _utf8_streams()
     if not _SELF_TEST:
         try:

@@ -244,6 +244,19 @@ class TranslationWorker(QThread):
         # Model, thinking level and backup-provider settings are deliberately NOT part
         # of the job identity: switching the model and pressing "계속" retries only the
         # unfinished/partial chunks instead of re-translating the whole book.
+        raw = json.dumps(self._fingerprint_payload(), ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        return hashlib.sha256(raw).hexdigest()
+
+    def identity_parts(self) -> dict[str, str]:
+        """A short hash of each part of the job identity, stored with the job so a later
+        run can tell the user which setting changed."""
+        out = {}
+        for k, v in self._fingerprint_payload().items():
+            raw = json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+            out[k] = hashlib.sha256(raw).hexdigest()[:16]
+        return out
+
+    def _fingerprint_payload(self) -> dict:
         prompt_contract=build_user_prompt('<P000001>\n__SOURCE__',{'__TERM__':'__TARGET__'},'__CONTEXT__',False,'__BOOK_MEMORY__',self.language_options)
         payload = {
             'profile': self.profile.id,
@@ -263,8 +276,7 @@ class TranslationWorker(QThread):
             'initial_context_sha256': hashlib.sha256(self.initial_context.encode('utf-8')).hexdigest() if self.initial_context else '',
             'chunks': [hashlib.sha256(c.source_text.encode('utf-8')).hexdigest() for c in self.chunks],
         }
-        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
-        return hashlib.sha256(raw).hexdigest()
+        return payload
 
     _CONTENT_KINDS = frozenset({ErrorKind.SAFETY, ErrorKind.REFUSAL, ErrorKind.POLICY})
     # Failures that may leave one isolated part as source while its siblings keep
@@ -1096,6 +1108,9 @@ class TranslationWorker(QThread):
             punct=True; quotes='straight'
         out,failed,report,output_dir=render_snapshot(self.chunks,rows,self.source_path,preferred_dir,DATA_DIR/'exports',self.all_paragraphs,korean_punct=punct,quote_style=quotes)
         self.pending_report=report or ''   # shown in the window's 미완료 목록 tab
+        from ..rendering import not_started
+        unstarted=sum(1 for r in failed if not_started(r))
+        self.pending_breakdown=(unstarted, len(failed)-unstarted)   # (not reached yet, failed/partial)
         return out,failed,report,output_dir,preferred_dir
 
     def _pause_with_snapshot(self, db, project_id: int, reason: str, user_requested: bool=False, kind: str='STOPPED'):
@@ -1105,10 +1120,19 @@ class TranslationWorker(QThread):
         self.pause_kind = 'STOPPED' if user_requested else kind
         out,failed,report,_,_=self._write_snapshot(db,project_id)
         self.result_ready.emit('stopped' if user_requested else 'paused',str(out),len(failed))
-        extra=f'\n현재 부분 결과: {out}' + (f'\n미완료 {len(failed)}청크 · 자세한 목록은 미완료 목록 탭' if failed else '')
+        extra=f'\n현재 부분 결과: {out}' + (f'\n{self.pending_text(len(failed))} · 자세한 목록은 미완료 목록 탭' if failed else '')
         summary=self.run_summary()
         if summary: extra += '\n'+summary
         self.paused.emit(reason+extra,user_requested)
+
+    def pending_text(self, count: int) -> str:
+        """'미완료 N청크', split into chunks not reached yet and chunks that were tried."""
+        unstarted, tried = getattr(self, 'pending_breakdown', (0, count))
+        if unstarted and tried:
+            return f'미완료 {count:,}청크 (아직 번역 전 {unstarted:,} · 실패·부분 완료 {tried:,})'
+        if unstarted:
+            return f'미완료 {count:,}청크 (아직 번역 전)'
+        return f'미완료 {count:,}청크'
 
     def _carry_renamed_terms(self, db, sha: str, fingerprint: str, settings_key: str) -> None:
         """Only the Korean side of confirmed terms changed since this book was translated
@@ -1142,6 +1166,98 @@ class TranslationWorker(QThread):
         except Exception as e:
             self.issue.emit(f'이름 변경 반영 생략 · {type(e).__name__}: {e}')
 
+    # Parts of the job identity, in the words the user knows (several parts share a label).
+    IDENTITY_LABELS = (
+        ('terms', '확정 용어집'), ('book_memory', '작품 메모'), ('language_options', '이름 표기·언어 옵션'),
+        ('mode_id', '번역 모드(빠르게·균형·품질)'), ('context_chars', '번역 모드(빠르게·균형·품질)'),
+        ('max_chunk_tokens', '번역 모드(빠르게·균형·품질)'),
+        ('chunks', '원문 나누기(인코딩·번역 모드·원문 내용)'), ('chunk', '원문 나누기(인코딩·번역 모드·원문 내용)'),
+        ('initial_context_sha256', '앞 파일에서 이어지는 문맥'), ('content_kind', '소설·문서 종류'),
+        ('system', '프로그램의 번역 지침(새 버전)'), ('user_prompt_contract_sha256', '프로그램의 번역 지침(새 버전)'),
+        ('prompt_version', '프로그램의 번역 지침(새 버전)'), ('lexical_guidance', '프로그램의 번역 지침(새 버전)'),
+    )
+
+    def identity_change(self, db, sha: str) -> dict | None:
+        """Before a single-file start: an earlier job on this exact source holds saved
+        translation, but the current settings make a different job (glossary, 작품 메모,
+        mode, encoding, a new program version ...). Without asking, everything would be
+        translated again from the first chunk. Returns what to tell the user, or None when
+        nothing would be lost (normal resume, new book, or a pure rename of terms that the
+        job applies to the saved translation by itself)."""
+        lang = self.profile.source_language; prof = self.profile.id
+        fingerprint = self._fingerprint()
+        current = db.find_project(str(self.source_path), lang, prof, sha, fingerprint)
+        if current is not None:
+            done_now, _ = db.progress_counts(int(current['id']))
+            best = db.best_project_for_source(sha, lang, prof, exclude_project=int(current['id']))
+            # A run with the new settings already started over (an earlier build did this
+            # without asking) while an older job holds clearly more: offer that one.
+            if best is None or int(best['done'] or 0) <= done_now:
+                return None
+            row = best
+        else:
+            row = db.best_project_for_source(sha, lang, prof)
+            if row is None:
+                return None
+            done_now = 0
+        old_terms = db.project_terms(int(row['id']))
+        from ..name_rename import renames_between
+        if current is None:
+            renames = renames_between(old_terms, self.terms)
+            if renames:
+                held = self.terms
+                try:
+                    self.terms = old_terms; old_fp = self._fingerprint()
+                finally:
+                    self.terms = held
+                if old_fp == row['job_fingerprint'] and row['id'] == (db.latest_project_for_source(sha, lang, prof) or {'id': None})['id']:
+                    return None   # only the Korean side of terms changed: renamed in place, as before
+        new_parts = self.identity_parts()
+        try:
+            old_parts = json.loads(row['identity_json'] or '{}') if 'identity_json' in row.keys() else {}
+        except Exception:
+            old_parts = {}
+        labels: list[str] = []
+        def add(label):
+            if label not in labels: labels.append(label)
+        if old_parts:
+            for key, label in self.IDENTITY_LABELS:
+                if key in old_parts and old_parts.get(key) != new_parts.get(key):
+                    add(label)
+            unknown = not labels
+        else:
+            held = self.terms
+            try:
+                self.terms = old_terms; only_terms = self._fingerprint() == row['job_fingerprint']
+            finally:
+                self.terms = held
+            if old_terms != self.terms: add('확정 용어집')
+            unknown = not only_terms
+        added = [k for k in self.terms if k not in old_terms]
+        removed = [k for k in old_terms if k not in self.terms]
+        changed = [k for k in self.terms if k in old_terms and old_terms[k] != self.terms[k]]
+        common = {k for k in self.terms if k in old_terms}
+        renames = renames_between({k: old_terms[k] for k in common}, {k: self.terms[k] for k in common}) if changed else {}
+        done_old = int(row['done'] or 0)
+        _, total = db.progress_counts(int(row['id']))
+        return {'project_id': int(row['id']), 'current_project_id': int(current['id']) if current is not None else None,
+                'done': done_old, 'done_now': done_now, 'total': max(total, len(self.chunks)), 'labels': labels,
+                'unknown_other': bool(unknown), 'added': added, 'removed': removed, 'changed': changed, 'renames': renames}
+
+    def adopt_previous(self, db, info: dict) -> None:
+        """Keep the earlier job's translation: it becomes this job (new settings apply to the
+        chunks not translated yet). Name renderings that only changed on the Korean side are
+        renamed in the saved translation, as a pure rename always was."""
+        old_id = int(info['project_id'])
+        if info.get('renames'):
+            db.rename_in_translations(old_id, dict(info['renames']))
+        cur = info.get('current_project_id')
+        if cur is not None and int(cur) != old_id:
+            # The run that started over steps aside; its chunks stay reusable as translation memory.
+            with db.connect() as con:
+                con.execute("UPDATE projects SET job_fingerprint=job_fingerprint||? WHERE id=?", (f':superseded:{old_id}', int(cur)))
+        db.rekey_project(old_id, self._fingerprint(), self._settings_key())
+
     def _rename_common_terms(self, old_terms: dict) -> None:
         """The shared glossary follows a rename the user made, where it still holds the old rendering."""
         if getattr(self.profile, 'lexical_extra', None) is None:
@@ -1159,6 +1275,7 @@ class TranslationWorker(QThread):
 
     def run(self):
         try:
+            self.api_state.emit('번역 준비 중 · 저장된 번역 확인')
             db = Database(DATA_DIR/'translations.db')
             sha = hashlib.sha256(self.source_bytes).hexdigest()
             fingerprint = self._fingerprint()
@@ -1167,6 +1284,10 @@ class TranslationWorker(QThread):
                 self._carry_renamed_terms(db, sha, fingerprint, settings_key)
             pid = db.get_or_create_project(str(self.source_path), self.profile.source_language, self.profile.id, sha, fingerprint, settings_key)
             db.replace_terms(pid, self.terms)
+            try:
+                db.set_identity(pid, json.dumps(self.identity_parts(), sort_keys=True))
+            except Exception:
+                pass
             # Paragraph memory: when chunk boundaries change (e.g. lines that used to be
             # kept as source are now translated), earlier translations are reused paragraph
             # by paragraph so only the new/untranslated lines are requested.
@@ -1174,8 +1295,11 @@ class TranslationWorker(QThread):
             if not para_rows and not self.restart_existing:
                 para_rows = db.translated_rows_for_source(sha, self.profile.id, '')   # jobs from builds before settings were recorded
             para_memory = self._paragraph_memory(para_rows)
-            for c in self.chunks:
-                db.upsert_chunk(pid, c.index, c.source_text)
+            # One transaction for all chunks (a long book has thousands).
+            db.upsert_chunks(pid, self.chunks)
+            # Rows of an older chunk layout (a continued job whose chunking changed) go;
+            # their paragraphs were read into the paragraph memory above.
+            db.prune_chunks(pid, [c.index for c in self.chunks])
             if self.restart_existing and self.chunks:
                 db.reset_chunks_from(pid,0)
             # Keep every successfully translated chunk, even if an earlier chunk failed.
@@ -1205,14 +1329,17 @@ class TranslationWorker(QThread):
             # (restart_existing) deliberately skips this.
             if not self.restart_existing:
                 reused=0
-                for c in self.chunks:
-                    if c.index in done_map:
-                        continue
-                    cached=db.cached_translation(self.profile.id, settings_key, c.source_text, pid)
+                todo=[c for c in self.chunks if c.index not in done_map]
+                found=db.cached_translations(self.profile.id, settings_key, todo, pid) if todo else {}
+                updates=[]
+                for c in todo:
+                    cached=found.get(c.index)
                     if cached and not has_meta_leak(c.source_text, cached):
-                        db.set_chunk_status(pid, c.index, 'COMPLETED', translation=cached, provider='memory', model='',
-                                            error_type=None, error_message=None, retry_count=0, fallback_used=0, prompt_version=PROMPT_VERSION)
+                        updates.append((c.index, 'COMPLETED', dict(translation=cached, provider='memory', model='',
+                                        error_type=None, error_message=None, retry_count=0, fallback_used=0, prompt_version=PROMPT_VERSION)))
                         done_map[c.index]=cached; reused+=1
+                if updates:
+                    db.set_chunk_statuses(pid, updates)
                 if reused:
                     self.issue.emit(f'번역 기억 · 이전에 같은 설정으로 번역한 청크 {reused}개를 재사용합니다 (새로 요청하지 않음)')
             records = [r for r in normalize_key_records(self.api_keys,'GEM') if r.enabled]
@@ -1349,6 +1476,11 @@ class TranslationWorker(QThread):
                         else:
                             db.set_chunk_status(pid, c.index, 'COMPLETED', translation=partial_base, error_type=None, error_message=None, prompt_version=PROMPT_VERSION)
                         translations[c.index]=partial_base; prev=self._roll_context(prev, partial_base, context_chars); self.final_context=prev
+                        try:   # the live view shows this saved chunk too
+                            _parsed=parse_tagged_translation(partial_base)
+                            saved_view.append('\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
+                        except Exception:
+                            pass
                         self.progress.emit(i+1, total, '저장된 번역 사용'); continue
                 self._chunk_exclusions=[]; self._chunk_fallback_used=False; self._fallback_chain=[]; self._chunk_requests=0; self._chunk_loops=0
                 self._pending_traces=[]; self._chunk_label=f'청크 {i+1}/{total}'; self._chunk_prev=prev
@@ -1461,6 +1593,9 @@ class TranslationWorker(QThread):
             if self._stop:
                 self._pause_with_snapshot(db,pid,'사용자가 번역을 중지했습니다. 완료된 번역을 저장했습니다.',True)
                 return
+            if saved_view:   # saved chunks after the last new one: shown before the full result replaces the view
+                self.chunk_translated.emit(total, total, '\n\n'.join(x for x in saved_view if x.strip()))
+                saved_view=[]
             out,failed,report,output_dir,preferred_dir=self._write_snapshot(db,pid)
             fallback_note='' if output_dir==preferred_dir else f'\n원본 폴더에 쓸 수 없어 안전 저장 폴더를 사용했습니다: {output_dir}'
             summary=self.run_summary()

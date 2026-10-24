@@ -482,10 +482,10 @@ def test_korean_punctuation_can_be_turned_off(tmp_path):
 def test_version_label_and_about_dialog(qt_app,sandbox,monkeypatch):
     import novel_translator as nt
     from novel_translator.ui.about_dialog import AboutDialog, app_icon
-    assert nt.__version__=='2.5.0' and nt.VERSION_LABEL=='v2.5'
+    assert nt.__version__=='2.5.2' and nt.VERSION_LABEL=='v2.5.2'
     w=_window(monkeypatch)
     try:
-        assert w.windowTitle()=='야문 Novel Translator v2.5' and 'Alpha' not in w.windowTitle()
+        assert w.windowTitle()=='야문 Novel Translator v2.5.2' and 'Alpha' not in w.windowTitle()
         assert w.about_btn.text()=='정보' and w.manual_btn.text()=='사용 설명서'
         assert not app_icon().isNull()
         d=AboutDialog(w)
@@ -503,7 +503,7 @@ def test_manual_is_found_and_opened(qt_app,sandbox,monkeypatch):
     path=manual_path()
     assert path is not None and path.name=='사용설명서.html'
     html=path.read_text(encoding='utf-8')
-    assert 'v2.5' in html and 'Alpha' not in html
+    assert 'v2.5.2' in html and 'Alpha' not in html
     for heading in ('API 설정','번역하기','이름·용어','거부·차단','결과 파일','로컬 LLM','자주 묻는 질문'):
         assert heading in html
     opened=[]
@@ -532,6 +532,7 @@ def test_manual_mentions_only_buttons_that_exist(qt_app,sandbox,monkeypatch):
         have={b.text() for b in w.findChildren(QPushButton)}|{b.text() for b in d.findChildren(QPushButton)}|{b.text() for b in r.findChildren(QPushButton)}
         r.close()
         have|={'다시 진행','번역 중지','추가 정보','실행','결과 복사','결과 저장','번역 결과','원문','말투표 건너뛰고 번역 시작','말투표 생성 취소'}   # state labels / Windows dialog
+        have|={'이어서 번역','처음부터 다시 번역'}   # buttons of the "이전 번역 이어 쓰기" question (v2.5.2, checked in test_v252)
         missing=sorted(n for n in named if n not in have)
         assert not missing, missing
     finally:

@@ -76,6 +76,10 @@ class Database:
             if 'settings_key' not in pcols:
                 # Translation-memory key: same profile/prompt/terms/memory/options.
                 con.execute("ALTER TABLE projects ADD COLUMN settings_key TEXT NOT NULL DEFAULT ''")
+            if 'identity_json' not in pcols:
+                # What the job identity was made of (hashes per setting), so a later run can
+                # say which setting changed. Older projects have none.
+                con.execute("ALTER TABLE projects ADD COLUMN identity_json TEXT NOT NULL DEFAULT ''")
             ccols = {r['name'] for r in con.execute('PRAGMA table_info(chunks)').fetchall()}
             migrations = {
                 'provider': "ALTER TABLE chunks ADD COLUMN provider TEXT",
@@ -145,6 +149,60 @@ class Database:
                 con.execute("UPDATE chunks SET source_text=?,source_sha=?,status='PENDING',translation=NULL,error_type=NULL,error_message=NULL,retry_count=0,updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND chunk_index=?",
                             (source_text, _sha(source_text), project_id, chunk_index))
 
+    def upsert_chunks(self, project_id: int, chunks) -> None:
+        """upsert_chunk for every chunk of a job in ONE transaction (a book of thousands of
+        chunks used to open and commit the database once per chunk before translating)."""
+        with self.connect() as con:
+            rows = {int(r['chunk_index']): r['source_text'] for r in
+                    con.execute('SELECT chunk_index,source_text FROM chunks WHERE project_id=?', (project_id,)).fetchall()}
+            for c in chunks:
+                old = rows.get(int(c.index), None)
+                if int(c.index) not in rows:
+                    con.execute('INSERT INTO chunks(project_id,chunk_index,source_text,source_sha) VALUES(?,?,?,?)',
+                                (project_id, c.index, c.source_text, _sha(c.source_text)))
+                elif old != c.source_text:
+                    # Never reuse a completed translation for changed chunk boundaries/source.
+                    con.execute("UPDATE chunks SET source_text=?,source_sha=?,status='PENDING',translation=NULL,error_type=NULL,error_message=NULL,retry_count=0,updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND chunk_index=?",
+                                (c.source_text, _sha(c.source_text), project_id, c.index))
+
+    def prune_chunks(self, project_id: int, keep_indices) -> int:
+        """Remove chunk rows the current chunk layout no longer has (a continued job whose
+        chunking changed). Their paragraphs were reused through the paragraph memory."""
+        keep = {int(i) for i in keep_indices}
+        with self.connect() as con:
+            stale = [int(r['chunk_index']) for r in con.execute('SELECT chunk_index FROM chunks WHERE project_id=?', (project_id,)).fetchall()
+                     if int(r['chunk_index']) not in keep]
+            if stale:
+                con.executemany('DELETE FROM chunks WHERE project_id=? AND chunk_index=?', [(project_id, i) for i in stale])
+            return len(stale)
+
+    def cached_translations(self, profile_id: str, settings_key: str, chunks, exclude_project: int | None = None) -> dict[int, str]:
+        """cached_translation for many chunks with one connection: {chunk index: translation}."""
+        out: dict[int, str] = {}
+        if not settings_key:
+            return out
+        with self.connect() as con:
+            for c in chunks:
+                row = con.execute('''SELECT c.translation, c.source_text FROM chunks c JOIN projects p ON p.id=c.project_id
+                                     WHERE c.source_sha=? AND c.status='COMPLETED' AND p.profile_id=? AND p.settings_key=?
+                                           AND c.project_id<>? AND c.translation IS NOT NULL
+                                     ORDER BY c.updated_at DESC LIMIT 1''',
+                                  (_sha(c.source_text), profile_id, settings_key, exclude_project if exclude_project is not None else -1)).fetchone()
+                if row and row['source_text'] == c.source_text:
+                    out[int(c.index)] = row['translation']
+        return out
+
+    def progress_counts(self, project_id: int) -> tuple[int, int]:
+        """(chunks with a saved translation, all chunks) of a job."""
+        with self.connect() as con:
+            row = con.execute("SELECT SUM(CASE WHEN status IN ('COMPLETED','PARTIAL') AND translation IS NOT NULL THEN 1 ELSE 0 END) AS done, COUNT(*) AS n FROM chunks WHERE project_id=?",
+                              (project_id,)).fetchone()
+            return int(row['done'] or 0), int(row['n'] or 0)
+
+    def set_identity(self, project_id: int, identity_json: str) -> None:
+        with self.connect() as con:
+            con.execute('UPDATE projects SET identity_json=? WHERE id=?', (identity_json or '', project_id))
+
     @staticmethod
     def kept_pid_set(row) -> set[int]:
         """Paragraphs a PARTIAL chunk kept as source (older rows: the IDs in its message)."""
@@ -164,6 +222,19 @@ class Database:
         return {int(x) for x in re.findall(r'P(\d{6})', head)}
 
     def set_chunk_status(self, project_id: int, chunk_index: int, status: str, **fields) -> None:
+        sql, vals = self._status_update(project_id, chunk_index, status, fields)
+        with self.connect() as con:
+            con.execute(sql, vals)
+
+    def set_chunk_statuses(self, project_id: int, updates) -> None:
+        """set_chunk_status for many chunks in one transaction: [(chunk_index, status, fields)]."""
+        with self.connect() as con:
+            for chunk_index, status, fields in updates:
+                sql, vals = self._status_update(project_id, chunk_index, status, dict(fields))
+                con.execute(sql, vals)
+
+    @staticmethod
+    def _status_update(project_id: int, chunk_index: int, status: str, fields: dict):
         allowed = {'translation','provider','model','error_type','error_message','retry_count','fallback_used','prompt_version','kept_pids'}
         if status == 'COMPLETED':
             # Keep source/translation for exact-match reuse, but remove stale
@@ -174,8 +245,7 @@ class Database:
         pairs = [('status', status)] + [(k, v) for k, v in fields.items() if k in allowed]
         sql = 'UPDATE chunks SET ' + ', '.join(f'{k}=?' for k, _ in pairs) + ', updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND chunk_index=?'
         vals = [v for _, v in pairs] + [project_id, chunk_index]
-        with self.connect() as con:
-            con.execute(sql, vals)
+        return sql, vals
 
 
     def reset_chunks_from(self, project_id: int, chunk_index: int) -> None:
@@ -268,6 +338,16 @@ class Database:
         with self.connect() as con:
             return con.execute('SELECT * FROM projects WHERE source_sha256=? AND source_language=? AND profile_id=? ORDER BY id DESC LIMIT 1',
                                (source_sha256, source_language, profile_id)).fetchone()
+
+    def best_project_for_source(self, source_sha256: str, source_language: str, profile_id: str, exclude_project: int | None = None):
+        """The job on this exact source with the most saved translation (newest on a tie),
+        with its count as 'done'; None when no job has any."""
+        with self.connect() as con:
+            return con.execute("""SELECT p.*, SUM(CASE WHEN c.status IN ('COMPLETED','PARTIAL') AND c.translation IS NOT NULL THEN 1 ELSE 0 END) AS done
+                                   FROM projects p JOIN chunks c ON c.project_id=p.id
+                                   WHERE p.source_sha256=? AND p.source_language=? AND p.profile_id=? AND p.id<>?
+                                   GROUP BY p.id HAVING done>0 ORDER BY done DESC, p.id DESC LIMIT 1""",
+                               (source_sha256, source_language, profile_id, exclude_project if exclude_project is not None else -1)).fetchone()
 
     def project_terms(self, project_id: int) -> dict[str, str]:
         with self.connect() as con:

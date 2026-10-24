@@ -66,6 +66,12 @@ def safe_output_filename(source_path: Path, suffix: str, disambiguate: bool=Fals
     return stem+extra+suffix
 
 
+def not_started(row) -> bool:
+    """A chunk the job has not tried yet (or whose request a stop cut off): no translation
+    and no error recorded. Failed and partial chunks are not this."""
+    return row['status'] == 'PENDING' and not (row['error_type'] or '') and not _row_value(row, 'translation', '')
+
+
 def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallback_dir: Path, all_paragraphs=None, korean_punct: bool = True, quote_style: str = 'straight'):
     """Render complete/partial TXT without ever dropping source text.
 
@@ -147,7 +153,14 @@ def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallba
     if failed:
         # Text for the app's 미완료 목록 tab (no file is written).
         lines=['야문 Novel Translator 미완료 구간','※ 본문 결과에는 미완료 구간의 원문이 그대로 유지됩니다.','※ PARTIAL 청크는 번역된 문단은 반영되고, 표시된 문단만 원문으로 남습니다. 같은 작업을 다시 시작하면 이 청크만 재시도합니다.','']
+        # Chunks a stopped job has not reached yet are one line, not one line each (a book
+        # stopped early would list thousands); chunks that were tried are listed as before.
+        unstarted=[int(r['chunk_index']) for r in failed if not_started(r)]
+        if unstarted:
+            lines.append(f'아직 번역 전 {len(unstarted):,}청크 (청크 {min(unstarted)+1:,}~{max(unstarted)+1:,} 사이) · 이어서 번역하면 차례로 번역합니다')
         for r in failed:
+            if not_started(r):
+                continue
             lines.append(f'청크 {int(r["chunk_index"])+1}\t{r["status"]}\t{_row_value(r,"provider","") or ""}\t{_row_value(r,"model","") or ""}\t{r["error_type"] or ""}\t{r["error_message"] or ""}')
         report='\n'.join(lines)+'\n'
     return out,failed,report,output_dir

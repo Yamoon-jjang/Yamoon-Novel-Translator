@@ -3,7 +3,7 @@ import random
 import re, time, threading
 from dataclasses import dataclass, replace
 from .providers.base import *
-from .prompting import build_system_prompt, build_user_prompt, REPAIR_SYSTEM, build_repair_prompt, SKIP_MARKER
+from .prompting import build_system_prompt, build_user_prompt, REPAIR_SYSTEM, build_repair_prompt, SKIP_MARKER, relevant_terms
 from .validation import TAG_RE, validate_translation, normalize_translation_output, id_forms, skipped_paragraph_ids, parse_tagged_translation, leftover_script, _is_refusal, meta_leak
 from .protected_literals import protect_literals, restore_literals
 from .lexical_guidance import relevant_guidance
@@ -237,7 +237,8 @@ class TranslationOrchestrator:
             return translated
         try:
             self._pace()
-            resp = self._call_provider(TranslationRequest(self.model, REPAIR_SYSTEM, build_repair_prompt(targets, terms), 0.2, self.timeout, self.thinking_level), key.secret)
+            prompt_terms = relevant_terms(terms, '\n'.join(t[1] for t in targets))
+            resp = self._call_provider(TranslationRequest(self.model, REPAIR_SYSTEM, build_repair_prompt(targets, prompt_terms), 0.2, self.timeout, self.thinking_level), key.secret)
         except ProviderError:
             self._record_usage(False)
             return translated
@@ -290,7 +291,10 @@ class TranslationOrchestrator:
         protected=protect_literals(chunk_text)
         guidance=relevant_guidance(profile,chunk_text) if self.content_kind=='novel' else {}
         reason = recovery_reason if recovery_mode else 'format'
-        user_prompt = build_user_prompt(protected.text, terms, previous_context, recovery_mode=recovery_mode, book_memory=book_memory, language_options=language_options, lexical_guidance=guidance, recovery_reason=reason)
+        # Only the terms this source can use go into the prompt (whole glossary when small);
+        # leftover checks and repairs below still allow every confirmed rendering.
+        prompt_terms = relevant_terms(terms, chunk_text)
+        user_prompt = build_user_prompt(protected.text, prompt_terms, previous_context, recovery_mode=recovery_mode, book_memory=book_memory, language_options=language_options, lexical_guidance=guidance, recovery_reason=reason)
         attempt = 0
         while True:
             self._check_cancelled()
@@ -441,5 +445,5 @@ class TranslationOrchestrator:
                     self.perf['backoff_seconds'] += delay
                     self.sleep_fn(delay)
                 if e.kind == ErrorKind.FORMAT:
-                    user_prompt=build_user_prompt(protected.text,terms,previous_context,recovery_mode=True,book_memory=book_memory,language_options=language_options,lexical_guidance=guidance,recovery_reason=reason)
+                    user_prompt=build_user_prompt(protected.text,prompt_terms,previous_context,recovery_mode=True,book_memory=book_memory,language_options=language_options,lexical_guidance=guidance,recovery_reason=reason)
                 attempt += 1

@@ -87,11 +87,13 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 - **번역 기억** — 조금씩 저장하며 번역하므로 중간에 멈추거나 PC가 꺼져도 번역한 곳부터 이어집니다. 파일 이름을 바꿔도 내용이 같으면 이미 번역한 부분은 다시 요청하지 않습니다.
 - **원본 보호** — 원본 파일은 고치지 않습니다. 결과는 `파일이름.ko.txt`, 덜 끝났으면 `파일이름.ko.partial.txt` (원문으로 남은 부분까지 빠짐없이 포함). PDF · EPUB으로 연 책도 같습니다.
 - **폴더 통째로** — 폴더 안의 TXT · PDF · EPUB을 순서대로 끝까지, 하위 폴더 구조 그대로. 파일마다 미번역 부분을 자동으로 다시 번역하고, 그래도 남은 것만 마지막에 모아 알려 줍니다.
+- **설정을 바꿔도 이어서** — 중지한 뒤 용어집 · 작품 메모 · 번역 방식을 바꾸거나 새 버전으로 바꿔도, 이미 번역한 부분을 버리기 전에 무엇이 바뀌었는지 보여 주고 **이어서 번역할지 먼저 묻습니다.** 수천 청크짜리 책도 이어 번역 준비가 1~2초면 끝납니다.
 - **멈추면 바로 멈춘다** — [번역 중지]를 누르면 로컬 LLM이 쓰던 답도 그 자리에서 끊겨, 그래픽카드가 쓸모없는 생성을 계속하지 않고 다음 작업이 기다리지 않습니다. [일시정지]는 받던 답까지 저장한 뒤 멈춥니다.
 
 ### PDF · EPUB도 그대로
 
 - **글자만 꺼내 TXT처럼** — PDF · EPUB을 열면 본문 글자만 꺼내 원문 창에 넣고, 그다음은 TXT와 똑같이 번역합니다. 용어집 · 말투표 · 이어 번역도 같습니다.
+- **빠르게 열기** — 긴 PDF는 CPU 코어 여러 개가 쪽을 나눠 글자를 꺼내고, 한 번 꺼낸 글은 보관해 같은 PDF를 다시 열면 바로 열립니다.
 - **PDF 정리** — 쪽마다 반복되는 머리글 · 꼬리글과 쪽 번호를 지우고, 쪽 너비 때문에 끊긴 줄을 문단으로 다시 잇습니다. 장 제목은 한 줄로 둡니다. 글자 정보가 없는 스캔 PDF는 **문자 인식(OCR)이 필요한 PDF**라고 알려 줍니다.
 - **EPUB** — 책의 읽는 순서대로 문단 · 장 제목을 꺼내고, 일본어 루비(후리가나)는 빼고 본문만 남깁니다. 복제 방지(DRM)가 걸린 전자책은 열지 않습니다.
 - **저장** — 자동 저장은 언제나 `.ko.txt`. 원하면 [결과 저장]에서 한글 글꼴로 새로 짠 **읽기용 PDF**(문단 간격 · 장 제목 · 쪽 번호)나 **읽기용 EPUB**(장별 목차)으로도 저장합니다. 원본의 모양을 따라 하지는 않습니다.
@@ -111,12 +113,12 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 
 ## 주요 기능 한눈에
 
-- 중국어 · 일본어 · 영어 → 한국어, TXT · PDF · EPUB을 열면 원문 언어 자동 인식
+- 중국어 · 일본어 · 영어 → 한국어, TXT · PDF · EPUB을 열거나 글을 붙여넣으면 원문 언어 자동 인식
 - 엔진 1~3개를 원하는 순서로 (로컬 LLM · Gemini · OpenAI), Gemini 키는 최대 10개까지 순서대로 돌려 쓰기
 - 문단 번호 검증, 생략 · 순화 흔적 감지, 남은 한자 · 가나 감지, 미완료 구간 재시도
-- 확정 용어집 자동 추출 · 공용 용어집 · 인물 말투표 · 작품 메모 · 번역 지침
+- 확정 용어집 자동 추출 · 공용 용어집 · 인물 말투표 · 작품 메모 · 번역 지침 (용어가 수백 개인 긴 책은 요청마다 그 원문에 나오는 용어만 보내 가볍게)
 - 모델 고르기 · 양자화 · VRAM · 컨텍스트 설정부터 용어집 · 말투표 · 재정비 요령까지 담은 **자세한 사용 설명서**(프로그램의 [사용 설명서] 버튼)
-- 번역 결과 실시간 보기, 붙여넣은 글 바로 번역, 출력 폴더 지정
+- 번역 결과 실시간 보기, 붙여넣은 글 바로 번역, 출력 폴더 지정, 창 위치 · 크기 기억
 - 사용량 · 예상 비용 표시, 한국어 소설 재정비, [야문 클린리더](https://github.com/Yamoon-jjang/Yamoon-CleanReader)로 바로 열어 문단 정리 · 읽기
 
 ## 내려받기와 실행
@@ -156,7 +158,7 @@ Its goal is faithful translation: no embellishment, no rewriting, no omissions. 
 - **Consistent names** — glossary of names, places and terms is extracted automatically and shared across books
 - **Consistent Korean speech levels** — a character speech-level table (honorific / casual, etc.) is applied across the whole book
 - **Refusal fallback** — refused paragraphs move to the next engine in your chosen order; successful paragraphs are never discarded
-- **Resumable** — translation memory lets you stop and continue; untranslated parts are retried automatically (also for every file in a folder run), and only what is still left is reported; source files are never modified
+- **Resumable** — translation memory lets you stop and continue (if you change the glossary or other job settings in between, the app shows what changed and asks before re-translating anything already done); untranslated parts are retried automatically (also for every file in a folder run), and only what is still left is reported; source files are never modified
 - **PDF / EPUB** — text extraction with header, footer and page-number cleanup and ruby (furigana) removal; export to reader-friendly PDF or EPUB
 - **Korean refinement** — polishes already-translated Korean text into natural prose with a local LLM, keeping plot, names and speech levels intact; a passage whose suspected change could not be checked keeps the original and can be retried later
 - **Stop means stop** — stopping a job also closes the running local LLM request, so Ollama stops generating right away
