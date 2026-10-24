@@ -4,7 +4,7 @@ from novel_translator import __version__, VERSION_LABEL
 
 
 def test_v162_version_and_exact_model_trace():
-    assert (__version__, VERSION_LABEL) == ('2.41.0', 'v2.41')
+    assert (__version__, VERSION_LABEL) == ('2.5.0', 'v2.5')
     src=(Path(__file__).resolve().parents[1] / 'novel_translator' / 'ui' / 'worker.py').read_text(encoding='utf-8')
     assert "'실제 번역 모델 · '" in src
     assert "self._model_for(n)" in src

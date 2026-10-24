@@ -648,15 +648,20 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             original = '\n'.join(p.text for p in parts)
             rewritten = '\n'.join(bodies)
             reason = review_reason(parts, bodies, names)
+            if reason and stop():
+                # A suspect edit is never kept unreviewed: left unfinished, it is edited
+                # again when the same TXT is resumed.
+                return
             try:
                 consistent=continuity_check(original,rewritten,provider,model,key,stop=stop,event=event,reason=reason)
             except ProviderError:
-                # The already validated edit must not be discarded just because
-                # optional remote review is unavailable. Flag it in the report.
-                event('연속성 검토 요청 실패 · 검증된 윤문 유지')
+                # The review was needed (length, speech level or a name changed) but could
+                # not be done: keep the original so a possible change of meaning never
+                # slips into the result. "보존한 문단만 다시 시도" retries these later.
+                event(f'연속성 검토 요청 실패 · {len(parts)}문단 원문 보존(나중에 다시 시도 가능)')
                 for p in parts:
-                    state['issues'][str(p.pid)]='연속성 검토 미완료 · 윤문 유지'
-                consistent=True
+                    state['issues'][str(p.pid)]='연속성 검토 실패('+reason+') · 원문 보존'
+                return
             if not consistent:
                 event(f'연속성 검토 불일치 · {len(parts)}문단 분할 검증')
                 if len(parts)>1:
@@ -667,8 +672,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 return
             for p, body in zip(parts, bodies):
                 state['completed'][str(p.pid)] = body
-                if state['issues'].get(str(p.pid)) != '연속성 검토 미완료 · 윤문 유지':
-                    state['issues'].pop(str(p.pid), None)
+                state['issues'].pop(str(p.pid), None)
 
         remaining = [p for p in group if str(p.pid) not in state['completed']]
         if remaining:

@@ -65,6 +65,7 @@ def _sha(text: str) -> str:
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.last_rename_skipped = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as con:
             con.executescript(SCHEMA)
@@ -276,12 +277,14 @@ class Database:
     def rename_in_translations(self, project_id: int, renames: dict[str, str]) -> int:
         """Apply a changed name rendering to every stored translation of the project and
         move the project to its new identity in the same transaction."""
-        from .name_rename import apply
+        from .name_rename import apply_counted
         total = 0
+        self.last_rename_skipped = 0      # occurrences left alone as part of a longer word (하늘색)
         with self.connect() as con:
             rows = con.execute('SELECT chunk_index, translation FROM chunks WHERE project_id=? AND translation IS NOT NULL', (project_id,)).fetchall()
             for r in rows:
-                new, n = apply(r['translation'], renames)
+                new, n, skipped = apply_counted(r['translation'], renames)
+                self.last_rename_skipped += skipped
                 if n:
                     total += n
                     con.execute('UPDATE chunks SET translation=? WHERE project_id=? AND chunk_index=?', (new, project_id, r['chunk_index']))

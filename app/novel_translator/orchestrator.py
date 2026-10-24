@@ -1,7 +1,7 @@
 from __future__ import annotations
 import random
 import re, time, threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from .providers.base import *
 from .prompting import build_system_prompt, build_user_prompt, REPAIR_SYSTEM, build_repair_prompt, SKIP_MARKER
 from .validation import TAG_RE, validate_translation, normalize_translation_output, id_forms, skipped_paragraph_ids, parse_tagged_translation, leftover_script, _is_refusal, meta_leak
@@ -137,6 +137,11 @@ class TranslationOrchestrator:
         # that wait so cancelling stops the job immediately; a late result never
         # touches Qt, SQLite, output files, retries or the next translation job.
         provider=self.provider
+        # The stop check also travels with the request: a local LLM stream then closes the
+        # moment the user stops, so Ollama stops generating instead of finishing a chunk
+        # nobody waits for (and the next job does not queue behind it on the GPU).
+        if getattr(request,'cancel',None) is None:
+            request=replace(request,cancel=self.cancel_check)
         done=threading.Event(); result=[]
         def invoke():
             try:result.append((True,provider.translate(request,secret)))

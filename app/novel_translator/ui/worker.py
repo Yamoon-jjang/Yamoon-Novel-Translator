@@ -1135,7 +1135,9 @@ class TranslationWorker(QThread):
             n = db.rename_in_translations(int(row['id']), renames)
             db.rekey_project(int(row['id']), fingerprint, settings_key)
             pairs = ', '.join(f'{a}→{b}' for a, b in list(renames.items())[:6]) + (' …' if len(renames) > 6 else '')
-            self.issue.emit(f'확정 용어 이름 변경 · 다시 번역하지 않고 저장된 번역에 반영: {pairs} ({n:,}곳) · 이전 결과 파일은 백업됩니다')
+            skipped = int(getattr(db, 'last_rename_skipped', 0) or 0)
+            kept = f' · 다른 낱말의 일부로 보이는 {skipped:,}곳(예: 하늘색)은 그대로 둠' if skipped else ''
+            self.issue.emit(f'확정 용어 이름 변경 · 다시 번역하지 않고 저장된 번역에 반영: {pairs} ({n:,}곳){kept} · 이전 결과 파일은 백업됩니다')
             self._rename_common_terms(old_terms)
         except Exception as e:
             self.issue.emit(f'이름 변경 반영 생략 · {type(e).__name__}: {e}')

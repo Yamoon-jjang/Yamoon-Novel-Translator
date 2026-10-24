@@ -81,7 +81,7 @@ class LocalLLMProvider(TranslationProvider):
         return self._translate_compat(request, api_key)
 
     def _headers(self, api_key: str) -> dict:
-        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.41'}
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.5'}
         if api_key and api_key not in {'local', 'none', '-'}:
             headers['Authorization'] = f'Bearer {api_key}'
         return headers
@@ -156,7 +156,7 @@ class LocalLLMProvider(TranslationProvider):
         last = None
         for url in urls:
             try:
-                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.41'})
+                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.5'})
             except requests.ConnectionError as e:
                 raise ProviderError(ErrorKind.TRANSIENT, f'로컬 LLM 서버에 연결할 수 없습니다. Ollama 또는 LM Studio가 실행 중인지 확인하세요: {base}') from e
             except requests.RequestException as e:

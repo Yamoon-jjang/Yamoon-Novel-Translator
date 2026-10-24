@@ -46,9 +46,10 @@ class TranslationRequest:
     purpose: str = 'translate'
     # Paragraph IDs of a tagged 'edit' request (translation requests are read from SOURCE).
     paragraph_ids: tuple = ()
-    # Optional "stop now?" check (a callable returning True). Only the app's name/speech
-    # analysis passes one; a local LLM stream then stops at once instead of finishing a
-    # long answer nobody is waiting for. Translation requests never set it.
+    # Optional "stop now?" check (a callable returning True). Name/speech analysis passes
+    # one, and the translation orchestrator adds the job's stop check to every request;
+    # a local LLM stream then stops at once instead of finishing a long answer nobody is
+    # waiting for.
     cancel: object = field(default=None, compare=False, repr=False)
     # Name/speech analysis only: an upper bound for the answer (0 = the usual budget) and
     # permission to return a cut-off or looping answer as it is, so the lines/entries it

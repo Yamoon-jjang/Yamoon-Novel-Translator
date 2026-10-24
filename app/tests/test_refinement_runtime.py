@@ -216,9 +216,12 @@ def test_provider_review_failure_does_not_trigger_recursive_reprocessing(tmp_pat
     p=ReviewFailure()
     res=run_refinement(src,tmp_path/'result.txt',p,'model','key',
                        checkpoint_dir=tmp_path/'jobs',analysis_engine=(Dummy(),'analysis','test'))
-    assert res['issues']==1 and res['done']==1 and res['changed']==1 and p.calls==2
-    assert (tmp_path/'result.txt').read_text(encoding='utf-8-sig')!=original
-    assert '연속성 검토 미완료' in (tmp_path/'result.txt.review.txt').read_text(encoding='utf-8-sig')
+    # v2.5: a needed review that could not be done keeps the original (never an unreviewed,
+    # possibly shortened edit), without asking again in a loop; it can be retried later.
+    assert res['issues']==1 and res['done']==0 and res['changed']==0 and res['preserved']==1 and p.calls==2
+    assert (tmp_path/'result.txt').read_text(encoding='utf-8-sig')==original
+    assert '연속성 검토 실패(분량 변화) · 원문 보존' in (tmp_path/'result.txt.review.txt').read_text(encoding='utf-8-sig')
+    assert res['retry_available']==1
 
 def test_editorial_system_prompt_is_shared_and_preserves_paragraph_contract():
     from novel_translator.refinement_runtime import refinement_prompt

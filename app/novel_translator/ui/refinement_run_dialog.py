@@ -4,8 +4,9 @@ from pathlib import Path
 import re
 import time
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                               QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit)
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel,
+                               QPushButton, QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit,
+                               QSizePolicy)
 from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_duration,
                                   retry_status, peek_guidance)
 from ..api_keys import normalize_key_records
@@ -28,9 +29,31 @@ def korean_share(path) -> float:
     return len(re.findall(r'[가-힣]', text))/letters if letters else 0.0
 
 
+def wrap_path(text) -> str:
+    """Text that can wrap inside a long path or file name (after folder separators and
+    within long unbroken runs), so it never widens the window. Display only."""
+    text=str(text).replace('\\', '\\\u200b').replace('/', '/\u200b')
+    return re.sub(r'([^\s\u200b]{24})(?=[^\s\u200b])', '\\1\u200b', text)
+
+
+def short_name(name, keep: int = 44) -> str:
+    """A file name shortened in the middle for one status line (the full path is in the tooltip)."""
+    name=str(name)
+    if len(name) <= keep:
+        return name
+    head=keep//2-1
+    return name[:head]+'…'+name[-(keep-head-1):]
+
+
+# Lines kept free for the status text: a finished run's summary is at most four lines (five on a
+# large system font), so
+# the window keeps one size from opening to finishing (only a rare long error grows it).
+STATUS_LINES = 5
+
+
 class _StatusLabel(QLabel):
-    """A wrapped status line that lets the window grow when a longer message arrives
-    (a top-level window does not grow for word-wrapped text by itself)."""
+    """A wrapped status line. Its room is reserved up front (STATUS_LINES); only a message
+    longer than that (a long error) lets the window grow, never shrink."""
     def setText(self, text):
         super().setText(text)
         fit = getattr(self.window(), '_fit_height', None)
@@ -89,9 +112,8 @@ class RefinementRunDialog(QDialog):
         self.source=None
         self.output=None
         layout=QVBoxLayout(self)
-        intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서와 존댓말·반말은 유지하며 원본은 변경하지 않습니다.\n'
-                     '이 앱으로 번역한 TXT는 번역할 때 확정된 인물 말투·이름을 기준표로 쓰고, 그 밖의 TXT는 시작할 때 샘플 분석으로 기준표를 만듭니다. '
-                     '분량·말투·이름에 변화가 의심되는 구간은 연속성을 추가 검토합니다.')
+        intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서와 존댓말·반말은 그대로 두고 원본은 바꾸지 않습니다. '
+                     '이 앱으로 번역한 TXT는 번역 때 확정한 말투·이름을, 그 밖의 TXT는 샘플 분석으로 만든 기준표를 씁니다.')
         intro.setWordWrap(True); layout.addWidget(intro)
         row=QHBoxLayout()
         self.pick=QPushButton('한국어 TXT 선택')
@@ -99,6 +121,7 @@ class RefinementRunDialog(QDialog):
         row.addWidget(self.pick)
         self.source_label=QLabel('선택한 파일 없음')
         self.source_label.setWordWrap(True)
+        self.source_label.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)   # a long name never widens the window
         row.addWidget(self.source_label,1)
         layout.addLayout(row)
         grow=QHBoxLayout()
@@ -114,15 +137,18 @@ class RefinementRunDialog(QDialog):
         # API settings own both provider/model choices. This dialog is read-only.
         self.analysis_info=QLabel()
         self.editing_info=QLabel()
-        layout.addWidget(QLabel('용어·말투 분석 · API 설정 (번역 기록이 없는 TXT에만 사용)'))
-        layout.addWidget(self.analysis_info)
-        layout.addWidget(QLabel('문학적 윤문·연속성 · API 설정'))
-        layout.addWidget(self.editing_info)
+        engines=QGridLayout(); engines.setHorizontalSpacing(8); engines.setVerticalSpacing(2)
+        engines.addWidget(QLabel('용어·말투 분석:'),0,0); engines.addWidget(self.analysis_info,0,1)
+        engines.addWidget(QLabel('(번역 기록이 없는 TXT에만)'),0,2)
+        engines.addWidget(QLabel('문학적 윤문·연속성:'),1,0); engines.addWidget(self.editing_info,1,1)
+        engines.setColumnStretch(2,1)
+        layout.addLayout(engines)
         self._fill_engines()
-        self.help=QLabel('한국어 소설 재정비는 온라인 AI의 토큰 비용·출력 길이 제한·긴 대기·일부 내용의 교정 거부 문제를 줄이기 위해 로컬 LLM만 지원합니다. 로컬 LLM에도 문맥 길이·처리 속도 제한은 있습니다. API 설정에서 용어·말투 분석과 문학적 윤문을 모두 로컬 LLM으로 선택해야 시작할 수 있습니다. 번역 기록이 없는 TXT는 시작할 때 샘플 분석 요청을 한 번 보내며, 윤문은 소설 분량과 모델 속도에 따라 오래 걸릴 수 있습니다. 엔진과 모델은 API 설정에서만 변경하며 여기서는 저장된 설정을 사용합니다. 성인 소설의 윤문 거부 가능성을 줄이려면 검열 해제된 로컬 LLM을 권장합니다. 단, 성공과 품질이 보장되지는 않습니다.')
+        self.help=QLabel('로컬 LLM 전용입니다. 엔진·모델은 API 설정에서만 바꾸며, 용어·말투 분석과 문학적 윤문을 모두 로컬 LLM으로 지정해야 시작됩니다. '
+                         '분량과 모델 속도에 따라 오래 걸릴 수 있고, 성인 소설은 검열 해제된 로컬 LLM을 권장합니다(성공·품질은 보장되지 않음).')
+        self.help.setStyleSheet('color:#475569;')
         self.help.setWordWrap(True);layout.addWidget(self.help)
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0)
-        layout.addWidget(self.progress)
         # Shown in the progress bar's place once a run has finished: a calm, readable mark.
         self.done_badge=QLabel('✓  정비 완료')
         self.done_badge.setObjectName('refineDone')
@@ -130,17 +156,28 @@ class RefinementRunDialog(QDialog):
         self.done_badge.setStyleSheet('#refineDone{color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;'
                                       'border-radius:8px;padding:7px 18px;font-size:15px;font-weight:600;letter-spacing:1px;}')
         self.done_badge.hide()
-        layout.addWidget(self.done_badge)
+        # The bar and the done mark share one cell that keeps the taller one's height,
+        # so swapping them never moves the lines below.
+        swap=QWidget(); cell=QGridLayout(swap); cell.setContentsMargins(0,0,0,0)
+        for w in (self.progress,self.done_badge):
+            sp=w.sizePolicy(); sp.setRetainSizeWhenHidden(True); w.setSizePolicy(sp)
+            cell.addWidget(w,0,0,Qt.AlignVCenter)
+        layout.addWidget(swap)
         # Elapsed time and an estimate of what is left, as the translation window shows them.
         self.time_info=_StatusLabel('')
         self.time_info.setWordWrap(True)
         self.time_info.setStyleSheet('color:#475569;')
         self.time_info.hide()
+        sp=self.time_info.sizePolicy(); sp.setRetainSizeWhenHidden(True); self.time_info.setSizePolicy(sp)
+        self.time_info.setMinimumHeight(QLabel('경과').sizeHint().height())
         layout.addWidget(self.time_info)
         self._counts=(0,0,0); self._base=None
         self.status=_StatusLabel('준비됨')
-        self.status.setWordWrap(True);layout.addWidget(self.status)
-        layout.addStretch(1)
+        self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignLeft|Qt.AlignTop)
+        probe=QLabel('\n'.join(['가']*STATUS_LINES)); probe.setFont(self.status.font())
+        self.status.setMinimumHeight(probe.sizeHint().height()+2)
+        layout.addWidget(self.status)
         bar=QHBoxLayout()
         self.start=QPushButton('재정비 시작')
         self.start.clicked.connect(self._start)
@@ -235,7 +272,8 @@ class RefinementRunDialog(QDialog):
         self.source_label.setText(self.source.name)
         self.source_label.setToolTip(str(self.source))
         self._show_done(False)
-        self.status.setText(f'결과는 별도 파일에 저장됩니다: {self.output}')
+        self.status.setText(f'결과는 별도 파일에 저장됩니다: {wrap_path(self.output)}')
+        self.status.setToolTip(str(self.output))
         self._refresh_guidance()
 
     def _refresh_guidance(self):
@@ -333,6 +371,7 @@ class RefinementRunDialog(QDialog):
         self.time_info.setText('경과 0:00:00'); self.time_info.show()
         self._timer.start()
         self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
+        self.status.setToolTip('')
         self._show_done(False)
         self.worker.start()
 
@@ -365,7 +404,7 @@ class RefinementRunDialog(QDialog):
     def _tick(self):
         if self.worker and self.worker.isRunning():
             elapsed=int(time.monotonic()-self._stage_started)
-            self.status.setText(f'{self._stage_text} · 응답 대기 {elapsed}초 (정책 차단은 응답이 도착해야 확인 가능)')
+            self.status.setText(f'{self._stage_text} · 응답 대기 {elapsed}초')
             self.time_info.setText(self._time_text())
 
     def _progress(self,done,total,issues):
@@ -381,10 +420,12 @@ class RefinementRunDialog(QDialog):
             where={'translation':'번역 기록','analysis':'샘플 분석'}.get(result.get('guidance_source'),'없음')
             residue=(f' · 한자·가나 남은 문단 {result.get("residue_before",0)}→{result.get("residue_after",0)}개'
                      if result.get('residue_before') else '')
-            retry=('\n보존한 문단은 같은 TXT로 다시 [재정비 시작]을 누르면 그 문단만 다시 시도합니다.' if preserved else '')
+            retry=('\n보존한 문단은 같은 TXT로 [재정비 시작]을 다시 누르면 그 문단만 다시 시도합니다.' if preserved else '')
+            out=Path(str(result["output"])); rep=Path(str(result["report"]))
             self.status.setText(f'총 소요 시간 {format_duration(result.get("seconds",0))} · 기준표 {where}{residue}\n'
                                 f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
-                                f'결과: {result["output"]}\n검토 기록: {result["report"]}{retry}')
+                                f'결과: {short_name(out.name)} · 검토 기록(.review.txt)도 같은 폴더{retry}')
+            self.status.setToolTip(f'결과: {out}\n검토 기록: {rep}')
             self._guidance_text=str(result.get('guidance') or '')
             self.guidance_view.setEnabled(bool(self._guidance_text))
             self.guidance_info.setText(f'기준표: {where}' + (' · 이번 윤문에 쓴 표' if self._guidance_text else ''))
@@ -396,11 +437,12 @@ class RefinementRunDialog(QDialog):
 
     def _failed(self,message):
         took=format_duration(time.monotonic()-getattr(self,'_run_started',time.monotonic()))
-        self.status.setText(f'재정비 오류 · 이번 실행 {took} · 처리한 문단의 복구 정보는 유지됩니다.\n'+message)
+        self.status.setText(f'재정비 오류 · 이번 실행 {took} · 처리한 문단의 복구 정보는 유지됩니다.\n'+wrap_path(message))
+        self.status.setToolTip(message)
 
     def _thread_stopped(self):
         self._timer.stop()
-        self.time_info.hide()      # the result line below says how long it took
+        self.time_info.hide()      # the result line below says how long it took (its room is kept)
         self.worker=None
         self.pick.setEnabled(True)
         if not self._guidance_text:
