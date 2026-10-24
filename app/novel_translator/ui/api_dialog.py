@@ -10,6 +10,35 @@ from ..providers.gemini import GeminiProvider
 from ..providers.openai import OpenAIProvider
 from ..providers.local_llm import LocalLLMProvider
 from ..providers.base import TranslationRequest, ProviderError
+from .. import config as _config
+
+# The local server's model list from the last successful lookup, per server address. The
+# dialog shows it at once on opening, so the first click on a model field already lists
+# every model; the fresh lookup that follows only changes the list if the server's did.
+LOCAL_MODELS_CACHE='local_models_cache.json'
+LOCAL_MODELS_CACHE_DIR=None      # tests point this elsewhere; None = the app's data folder
+
+
+def _cache_path():
+    return (LOCAL_MODELS_CACHE_DIR or _config.DATA_DIR)/LOCAL_MODELS_CACHE
+
+
+def cached_local_models(endpoint: str) -> list[str]:
+    try:
+        names=_config.load_json(_cache_path()).get(str(endpoint or '').strip(),[])
+        return [str(n) for n in names if str(n).strip()] if isinstance(names,list) else []
+    except Exception:
+        return []
+
+
+def remember_local_models(endpoint: str, names) -> None:
+    try:
+        path=_cache_path()
+        data=dict(_config.load_json(path)) if path.exists() else {}
+        data[str(endpoint or '').strip()]=[str(n) for n in names]
+        path.parent.mkdir(parents=True,exist_ok=True); _config.save_json(path,data)
+    except Exception:
+        pass
 
 
 class ApiKeyTestThread(QThread):
@@ -369,7 +398,7 @@ class ApiDialog(QDialog):
         b1=QPushButton('Ollama'); b1.clicked.connect(lambda:(self.local_endpoint.setText(LocalLLMProvider.OLLAMA_ENDPOINT),self._load_local_models()))
         b2=QPushButton('LM Studio'); b2.clicked.connect(lambda:(self.local_endpoint.setText(LocalLLMProvider.LMSTUDIO_ENDPOINT),self._load_local_models()))
         preset.addWidget(b1); preset.addWidget(b2); lform.addRow('주소',preset)
-        self.local_model=_ModelCombo([],str(self._local.get('model') or ''))
+        self.local_model=_ModelCombo([{'id':n} for n in cached_local_models(self.local_endpoint.text())],str(self._local.get('model') or ''))
         self.local_model.lineEdit().setPlaceholderText('목록에서 고르거나 직접 입력 (Ollama: ollama list에 보이는 이름)')
         self.local_models_btn=QPushButton('목록 불러오기'); self.local_models_btn.setToolTip('실행 중인 Ollama / LM Studio에 등록된 모델 목록을 가져옵니다.')
         self.local_models_btn.clicked.connect(lambda: self._load_local_models(True))
@@ -491,8 +520,22 @@ class ApiDialog(QDialog):
     def _local_models_loaded(self, names, error):
         if names is None:
             self.local_models_status.setText('목록을 가져오지 못했습니다 · '+error+' · 모델 이름을 직접 입력해도 됩니다.'); return
+        first=not getattr(self,'_local_list_loaded',False)
         self._local_list_loaded=True
+        remember_local_models(self.local_endpoint.text(), names)
         current=self.local_model.text()
+        shown=[self.local_model.itemText(i) for i in range(self.local_model.count())]
+        if list(names)==shown:
+            # Nothing changed (the list shown on opening was right): leave every field and any
+            # open list alone; only a saved model the server lacks gets its "저장된 모델 ·" mark.
+            for role, provider_combo, model_combo in [('analysis',self.analysis_engine,self.analysis_model),('editing',self.editing_engine,self.editing_model)]:
+                selected=str(model_combo.currentData() or '').strip()
+                if first and provider_combo.currentData()=='local' and selected and selected not in names:
+                    self._role_model_changed(role, selected)
+            self._local_models_status(names, current); return
+        # A list that is open while the new names arrive keeps its old height; reopen it at the right size.
+        open_combos=[c for c in (self.local_model,self.analysis_model,self.editing_model) if c.view().isVisible()]
+        for c in open_combos: c.hidePopup()
         self.local_model.blockSignals(True)
         self.local_model.clear(); self.local_model.addItems(names)
         if current:
@@ -505,6 +548,11 @@ class ApiDialog(QDialog):
                 selected=model_combo.currentData() or model_combo.currentText().strip()
                 self._role_model_changed(role, selected if selected!='해당 제공자의 기본 모델 사용' else '')
         self._refresh_engines()
+        for c in open_combos:
+            if c.isVisible() and c.isEnabled(): c.showPopup()
+        self._local_models_status(names, current)
+
+    def _local_models_status(self, names, current):
         if not names:
             self.local_models_status.setText('서버에 등록된 모델이 없습니다. Ollama라면 모델을 먼저 받아 두세요 (ollama pull 모델이름).')
         else:

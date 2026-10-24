@@ -285,3 +285,62 @@ def test_main_window_clean_reader_launch_is_shared(monkeypatch, tmp_path):
     out = tmp_path / 'a.ko.refined.txt'; out.write_text('x', encoding='utf-8')
     assert mw.MainWindow.launch_cleanreader(h, [out]) == 1
     assert launched == [[str(exe), str(out)]]
+
+
+# ---------------------------------------------------------------- v2.5 보완 2: 모델 목록이 첫 클릭부터 다 보임
+def _api(monkeypatch, model='gemma4-26b-abliterated:latest'):
+    import novel_translator.ui.api_dialog as ad
+    monkeypatch.setattr(ad.LocalModelsThread, 'start', lambda self: None)
+    return ad, ad.ApiDialog([], 'gemini-3.1-flash-lite', {}, '', None,
+                            local_settings={'model': model, 'endpoint': 'http://localhost:11434/v1/chat/completions'},
+                            engines=[{'id': 'local', 'enabled': True}],
+                            extraction_engines={'terms': 'local', 'speech': 'local', 'model': model},
+                            refinement_editing={'provider': 'local', 'model': model})
+
+
+def test_model_fields_list_every_model_from_the_first_click(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    names = ['gemma4-12b:latest', 'gemma4-26b-abliterated:latest', 'qwen3:14b']
+    ad, d = _api(monkeypatch)
+    d._local_models_loaded(names, ''); d.close()           # an earlier opening fetched the list
+    ad, d = _api(monkeypatch)                                # opened again: the lookup has not answered yet
+    try:
+        items = lambda c: [c.itemText(i) for i in range(c.count())]
+        assert items(d.local_model) == names
+        assert items(d.analysis_model)[1:] == names and items(d.editing_model)[1:] == names
+        assert d.analysis_model.currentText() == 'gemma4-26b-abliterated:latest'
+    finally:
+        d.close()
+
+
+def test_the_same_list_arriving_leaves_an_open_list_alone(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    names = ['gemma4-12b:latest', 'gemma4-26b-abliterated:latest']
+    ad, d = _api(monkeypatch); d._local_models_loaded(names, ''); d.close()
+    ad, d = _api(monkeypatch)
+    try:
+        d.show(); app.processEvents()
+        rebuilt = []
+        orig = d._role_model_changed
+        d._role_model_changed = lambda *a, **k: (rebuilt.append(a), orig(*a, **k))
+        d.analysis_model.showPopup(); app.processEvents()
+        d._local_models_loaded(names, ''); app.processEvents()
+        assert not rebuilt and d.analysis_model.view().isVisible()
+        assert '등록된 모델 2개' in d.local_models_status.text()
+    finally:
+        d.close()
+
+
+def test_a_changed_list_reopens_an_open_list_at_its_new_size(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    ad, d = _api(monkeypatch)
+    try:
+        d.show(); app.processEvents()
+        shown = []
+        d.analysis_model.showPopup(); app.processEvents()
+        orig_show = d.analysis_model.showPopup
+        d.analysis_model.showPopup = lambda: (shown.append(d.analysis_model.count()), orig_show())
+        d._local_models_loaded(['a:latest', 'gemma4-26b-abliterated:latest', 'c:latest'], ''); app.processEvents()
+        assert shown == [4]                                  # reopened once, with every model in it
+    finally:
+        d.close()

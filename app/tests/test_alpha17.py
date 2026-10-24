@@ -575,8 +575,17 @@ def test_local_model_list_from_ollama_and_lm_studio(monkeypatch):
         if url.endswith('/v1/models'): return R({'data':[{'id':'lmstudio-model'}]})
         return R({},404)
     monkeypatch.setattr(ll.requests,'get',get)
-    assert ll.LocalLLMProvider().list_models()==['gemma3:12b','qwen27b:latest'] and calls[-1]=='http://localhost:11434/api/tags'
-    assert ll.LocalLLMProvider(ll.LocalLLMProvider.LMSTUDIO_ENDPOINT).list_models()==['lmstudio-model'] and calls[-1]=='http://localhost:1234/v1/models'
+    # "localhost" is asked as 127.0.0.1 first (no slow IPv6 attempt on Windows), v2.5
+    assert ll.LocalLLMProvider().list_models()==['gemma3:12b','qwen27b:latest'] and calls[-1]=='http://127.0.0.1:11434/api/tags'
+    assert ll.LocalLLMProvider(ll.LocalLLMProvider.LMSTUDIO_ENDPOINT).list_models()==['lmstudio-model'] and calls[-1]=='http://127.0.0.1:1234/v1/models'
+    tried=[]
+    def ipv6_only(url,timeout=None,headers=None):
+        tried.append(url)
+        if '127.0.0.1' in url: raise ll.requests.ConnectionError('refused')
+        return get(url,timeout,headers)
+    monkeypatch.setattr(ll.requests,'get',ipv6_only)
+    assert ll.LocalLLMProvider().list_models()==['gemma3:12b','qwen27b:latest']
+    assert tried==['http://127.0.0.1:11434/api/tags','http://localhost:11434/api/tags']   # falls back to the address as written
     def down(*a,**k): raise ll.requests.ConnectionError('refused')
     monkeypatch.setattr(ll.requests,'get',down)
     with pytest.raises(ProviderError) as caught: ll.LocalLLMProvider().list_models()

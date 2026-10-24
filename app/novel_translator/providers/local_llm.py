@@ -143,6 +143,21 @@ class LocalLLMProvider(TranslationProvider):
             raise ProviderError(ErrorKind.FORMAT, '로컬 LLM 빈 번역 응답')
         return TranslationResponse(text=text, finish_reason=finish, raw=data)
 
+    @staticmethod
+    def _get_list(url: str, base: str, parts, timeout: float):
+        """GET a model list. For "localhost", ask 127.0.0.1 first: on Windows "localhost" is
+        tried as IPv6 (::1) first, and Ollama listens on IPv4 only, so the refused IPv6
+        attempt alone costs about a second before the list arrives. Falls back to the
+        address as written when nothing answers on 127.0.0.1."""
+        headers = {'User-Agent': 'NovelTranslator/2.5'}
+        if (parts.hostname or '').lower() == 'localhost':
+            fast = url.replace(base, base.replace(parts.hostname, '127.0.0.1', 1), 1)
+            try:
+                return requests.get(fast, timeout=timeout, headers=headers)
+            except requests.ConnectionError:
+                pass
+        return requests.get(url, timeout=timeout, headers=headers)
+
     def list_models(self, timeout: float = 4.0) -> list[str]:
         """Models the local server has: Ollama /api/tags, otherwise OpenAI-style /v1/models."""
         u = urlsplit(self.endpoint)
@@ -156,7 +171,7 @@ class LocalLLMProvider(TranslationProvider):
         last = None
         for url in urls:
             try:
-                r = requests.get(url, timeout=timeout, headers={'User-Agent': 'NovelTranslator/2.5'})
+                r = self._get_list(url, base, u, timeout)
             except requests.ConnectionError as e:
                 raise ProviderError(ErrorKind.TRANSIENT, f'로컬 LLM 서버에 연결할 수 없습니다. Ollama 또는 LM Studio가 실행 중인지 확인하세요: {base}') from e
             except requests.RequestException as e:
