@@ -2446,14 +2446,25 @@ class MainWindow(QMainWindow):
         return out
 
     def _open_in_cleanreader(self):
+        found=[]
+        n=self.launch_cleanreader(lambda: found.extend(self._cleanreader_targets()) or found)
+        if n:
+            more=f' (명령줄 길이 제한으로 {len(found):,}개 중 {n:,}개)' if n<len(found) else ''
+            self.status.setText(f'클린리더로 열기 · 결과 파일 {n:,}개{more}')
+
+    def launch_cleanreader(self, files, parent=None) -> int:
+        """Open TXT files (a list, or a callable giving one) in 야문 클린리더. Its location is
+        asked once and remembered; Shift+click picks it again. Returns how many files were
+        passed, 0 when nothing was opened."""
         from PySide6.QtWidgets import QApplication
+        parent=parent or self
         exe=None if (QApplication.keyboardModifiers() & Qt.ShiftModifier) else self._find_cleanreader()
         if exe is None:
             exe=self._pick_cleanreader()
-            if exe is None: return
-        files=self._cleanreader_targets()
+            if exe is None: return 0
+        files=[Path(f) for f in (files() if callable(files) else files) if f]
         if not files:
-            QMessageBox.information(self,'클린리더','열 번역 결과 파일이 없습니다. 번역이 끝난 뒤 다시 눌러 주세요.'); return
+            QMessageBox.information(parent,'클린리더','열 번역 결과 파일이 없습니다. 번역이 끝난 뒤 다시 눌러 주세요.'); return 0
         # Windows command lines are limited (~32K characters): pass as many files as fit.
         args=[]; room=30000-len(str(exe))
         for f in files:
@@ -2464,9 +2475,8 @@ class MainWindow(QMainWindow):
             flags=(getattr(subprocess,'DETACHED_PROCESS',0)|getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0)) if os.name=='nt' else 0
             subprocess.Popen([str(exe)]+args,close_fds=True,creationflags=flags)
         except Exception as e:
-            QMessageBox.warning(self,'클린리더 실행 실패',f'{exe}\n{type(e).__name__}: {e}\n\nShift를 누른 채 버튼을 눌러 위치를 다시 지정할 수 있습니다.'); return
-        more=f' (명령줄 길이 제한으로 {len(files):,}개 중 {len(args):,}개)' if len(args)<len(files) else ''
-        self.status.setText(f'클린리더로 열기 · 결과 파일 {len(args):,}개{more}')
+            QMessageBox.warning(parent,'클린리더 실행 실패',f'{exe}\n{type(e).__name__}: {e}\n\nShift를 누른 채 버튼을 눌러 위치를 다시 지정할 수 있습니다.'); return 0
+        return len(args)
 
     def _open_result_folder(self):
         p=self.last_result_path

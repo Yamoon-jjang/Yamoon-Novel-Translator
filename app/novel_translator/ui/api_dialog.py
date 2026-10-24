@@ -437,7 +437,11 @@ class ApiDialog(QDialog):
                 mid=str(row.get('id') or '').strip()
                 if mid and model_combo.findData(mid)<0: model_combo.addItem(str(row.get('display_name') or mid),mid)
             if selected and model_combo.findData(selected)<0:
-                model_combo.addItem('저장된 모델 · '+selected,selected)
+                # Until the local server's list arrives (about a second after opening), a saved
+                # local model is shown by its plain name, so the field does not first read
+                # "저장된 모델 · …" and then change. Only a name the loaded list lacks is marked.
+                pending=provider=='local' and not getattr(self,'_local_list_loaded',False)
+                model_combo.addItem(selected if pending else '저장된 모델 · '+selected,selected)
             idx=model_combo.findData(selected)
             model_combo.setCurrentIndex(idx if idx>=0 else 0)
             model_combo.setEnabled(True)
@@ -487,6 +491,7 @@ class ApiDialog(QDialog):
     def _local_models_loaded(self, names, error):
         if names is None:
             self.local_models_status.setText('목록을 가져오지 못했습니다 · '+error+' · 모델 이름을 직접 입력해도 됩니다.'); return
+        self._local_list_loaded=True
         current=self.local_model.text()
         self.local_model.blockSignals(True)
         self.local_model.clear(); self.local_model.addItems(names)

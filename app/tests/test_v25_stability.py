@@ -208,3 +208,80 @@ def test_a_reviewed_same_edit_is_still_kept(tmp_path):
     res = run_refinement(src, tmp_path / 'out.txt', _Shortener('SAME'), 'model', 'key',
                          checkpoint_dir=tmp_path / 'jobs', analysis_engine=(Dummy(), 'analysis', 'test'))
     assert res['changed'] == 1 and res['preserved'] == 0 and res['issues'] == 0
+
+
+# ---------------------------------------------------------------- v2.5 보완: API 설정 모델 표시 · 재정비 뒤 클린리더
+def test_api_settings_show_the_saved_local_model_by_name_before_the_list_arrives(monkeypatch):
+    import novel_translator.ui.api_dialog as ad
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(ad.LocalModelsThread, 'start', lambda self: None)     # the list has not arrived yet
+    model = 'gemma4-26b-abliterated:latest'
+    d = ad.ApiDialog([], 'gemini-3.1-flash-lite', {}, '', None,
+                     local_settings={'model': model, 'endpoint': 'http://localhost:11434/v1/chat/completions'},
+                     engines=[{'id': 'local', 'enabled': True}],
+                     extraction_engines={'terms': 'local', 'speech': 'local', 'model': model},
+                     refinement_editing={'provider': 'local', 'model': model})
+    try:
+        before = (d.analysis_model.currentText(), d.editing_model.currentText())
+        assert before == (model, model)                       # no "저장된 모델 · …" first
+        d._local_models_loaded([model, 'gemma4-12b:latest'], '')
+        assert (d.analysis_model.currentText(), d.editing_model.currentText()) == before   # nothing changes
+        assert d._role_selected_model(d.analysis_model) == model
+        d._local_models_loaded(['other:latest'], '')           # a name the server does not have is still marked
+        assert d.analysis_model.currentText() == '저장된 모델 · ' + model
+        assert d._role_selected_model(d.analysis_model) == model
+    finally:
+        d.close()
+
+
+def _finish(d, tmp_path, preserved=0):
+    out = tmp_path / '책.ko.refined.txt'; out.write_text('결과', encoding='utf-8')
+    d._finished({'status': 'completed', 'done': 3 - preserved, 'total': 3, 'changed': 2, 'identical': 1 - preserved,
+                 'preserved': preserved, 'seconds': 5, 'output': str(out), 'report': str(out) + '.review.txt',
+                 'guidance_source': 'analysis'})
+    d._thread_stopped()
+    return out
+
+
+def test_finished_refinement_offers_the_clean_reader_in_place_of_start(tmp_path):
+    app, d = _dialog()
+    opened = []
+    d.host.launch_cleanreader = lambda files, parent=None: opened.append((list(files), parent)) or 1
+    try:
+        assert d.start.isVisible() and not d.reader.isVisible()
+        size = d.size()
+        out = _finish(d, tmp_path); app.processEvents()
+        assert d.reader.isVisible() and not d.start.isVisible() and d.size() == size
+        d.reader.click()
+        assert opened == [([out], d)]
+        # Choosing another TXT brings [재정비 시작] back.
+        f = tmp_path / '다음.txt'; f.write_text('다음 책입니다.', encoding='utf-8'); d._set_source(f); app.processEvents()
+        assert d.start.isVisible() and not d.reader.isVisible()
+    finally:
+        d.close()
+
+
+def test_start_stays_beside_the_reader_while_preserved_paragraphs_can_be_retried(tmp_path):
+    app, d = _dialog()
+    try:
+        _finish(d, tmp_path, preserved=1); app.processEvents()
+        assert d.reader.isVisible() and d.start.isVisible() and d.start.isEnabled()
+        d._finished({'status': 'stopped', 'seconds': 3}); app.processEvents()
+        d._show_done(False); app.processEvents()
+        assert d.start.isVisible() and not d.reader.isVisible()
+    finally:
+        d.close()
+
+
+def test_main_window_clean_reader_launch_is_shared(monkeypatch, tmp_path):
+    from novel_translator.ui import main_window as mw
+    exe = tmp_path / 'YamoonCleanReader.exe'; exe.write_bytes(b'MZ')
+    launched = []
+    monkeypatch.setattr(mw.subprocess, 'Popen', lambda args, **k: launched.append(args))
+    class Host:
+        status = None
+        def _find_cleanreader(self): return exe
+    h = Host()
+    out = tmp_path / 'a.ko.refined.txt'; out.write_text('x', encoding='utf-8')
+    assert mw.MainWindow.launch_cleanreader(h, [out]) == 1
+    assert launched == [[str(exe), str(out)]]

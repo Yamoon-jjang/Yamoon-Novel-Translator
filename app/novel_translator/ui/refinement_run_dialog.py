@@ -182,9 +182,17 @@ class RefinementRunDialog(QDialog):
         self.start=QPushButton('재정비 시작')
         self.start.clicked.connect(self._start)
         self.start.setEnabled(self._routes_ready)
+        # After a finished run the start button gives way to opening the result in 야문 클린리더
+        # (it stays beside it while preserved paragraphs can still be retried).
+        self.reader=QPushButton('클린리더로 열기')
+        self.reader.setToolTip('재정비 결과를 야문 클린리더(문단 정리기)로 엽니다.\n'
+                               '처음 한 번 YamoonCleanReader.exe 위치를 고르면 기억합니다. 위치를 바꾸려면 Shift를 누른 채 클릭하세요.')
+        self.reader.clicked.connect(self._open_in_reader)
+        self.reader.hide()
+        self._result_path=None; self._retry_left=0
         self.cancel=QPushButton('닫기')
         self.cancel.clicked.connect(self._close_or_stop)
-        bar.addStretch(1);bar.addWidget(self.start);bar.addWidget(self.cancel)
+        bar.addStretch(1);bar.addWidget(self.start);bar.addWidget(self.reader);bar.addWidget(self.cancel)
         layout.addLayout(bar)
         self._fit_height()
         # Pre-fill only a Korean text: the last translation result if there is one,
@@ -296,11 +304,23 @@ class RefinementRunDialog(QDialog):
         self.guidance_view.setEnabled(bool(table))
 
     def _show_done(self, done: bool):
-        """The finished mark replaces the progress bar; a new file or a new run brings the bar back."""
+        """The finished mark replaces the progress bar and [클린리더로 열기] replaces [재정비 시작]
+        (kept while preserved paragraphs can be retried); a new file or a new run brings both back."""
         self.done_badge.setVisible(done)
         self.progress.setVisible(not done)
+        self.reader.setVisible(done and bool(self._result_path))
+        self.start.setVisible(not done or self._retry_left > 0 or not self._result_path)
         if not done:
             self.progress.setValue(0)
+            self._result_path=None; self._retry_left=0
+
+    def _open_in_reader(self):
+        if not self._result_path or not Path(self._result_path).is_file():
+            QMessageBox.information(self,'클린리더','열 재정비 결과 파일이 없습니다.'); return
+        launch=getattr(self.host,'launch_cleanreader',None)
+        if launch is None:
+            QMessageBox.information(self,'클린리더','이 창에서는 클린리더를 열 수 없습니다. 번역 화면의 [클린리더로 열기]를 쓰세요.'); return
+        launch([self._result_path], parent=self)
 
     def _show_guidance(self):
         d=QDialog(self); d.setWindowTitle('재정비 기준표'); d.resize(560,420)
@@ -430,6 +450,7 @@ class RefinementRunDialog(QDialog):
             self.guidance_view.setEnabled(bool(self._guidance_text))
             self.guidance_info.setText(f'기준표: {where}' + (' · 이번 윤문에 쓴 표' if self._guidance_text else ''))
             self.progress.setValue(100)
+            self._result_path=Path(str(result['output'])); self._retry_left=int(preserved or 0)
             self._show_done(True)
         else:
             self.status.setText(f'안전 중지했습니다 · 지금까지 소요 시간 {format_duration(result.get("seconds",0))}\n'
