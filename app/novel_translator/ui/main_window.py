@@ -411,7 +411,11 @@ class MainWindow(QMainWindow):
         self.single_btn=QPushButton('TXT·PDF·EPUB 파일 선택'); self.single_btn.clicked.connect(self.open_txt)
         self.folder_btn=QPushButton('폴더 선택'); self.folder_btn.setToolTip('폴더 안의 TXT·PDF·EPUB 파일을 한 파일씩 차례로 번역합니다.'); self.folder_btn.clicked.connect(self.open_folder)
         self.paste_hint=QLabel('또는 TXT·PDF·EPUB 파일·폴더 끌어다 놓기 · 글 붙여넣기 (Ctrl+V)'); self.paste_hint.setStyleSheet('color:#6b7280;')
-        row.addWidget(self.single_btn); row.addWidget(self.folder_btn); row.addSpacing(6); row.addWidget(self.paste_hint); row.addStretch(1)
+        # [파일 선택][▾]: the ▾ beside it lists the files opened before (최근 연 파일, as in 야문 클린리더).
+        self.recent_btn=QPushButton('▾'); self.recent_btn.setToolTip('최근 연 파일 (최대 20개)'); self.recent_btn.setFixedWidth(26)
+        self.recent_btn.clicked.connect(self._show_recent_menu)
+        files_pair=QHBoxLayout(); files_pair.setSpacing(1); files_pair.addWidget(self.single_btn); files_pair.addWidget(self.recent_btn)
+        row.addLayout(files_pair); row.addWidget(self.folder_btn); row.addSpacing(6); row.addWidget(self.paste_hint); row.addStretch(1)
         self.reset_settings_btn=QPushButton('설정 초기화'); self.reset_settings_btn.setToolTip('API 설정(엔진·키·모델)과 원문·번역 파일을 보존하고, 앱 옵션 및 현재 작업의 메모·확정 용어를 기본값으로 되돌립니다.'); self.reset_settings_btn.clicked.connect(self._reset_settings); row.addWidget(self.reset_settings_btn)
         ib.addWidget(_cap('번역할 원문'),0,0); ib.addLayout(row,0,1)
         # Row 1: what is selected now
@@ -1071,6 +1075,7 @@ class MainWindow(QMainWindow):
             self.pm.set_active(target)
         self._apply_profile(target); self._update_output_label(); self._update_ready_state(); self.tabs.setCurrentWidget(self.preview_tab)
         if note: self.status.setText(note)
+        self._add_recent(str(p))
 
     def _auto_source_profile(self, path: Path, raw: bytes) -> tuple[str, str]:
         """The language profile to open a TXT/PDF/EPUB with: the detected source language when
@@ -3099,7 +3104,7 @@ class MainWindow(QMainWindow):
                 if combo is not None: combo.setEnabled(not locked)
         self.book_memory.setReadOnly(bool(locked))
         self.preview.setReadOnly(bool(locked) or self.input_mode=='folder' or getattr(self,'_preview_mode','source')=='result')
-        for w in (self.health_btn,self.advanced_btn,self.api_btn,self.reset_settings_btn,self.single_btn,self.folder_btn,self.out_btn,self.out_reset,self.lang,self.model,self.alt_model,self.mode,self.encoding,self.lang_option,self.term_add,self.term_delete,self.term_import,self.term_export,self.term_extract,self.name_option,self.speech_add,self.speech_delete,self.speech_generate,self.auto_speech,self.use_common,self.common_btn,self.batch_memory_common,self.restart_btn,self.batch_exclude_btn,self.batch_rescan_btn):
+        for w in (self.health_btn,self.advanced_btn,self.api_btn,self.reset_settings_btn,self.single_btn,self.recent_btn,self.folder_btn,self.out_btn,self.out_reset,self.lang,self.model,self.alt_model,self.mode,self.encoding,self.lang_option,self.term_add,self.term_delete,self.term_import,self.term_export,self.term_extract,self.name_option,self.speech_add,self.speech_delete,self.speech_generate,self.auto_speech,self.use_common,self.common_btn,self.batch_memory_common,self.restart_btn,self.batch_exclude_btn,self.batch_rescan_btn):
             w.setEnabled(not locked)
         self.include_sub.setEnabled((not locked) and self.input_mode=='folder' and not getattr(self,'batch_selection',None))
         self.batch_relation.setEnabled((not locked) and self.input_mode=='folder')
@@ -3525,6 +3530,7 @@ class MainWindow(QMainWindow):
     def on_progress(self,done,total,msg):
         self.progress.setRange(0,total); self.progress.setValue(done)
         self._prog=(done,total)
+        self._note_recent_progress(done,total)
         if self._prog_start is None and msg!='저장된 번역 사용':
             self._prog_start=max(0.0,self._job_fraction()-(1.0/total if total else 0.0))   # resumed jobs: skip the already-done part
         prefix=f'파일 {self.batch_index+1}/{len(self.batch_files)} · ' if self.input_mode=='folder' and self.batch_files else ''
@@ -3823,6 +3829,82 @@ class MainWindow(QMainWindow):
         if t is not None and t.isRunning(): t.wait(10000)   # short local model-list request (a few seconds at most)
         self._save_window_state()
         event.accept()
+
+    # ------------------------------------------------------------ 최근 연 파일 (v2.5.3)
+    # Newest first, at most 20, the same file once; each with how far its translation got.
+    RECENT_FILE = 'recent_files.json'
+    RECENT_MAX = 20
+
+    def _recent_files(self) -> list[dict]:
+        try:
+            rows=load_json(DATA_DIR/self.RECENT_FILE).get('files') or []
+        except Exception:
+            return []
+        out=[]
+        for r in rows if isinstance(rows,list) else []:
+            if isinstance(r,dict) and str(r.get('path') or '').strip():
+                out.append({'path':str(r['path']),'done':int(r.get('done',-1)) if str(r.get('done','')).lstrip('-').isdigit() else -1})
+        return out[:self.RECENT_MAX]
+
+    def _save_recent(self, rows: list[dict]) -> None:
+        try:
+            DATA_DIR.mkdir(parents=True,exist_ok=True)
+            save_json(DATA_DIR/self.RECENT_FILE,{'files':rows[:self.RECENT_MAX]})
+        except Exception:
+            pass
+
+    @staticmethod
+    def _same_path(a: str, b: str) -> bool:
+        return os.path.normcase(os.path.abspath(a))==os.path.normcase(os.path.abspath(b))
+
+    def _add_recent(self, path: str) -> None:
+        rows=self._recent_files()
+        old=next((r for r in rows if self._same_path(r['path'],path)),None)
+        rows=[{'path':path,'done':old['done'] if old else -1}]+[r for r in rows if not self._same_path(r['path'],path)]
+        self._save_recent(rows)
+
+    def _set_recent_progress(self, path: str, percent: int) -> None:
+        rows=self._recent_files()
+        for r in rows:
+            if self._same_path(r['path'],path):
+                if r['done']==percent: return
+                r['done']=percent; self._save_recent(rows); return
+
+    def _note_recent_progress(self, done: int, total: int) -> None:
+        """The open book's translation progress (single file only; written when the percent changes)."""
+        if self.input_mode!='single' or getattr(self,'_paste_active',False) or not self.source_path or not total: return
+        self._set_recent_progress(str(self.source_path),max(0,min(100,int(100*done/total))))
+
+    def _build_recent_menu(self):
+        from PySide6.QtWidgets import QMenu
+        menu=QMenu(self); menu.setToolTipsVisible(True)
+        rows=self._recent_files()
+        if not rows:
+            a=menu.addAction('(최근에 연 파일이 없습니다)'); a.setEnabled(False); return menu
+        for k,r in enumerate(rows):
+            name=Path(r['path']).name.replace('&','&&')
+            num=('  ' if len(rows)>=10 and k+1<10 else '')+str(k+1)   # 10번부터 두 자리: 한 자리 번호 앞에 공백 두 칸
+            text=f'{num}  {name}'+(f"\t번역 {r['done']}%" if r['done']>=0 else '')
+            a=menu.addAction(text); a.setToolTip(r['path'])
+            a.setEnabled(Path(r['path']).is_file())
+            a.triggered.connect(lambda _=False,p=r['path']: self._open_recent(p))
+        menu.addSeparator()
+        menu.addAction('목록 비우기').triggered.connect(self._clear_recent)
+        return menu
+
+    def _show_recent_menu(self):
+        if self._extracting() or (self.worker and self.worker.isRunning()): return
+        menu=self._build_recent_menu()
+        menu.exec(self.single_btn.mapToGlobal(self.single_btn.rect().bottomLeft()))
+
+    def _open_recent(self, path: str):
+        if self._extracting() or (self.worker and self.worker.isRunning()): return
+        if not Path(path).is_file():
+            self.status.setText(f'{Path(path).name} · 파일을 찾을 수 없습니다 (옮겼거나 지웠을 수 있음)'); return
+        self._open_txt_path(path)
+
+    def _clear_recent(self):
+        self._save_recent([]); self.status.setText('최근 연 파일 목록을 비웠습니다.')
 
     # Window position and size (and maximized state) come back on the next start.
     WINDOW_STATE_FILE = 'window_state.json'

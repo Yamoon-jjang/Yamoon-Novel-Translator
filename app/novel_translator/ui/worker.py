@@ -688,14 +688,19 @@ class TranslationWorker(QThread):
                     continue
                 if t and self._norm_para(t)!=self._norm_para(body) and not meta_leak(body,t) and not untranslated_residue(body,t) \
                         and len(leftover_script(t, ''.join(self.terms.values())))<2:
-                    memory[self._norm_para(body)]=t
+                    # Keyed by the paragraph's place AND its text: the same book keeps its paragraph
+                    # numbers (they come from the source text alone), so a resumed or re-chunked job
+                    # finds every paragraph it translated. A short line repeated elsewhere in the book
+                    # (“好。”, “……”) is not taken from another place: there the speaker and the speech
+                    # level may differ, and the line is translated with its own context (v2.5.3).
+                    memory[(int(k), self._norm_para(body))]=t
         return memory
 
     def _base_from_memory(self, chunk, memory: dict) -> str | None:
         """Tagged text for the chunk: remembered translations, source for the rest."""
         known=0; rows=[]
         for p in chunk.paragraphs:
-            src=escape_protocol_literals(p.text); t=memory.get(self._norm_para(src))
+            src=escape_protocol_literals(p.text); t=memory.get((int(p.pid), self._norm_para(src)))
             if t: known+=1
             rows.append(f'<P{p.pid:06d}>\n{t if t else src}')
         return '\n\n'.join(rows) if known else None
