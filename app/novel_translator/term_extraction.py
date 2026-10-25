@@ -447,3 +447,29 @@ def drop_name_phrases(terms: dict[str, str], known: dict[str, str] | None = None
         if not phrase:
             out[src] = ko
     return out
+
+
+def korean_collisions(terms: dict[str, str], focus=None) -> list[tuple[str, list[str]]]:
+    """Different originals that got the same Korean (Susan · Suzanne -> 스잔): the
+    translation would merge two characters into one. [(korean, [sources])], only groups
+    that include an entry of `focus` (the entries this extraction added or changed) when
+    it is given, so an earlier "keep both" choice is not asked again. Spellings of one
+    word (Susan / SUSAN, full- and half-width) are not a collision."""
+    import unicodedata
+    groups: dict[str, list[str]] = {}
+    for src, ko in (terms or {}).items():
+        s = (src or '').strip(); k = re.sub(r'\s+', '', (ko or '').strip())
+        if s and k:
+            groups.setdefault(k, []).append(s)
+    wanted = {str(x).strip() for x in focus} if focus is not None else None
+    out = []
+    for k, sources in groups.items():
+        if len(sources) < 2:
+            continue
+        if len({unicodedata.normalize('NFKC', s).casefold() for s in sources}) < 2:
+            continue
+        if wanted is not None and not wanted.intersection(sources):
+            continue
+        shown = next((ko.strip() for s, ko in terms.items() if s.strip() == sources[0]), k)
+        out.append((shown, sources))
+    return out

@@ -533,6 +533,9 @@ def test_manual_mentions_only_buttons_that_exist(qt_app,sandbox,monkeypatch):
         r.close()
         have|={'다시 진행','번역 중지','추가 정보','실행','결과 복사','결과 저장','번역 결과','원문','말투표 건너뛰고 번역 시작','말투표 생성 취소'}   # state labels / Windows dialog
         have|={'이어서 번역','처음부터 다시 번역'}   # buttons of the "이전 번역 이어 쓰기" question (v2.5.2, checked in test_v252)
+        from novel_translator.ui.name_collision_dialog import NameCollisionDialog
+        c=NameCollisionDialog([('스잔',['Susan','Suzanne'])],{},set(),parent=w)
+        have|={b.text() for b in c.findChildren(QPushButton)}; c.close()   # 한글 이름 겹침 확인 (v2.5.2 보완)
         missing=sorted(n for n in named if n not in have)
         assert not missing, missing
     finally:

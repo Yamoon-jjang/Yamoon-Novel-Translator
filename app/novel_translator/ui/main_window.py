@@ -622,6 +622,13 @@ class MainWindow(QMainWindow):
         self.term_table.itemChanged.connect(self._term_manual_edit)
         self.term_table.itemChanged.connect(lambda _i: self._update_terms_tab_title())
         self.term_table.model().rowsInserted.connect(lambda *_: self._mark_suspicious_terms())
+        # The glossary as it was before the user's next cell edit, so a renamed Korean name can
+        # be carried into the speech table (refreshed after every change, after the edit handler).
+        self._term_seen={}; self._term_seen_due=False
+        for sig in (self.term_table.model().dataChanged,self.term_table.model().rowsInserted,
+                    self.term_table.model().rowsRemoved,self.term_table.model().modelReset):
+            sig.connect(lambda *_: self._schedule_term_seen())
+        self.term_table.itemDelegate().commitData.connect(lambda _e: self._term_user_committed())
         ta=QHBoxLayout(); self.term_add=QPushButton('용어 추가'); self.term_add.clicked.connect(self._add_term_row); self.term_delete=QPushButton('선택 삭제'); self.term_delete.clicked.connect(self._delete_term_rows)
         self.term_import=QPushButton('TSV 가져오기'); self.term_import.clicked.connect(self._import_terms); self.term_export=QPushButton('TSV 내보내기'); self.term_export.clicked.connect(self._export_terms)
         self.term_extract=QPushButton('인명·용어 자동 추출'); self.term_extract.setToolTip('원문에서 자주 나오는 단어 후보만(본문 문장 없이) 모델에 보내 인명·지명·고유 용어와 한국어 표기를 제안받습니다. 결과를 확인·수정한 뒤 번역을 시작하세요. 요청 1회.')
@@ -1782,6 +1789,14 @@ class MainWindow(QMainWindow):
                 added=self._merge_terms(res)
                 note=self._common_note()+'인명·용어 자동 추출 · '+(f'새 항목 {len(added)}개를 확정 용어집에 추가: '+', '.join(f'{a}→{b}' for a,b in added[:12])+(' …' if len(added)>12 else '') if added else '새로 추가할 항목 없음')+' (확정 용어집 탭에서 고칠 수 있음)'
                 self._auto_terms_sha=self._source_sha(); self._save_workspace()
+                if added:
+                    # Two originals with one Korean name would merge two characters: ask now,
+                    # before the speech table and the translation use the glossary.
+                    cnote,rebuild=self._review_name_collisions([a for a,_ in added],auto=True)
+                    if cnote: note+=' · '+cnote
+                    if rebuild:
+                        self._set_speech_rows([]); self._save_workspace()
+                        self._forget_speech_attempt(); self._speech_force_once=True
             else:
                 note=f'인명·용어 자동 추출 실패 · 용어집 없이 번역을 계속합니다 · {str(res)[:200]}'
             force=self._auto_terms_force
@@ -1791,7 +1806,8 @@ class MainWindow(QMainWindow):
                 force=False; note+=' · 추가된 용어가 없어 처음부터 다시 하지 않고 이어서 번역합니다'
             self._auto_terms_dialog_force=False
             note+=f' · 걸린 시간 {took}' if took else ''
-            if self._speech_auto_due():
+            due=self._speech_auto_due(); self._speech_force_once=False
+            if due:
                 self._auto_terms_force=force; self._auto_notes=lines+[note]
                 if self._begin_speech_extraction(auto=True):
                     return
@@ -1842,7 +1858,16 @@ class MainWindow(QMainWindow):
              else '새로 추가하거나 바꿀 인명·용어가 없습니다.')
         self.status.setText(msg)
         self.on_worker_issue(f'인명·용어 추출 완료 · 걸린 시간 {took} · '+self._common_note()+msg+(': '+', '.join(f'{a}→{b}' for a,b in added[:12])+(' …' if len(added)>12 else '') if added else ''))
+        if changed:
+            # A name the speech table already uses follows the chosen new rendering.
+            renamed,_amb=self._sync_speech_names(current,self._terms())
+            if renamed: self.on_worker_issue('인물 말투표 이름도 함께 바꿈: '+', '.join(f'{a} → {b}' for a,b in renamed))
+        cnote,rebuild='',False
+        if added:
+            cnote,rebuild=self._review_name_collisions([a for a,_ in added],auto=False)
+            if cnote: self.on_worker_issue(cnote)
         if added: QMessageBox.information(self,'자동 추출 완료',msg+'\n\n자동 제안이므로 표기를 확인하고, 틀린 항목은 고치거나 삭제한 뒤 번역을 시작하세요.')
+        if rebuild: QTimer.singleShot(0,self._rebuild_speech_now)
 
     # ------------------------------------------------------------ 내 공용 용어집
     def _log_style_check(self, path, status):
@@ -2126,11 +2151,14 @@ class MainWindow(QMainWindow):
         return self.preview.toPlainText() if self._preview_edited() else (self.source_text if self.input_mode=='single' else '')
 
     def _speech_auto_due(self) -> bool:
-        if not (hasattr(self,'auto_speech') and self.auto_speech.isChecked()) or self.input_mode!='single': return False
+        # _speech_force_once: names were just split in the 한글 이름 겹침 window and the user
+        # asked for a new speech table, so it is built even with the automatic option off.
+        forced=bool(getattr(self,'_speech_force_once',False))
+        if not (forced or (hasattr(self,'auto_speech') and self.auto_speech.isChecked())) or self.input_mode!='single': return False
         if self._speech_rows() or self.pm.active.source_language not in ('zh','en','ja'): return False
         key=self._source_sha() or hashlib.sha256(self._speech_source().encode('utf-8')).hexdigest()
         if key in self._speech_tried or self._speech_people()<2: return False
-        if getattr(self,'_speech_done_saved',False) and self._book_has_progress():
+        if not forced and getattr(self,'_speech_done_saved',False) and self._book_has_progress():
             # Tried (or skipped) before for this book, and part of it is already translated
             # without a table: a table now would change the speech levels mid-book.
             return False
@@ -2617,6 +2645,111 @@ class MainWindow(QMainWindow):
         current=self._terms()
         self._term_locks={k:v for k,v in self._term_locks.items() if current.get(k)==v}
         self._save_workspace()
+
+    # ------------------------------------------------------------ 한글 이름 겹침 · 말투표 이름 맞추기
+    def _schedule_term_seen(self):
+        if self._term_seen_due: return
+        self._term_seen_due=True
+        QTimer.singleShot(0,self._remember_terms)
+
+    def _remember_terms(self):
+        self._term_seen_due=False
+        try: self._term_seen=self._terms()
+        except Exception: pass
+
+    def _term_user_committed(self):
+        """A glossary cell the user just edited: a renamed Korean name is renamed in the
+        speech table too; a name now shared out to two people asks to rebuild the table."""
+        before=dict(getattr(self,'_term_seen',{}) or {}); after=self._terms()
+        if before==after: return
+        renamed,ambiguous=self._sync_speech_names(before,after)
+        if renamed:
+            self.status.setText('인물 말투표 이름도 함께 바꿈: '+', '.join(f'{a} → {b}' for a,b in renamed[:4]))
+        if ambiguous and not (self.worker and self.worker.isRunning()) and not self._extracting():
+            old=ambiguous[0]
+            people=' · '.join(f'{s}({after[s]})' for s in after if before.get(s)==old)
+            if QMessageBox.question(self,'인물 말투표 다시 만들기',
+                    f"인물 말투표에 '{old}'(이)가 들어 있는데, 이 이름이 이제 {people}(으)로 나뉘었습니다.\n\n"
+                    f"말투표의 '{old}'가 누구인지 알 수 없어 다시 분석해야 합니다. 지금 말투표를 새로 만들까요?")==QMessageBox.Yes:
+                QTimer.singleShot(0,self._rebuild_speech_now)
+
+    def _sync_speech_names(self, before: dict, after: dict):
+        """Carry Korean-name changes of the glossary into the speech table rows.
+        Returns (renamed [(old,new)], ambiguous [old names the table holds but that still
+        belong to another glossary entry, e.g. 스잔 split into 스잔 and 스잔느])."""
+        if not hasattr(self,'speech_table'): return [],[]
+        moves={}
+        for src,old in (before or {}).items():
+            new=(after or {}).get(src)
+            if new and old and new!=old:
+                moves.setdefault(old,set()).add(new)
+        if not moves: return [],[]
+        rows=self._speech_rows()
+        held={r[k] for r in rows for k in ('speaker','listener')}
+        still=set((after or {}).values())
+        renames={}; ambiguous=[]
+        for old,news in moves.items():
+            if old not in held: continue
+            if old in still or len(news)>1: ambiguous.append(old)
+            else: renames[old]=next(iter(news))
+        if renames:
+            for r in rows:
+                for k in ('speaker','listener'):
+                    r[k]=renames.get(r[k],r[k])
+            self._set_speech_rows(rows); self._save_workspace()
+        return sorted(renames.items()),ambiguous
+
+    def _apply_term_changes(self, changes: dict) -> None:
+        """Set new Korean names chosen by the user (a manual edit: locked like one)."""
+        self._term_internal_edit=True
+        try:
+            for r in range(self.term_table.rowCount()):
+                it=self.term_table.item(r,0)
+                src=it.text().strip() if it else ''
+                if src in changes:
+                    self.term_table.setItem(r,1,QTableWidgetItem(changes[src]))
+                    self._term_locks[src]=changes[src]
+        finally:
+            self._term_internal_edit=False
+        self._mark_suspicious_terms(); self._update_terms_tab_title()
+        self._save_workspace()
+
+    def _review_name_collisions(self, focus, auto: bool) -> tuple[str,bool]:
+        """After an extraction: different originals with the same Korean name are shown to
+        the user to fix or keep. Returns (log note, rebuild the speech table)."""
+        from ..term_extraction import korean_collisions
+        terms=self._terms()
+        groups=korean_collisions(terms,focus)
+        if not groups: return '',False
+        text=self.source_text or self._speech_source() or ''
+        counts={s:text.count(s) for _,srcs in groups for s in srcs} if text else {}
+        held={r[k] for r in self._speech_rows() for k in ('speaker','listener')} if hasattr(self,'speech_table') else set()
+        from .name_collision_dialog import NameCollisionDialog
+        dlg=NameCollisionDialog(groups,counts,held,timeout=180 if auto else 0,parent=self)
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.term_table.parentWidget()))
+        shown=', '.join(f"{'·'.join(s)} → {k}" for k,s in groups[:6])+(' …' if len(groups)>6 else '')
+        if dlg.exec()!=QDialog.DialogCode.Accepted or not dlg.changes:
+            why='3분 동안 선택이 없어' if getattr(dlg,'timed_out',False) else '선택에 따라'
+            return f'한글 이름 겹침 {len(groups)}건 · {why} 그대로 둠: {shown} (확정 용어집 탭에서 고칠 수 있음)',False
+        before=dict(terms)
+        self._apply_term_changes(dlg.changes)
+        after=self._terms()
+        renamed,ambiguous=self._sync_speech_names(before,after)
+        note=('한글 이름 겹침 고침: '+', '.join(f'{s} {before[s]} → {n}' for s,n in dlg.changes.items())
+              +(' · 인물 말투표 이름도 함께 바꿈: '+', '.join(f'{a} → {b}' for a,b in renamed) if renamed else ''))
+        rebuild=bool(ambiguous) and dlg.rebuild_offered and dlg.rebuild.isChecked()
+        if ambiguous and not rebuild:
+            note+=f" · 인물 말투표의 '{ambiguous[0]}'는 그대로 둠 (인물 말투 탭의 [말투표 자동 생성]으로 새로 만들 수 있음)"
+        return note,rebuild
+
+    def _rebuild_speech_now(self):
+        """Rebuild the speech table after names were split (the user already agreed)."""
+        if self._extracting() or (self.worker and self.worker.isRunning()): return
+        if self._speech_people()<2 or not self._speech_source().strip():
+            QMessageBox.information(self,'인물 말투표','말투표를 만들 인물 이름이나 원문이 없습니다. 원문과 확정 용어집을 확인해 주세요.'); return
+        if not self._begin_speech_extraction(auto=False) and self._speech_fail:
+            self.on_worker_issue(self._speech_fail)
+            QMessageBox.warning(self,'말투표 자동 생성',self._speech_fail)
 
     def _add_term_row(self):
         r=self.term_table.rowCount(); self.term_table.insertRow(r); self.term_table.setItem(r,0,QTableWidgetItem('')); self.term_table.setItem(r,1,QTableWidgetItem('')); self.term_table.setCurrentCell(r,0); self.term_table.editItem(self.term_table.item(r,0))
