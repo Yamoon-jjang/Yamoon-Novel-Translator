@@ -2,8 +2,10 @@
 
 A small analysis model (e.g. a 9B local model) answered pronouns, contractions and
 exclamations as terms (He's -> 그는, My God -> 마이 갓, It -> 그것). Those can never be a
-name, so they are dropped. Words that are usually ordinary but can be a name in some
-books (God, Jesus, Son, Boy, Sis) are kept and only shown light red.
+name, so they are dropped. Words that are usually ordinary (God, Jesus, Son, Boy, Sis) were
+kept and shown light red until v2.5.5, which leaves them out of the extraction as well
+(test_v255_terms_and_speech.py); rows already in the table are only marked, never removed
+by the marking itself.
 """
 from __future__ import annotations
 
@@ -37,13 +39,13 @@ def test_never_terms_and_names_are_told_apart():
         assert not is_never_term(w) and not is_doubtful_term(w)
 
 
-def test_model_answer_keeps_names_and_doubtful_words_but_drops_never_terms():
+def test_model_answer_keeps_names_and_drops_never_and_doubtful_words():
     answer = {**{w: '그는' for w in NEVER}, 'God': '하나님', 'Son': '아들', 'Sis': '언니', 'Jamie': '제이미', 'Godric': '고드릭'}
     cands = [(k, 9) for k in answer]
     report = {}
     got = parse_glossary(json.dumps(answer, ensure_ascii=False), cands, lang='en', report=report)
-    assert set(got) == {'God', 'Son', 'Sis', 'Jamie', 'Godric'}
-    assert report['common_word'] == len(NEVER)
+    assert set(got) == {'Jamie', 'Godric'}                       # v2.5.5: God · Son · Sis are left out too
+    assert report['common_word'] == len(NEVER) + 3
 
 
 def test_english_candidates_leave_out_never_terms():
@@ -218,10 +220,11 @@ def test_half_converted_and_colliding_names_are_asked_once_more(qt_app, monkeypa
     assert t.report['repair'] == {'half': 1, 'half_fixed': 1, 'groups': 1, 'suggested': 1}
 
 
-def test_a_failed_repair_keeps_every_name(qt_app, monkeypatch):
+def test_a_failed_repair_keeps_every_good_name(qt_app, monkeypatch):
     first = {'Emily': '엠ily', 'Susan': '수잔', 'Suzanne': '수잔'}
     t, (ok, res), sent = _thread(monkeypatch, [first, RuntimeError('server gone')])
-    assert ok and res == first and t.suggestions == {}              # nothing lost; 엠ily shows light red
+    assert ok and res == {'Susan': '수잔', 'Suzanne': '수잔'} and t.suggestions == {}   # v2.5.5: 엠ily is left out
+    assert t.report['half_dropped'] == 1
 
 
 def test_cloud_engines_get_no_prose_and_no_repair_without_a_problem(qt_app, monkeypatch):

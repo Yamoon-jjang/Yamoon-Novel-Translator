@@ -89,13 +89,24 @@ _EN_EXCLAMATION = re.compile(r"(?:(?:oh|o|ah|my|oh my|oh dear|oh good|good|dear|
                              r"oh sweet|good lord|lord)\s+(?:god|gods|lord|jesus|christ|heavens|heaven|gosh|goodness)"
                              r"|jesus christ|god ?damn(?:it)?|goddammit|god almighty|good[- ]?(?:bye|by|day|night|morning|evening|afternoon))", re.I)
 
-# English words that are usually not names but can be one in some books (a god who is a
-# character, Jes\u00fas, the Korean surname Son, a nickname like Boy or Sis). They are kept,
-# but shown light red for a look, and never stored in the shared glossary on their own.
-_EN_DOUBTFUL = frozenset('''god gods lord jesus christ son sons boy boys girl girls sis bro brother sister
-mom mommy mum mummy mother dad daddy father papa mama ma pa baby babe honey sweetheart darling dear
+# English words that are usually not names: gods, family and address words, endearments
+# (God, Son, Boy, Sis, Bro, Sister, Dear, Honey). Before v2.5.5 they were kept and shown
+# light red; stronger models answered them as names in almost every book, and a glossary
+# entry forces one Korean word (Sister -> \uc5b8\ub2c8) on every use, so the extraction now
+# leaves them out (an entry the user typed in is kept and only shown light red). Never
+# stored in the shared glossary on their own.
+_EN_DOUBTFUL = frozenset('''god gods lord jesus christ son sons boy boys girl girls sis bro bros brother brothers sister sisters
+mom mommy mum mummy mother dad daddy father papa mama ma pa baby babe honey sweetheart darling dear dearest dearie
 kid kids man dude buddy sir madam ma'am lady gentleman master
-ha um no hell'''.split())   # ha / um: Korean surnames 하 · 엄; Dr. No; Hell as a place
+aunt auntie aunty uncle grandma grandpa granny gran grandmother grandfather cousin nephew niece
+wife husband hubby wifey daughter daughters sweetie sweety hon pal mate bestie lad lass laddie lassie
+mister miss missus mrs mr ms
+ha um no hell'''.split())   # ha / um: Korean surnames \ud558 \u00b7 \uc5c4; Dr. No; Hell as a place
+# Titles on their own are address words; with a name (Mr Son, Mrs. March) they are a name.
+_EN_TITLE_WORDS = frozenset('mister miss missus mrs mr ms'.split())
+# Words that only add to an address (My Dear, Big Brother, Little Sis, Young Master, Old Man).
+_EN_ADDRESS_MOD = frozenset('''my our dear dearest big little old young sweet oh baby elder younger eldest youngest
+second third fourth fifth'''.split())
 
 
 def _en_key(source: str) -> str:
@@ -113,9 +124,19 @@ def is_never_term(source: str) -> bool:
 
 
 def is_doubtful_term(source: str) -> bool:
-    """An English word that is usually an ordinary word but may be a name in some books."""
+    """An English family/address word or endearment that is almost never a name (Sister, Bro,
+    Dear, Honey), alone or with words that only add to it (My Dear, Big Brother, Young Master)."""
     s = str(source or '').strip()
-    return bool(s) and bool(re.fullmatch(r"[A-Za-z'\u2019]+", s)) and _en_key(s) in _EN_DOUBTFUL
+    if not s or not re.fullmatch(r"[A-Za-z'\u2019]+(?:[ .][A-Za-z'\u2019]+){0,3}\.?", s):
+        return False
+    words = [w for w in _en_key(s).replace('.', ' ').split() if w]
+    if len(words) == 1:
+        return words[0] in _EN_DOUBTFUL
+    heads = [w for w in words if w not in _EN_ADDRESS_MOD]
+    if not heads:                                   # My Dear, My Dearest
+        return any(w in _EN_DOUBTFUL for w in words)
+    return (bool(heads) and all(w in _EN_DOUBTFUL and w not in _EN_TITLE_WORDS for w in heads)
+            and len(heads) < len(words))
 
 
 _CJK_IN_KOREAN = re.compile(r'[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]')
@@ -407,11 +428,25 @@ def half_converted(korean: str) -> bool:
     return bool(_HALF_CONVERTED.search(korean or ''))
 
 
+def _latin_from_source(source: str, korean: str) -> bool:
+    """Latin letters a Chinese/Japanese source itself has (阿Q -> 아Q, A君 -> A군): written
+    as in the source, not a half-converted name."""
+    src = source or ''
+    if not re.search(r'[\u3040-\u30ff\u3400-\u9fff]', src):
+        return False
+    runs = re.findall(r'[A-Za-z]+', korean or '')
+    return bool(runs) and all(r.lower() in src.lower() for r in runs)
+
+
+def _half_bad(source: str, korean: str) -> bool:
+    return half_converted(korean) and not _latin_from_source(source, korean)
+
+
 def valid_rendering(source: str, korean: str) -> bool:
     """A usable glossary rendering: Hangul (or a Latin name), no leftover Chinese/kana,
     no half-converted word (엠ily)."""
     k = (korean or '').strip()
-    if not k or k == (source or '').strip() or _CJK_IN_KOREAN.search(k) or half_converted(k):
+    if not k or k == (source or '').strip() or _CJK_IN_KOREAN.search(k) or _half_bad(source, k):
         return False
     return bool(_HANGUL.search(k) or re.fullmatch(r"[A-Za-z][A-Za-z .'\-]*", k))
 
@@ -624,15 +659,15 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             why['not_candidate'] += 1; continue
         # A Korean rendering must be Korean (or a deliberate Latin name) with no Chinese/kana
         # left in it (郝장화), and never an ordinary word (公司 -> 회사).
-        if k in COMMON_WORDS or is_never_term(k):
-            why['common_word'] += 1; continue
+        if k in COMMON_WORDS or is_never_term(k) or is_doubtful_term(k):
+            why['common_word'] += 1; continue       # Sister, Bro, Dear: an address, not a name
         # One Chinese character alone is a surname or a word (李, 剑), almost never a name used
         # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.
         if lang == 'zh' and len(k) == 1:
             why['single'] += 1; continue
         if split_address(k, v, bases) is None and is_address_term(k):
             why['address_only'] += 1; continue      # name + address (阿强哥) is split below instead
-        if half_converted(v) and not _CJK_IN_KOREAN.search(v):
+        if _half_bad(k, v) and not _CJK_IN_KOREAN.search(v):
             half[k] = v; why['half'] += 1; continue   # 엠ily: asked again by the extraction
         if not valid_rendering(k, v):
             why['bad_rendering'] += 1; continue

@@ -39,30 +39,68 @@ _ALIASES = {
     # Wordings local models use instead of the six names.
     '존대': '해요체', '높임말': '해요체', '높임': '해요체', '경어': '해요체', '공손': '해요체',
     '하대': '반말', '낮춤말': '반말', '편한말': '반말',
+    # Level words a model may answer in the book's language (Chinese / Japanese).
+    '非敬语': '반말', '平语': '반말', '随意': '반말', '口语': '반말', '敬语': '해요체', '礼貌': '해요체', '尊敬': '합쇼체', '正式': '합쇼체',
+    'タメ口': '반말', '普通体': '반말', '常体': '반말', '丁寧語': '해요체', '敬語': '해요체', '尊敬語': '합쇼체', '謙譲語': '합쇼체',
 }
 
 _QUOTES = re.compile(r'[“”"「」『』‘’﹁﹂﹃﹄]')
+
+
+_KO_ALIASES = sorted((k for k in _ALIASES if re.search('[가-힣]', k)), key=len, reverse=True)
+_CJK_ALIASES = sorted((k for k in _ALIASES if not k.isascii() and not re.search('[가-힣]', k)), key=len, reverse=True)
+# English and romanized level names. "informal polite" / "casual polite" is 해요체 (the polite
+# style used in everyday speech), not 반말: before v2.5.5 the word "informal" decided first and
+# a model that wrote its levels in English (Qwen did) got 반말 for every polite pair.
+_POLITE_EN = re.compile(r'polite|honorific|respectful|deferential|courteous|respect')
+_ROMAN = [(re.compile(r'hap\W?s?y?o|hamnida|hasip\W?s?h?io|hashipsio'), '합쇼체'),
+          (re.compile(r'haeyo'), '해요체'), (re.compile(r'hao\W?ch'), '하오체'),
+          (re.compile(r'hage\W?ch'), '하게체'), (re.compile(r'haera'), '해라체'),
+          (re.compile(r'banmal|ban\W?mal|hae\W?che'), '반말')]
+
+
+def _english_level(s: str) -> str:
+    s = str(s or '').lower()
+    for pat, level in _ROMAN:
+        if pat.search(s):
+            return level
+    if _POLITE_EN.search(s):
+        if re.search(r'informal|casual|soft|everyday', s):
+            return '해요체'
+        if re.search(r'(?<!in)formal|deferential|honorific|highest|high', s):
+            return '합쇼체'
+        return '해요체'
+    if re.search(r'(?<!in)formal', s):
+        return '합쇼체'
+    if re.search(r'informal|casual|intimate|familiar', s):
+        return '반말'
+    return ''
 
 
 def normalize_level(raw: str) -> str:
     s = re.sub(r'[\s()（）\[\]·.,:;]+', '', str(raw or '')).lower()
     if not s:
         return ''
-    for key in sorted(_ALIASES, key=len, reverse=True):
-        if key.lower() in s:
-            return _ALIASES[key]
-    return ''
+    for keys in (_KO_ALIASES, _CJK_ALIASES):   # a Korean level name decides first
+        for key in keys:
+            if key in s:
+                return _ALIASES[key]
+    return _english_level(str(raw or ''))
 
 
 def _first_level(text: str) -> str:
-    """The speech level named FIRST in `text` (a note written after it may mention another)."""
+    """The speech level named FIRST in `text` (a note written after it may mention another).
+    Korean level names come before English descriptions ("informal polite (해요체)" is 해요체)."""
     s = str(text or '').lower()
-    best = None
-    for key in sorted(_ALIASES, key=len, reverse=True):
-        i = s.find(key.lower())
-        if i >= 0 and (best is None or i < best[0]):
-            best = (i, _ALIASES[key])
-    return best[1] if best else ''
+    for keys in (_KO_ALIASES, _CJK_ALIASES):
+        best = None
+        for key in keys:
+            i = s.find(key)
+            if i >= 0 and (best is None or i < best[0]):
+                best = (i, _ALIASES[key])
+        if best:
+            return best[1]
+    return _english_level(s)
 
 
 def sample_dialogue(text: str, names: dict[str, str], limit: int = SAMPLE_CHARS, cues=()) -> str:
@@ -284,6 +322,18 @@ _KEY = {'speaker': 'speaker', '화자': 'speaker', 'from': 'speaker',
         'listener': 'listener', '상대': 'listener', 'to': 'listener',
         'level': 'level', '말투': 'level', 'speech_level': 'level',
         'relation': 'note', '관계': 'note', 'note': 'note'}
+# The same keys as models also write them (speechLevel, speech level, register, addressee).
+_KEY_LOOSE = {re.sub(r'[\s_\-]', '', k): v for k, v in _KEY.items()}
+_KEY_LOOSE.update({'speechlevel': 'level', 'speechstyle': 'level', 'register': 'level', 'politeness': 'level',
+                   'formality': 'level', 'honorificlevel': 'level', '말투수준': 'level', '높임': 'level',
+                   'addressee': 'listener', 'target': 'listener', 'relationship': 'note',
+                   '说话者': 'speaker', '说话人': 'speaker', '听者': 'listener', '听话者': 'listener', '对象': 'listener',
+                   '语气': 'level', '语体': 'level', '关系': 'note', '話者': 'speaker', '相手': 'listener', '口調': 'level', '関係': 'note'})
+
+
+def _key_field(k) -> str:
+    k = str(k).strip()
+    return _KEY.get(k.lower()) or _KEY.get(k) or _KEY_LOOSE.get(re.sub(r'[\s_\-]', '', k.lower()), '')
 
 
 def _json_rows(raw: str) -> list[tuple[str, str, str, str]]:
@@ -300,8 +350,8 @@ def _json_rows(raw: str) -> list[tuple[str, str, str, str]]:
             continue
         row = {}
         for k, v in obj.items():
-            field = _KEY.get(str(k).strip().lower()) or _KEY.get(str(k).strip())
-            if field and isinstance(v, str):
+            field = _key_field(k)
+            if field and isinstance(v, str) and field not in row:
                 row[field] = v
         if 'speaker' in row and 'listener' in row:
             out.append((row['speaker'], row['listener'], row.get('level', ''), row.get('note', '')))

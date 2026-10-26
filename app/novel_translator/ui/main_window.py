@@ -164,6 +164,9 @@ class SpeechExtractThread(QThread):
                     continue
                 if parsed:
                     used.add(provider_id)
+                    # The model's own answer is kept too (v2.5.5), so a table that looks wrong
+                    # (every pair 반말) can be checked against what the model actually said.
+                    _save_analysis_answer('인물 말투표', f'{what} · {len(parsed)}쌍 사용', label, model, resp.text)
                     return parsed
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} 유효한 인물 관계 0쌍')
                 self.attempt_failed.emit(f'{what} · {label} (AI 요청 {requests}회째) · 답은 왔지만 쓸 수 있는 인물 관계 0쌍 (인물 이름이 용어집과 다르거나 관계가 불분명)'
@@ -277,15 +280,19 @@ class TermExtractThread(QThread):
     def _repair(self, provider, model, secret, result, rep):
         """English: one more short request for names that came back half converted (엠ily)
         or with one Korean name for two spellings (Susan · Suzanne -> 수잔). A half-converted
-        name that is still wrong afterwards is kept as it is (shown light red), so no name is
-        lost; the proposals for colliding names are only offered in the 한글 이름 겹침 window.
-        Other languages: half-converted renderings are kept as before."""
+        name that is still wrong afterwards is left out (v2.5.5: it would force "엠ily" into
+        every sentence; the translation writes the name from context instead); the proposals
+        for colliding names are only offered in the 한글 이름 겹침 window.
+        Other languages: half-converted renderings are left out (Latin letters the source
+        itself has, 阿Q -> 아Q, are not half converted and are kept)."""
         from ..providers.base import TranslationRequest
         from ..term_extraction import korean_collisions, repair_prompt, parse_glossary, valid_rendering
         half=dict(rep.get('half_entries') or {})
         result=dict(result)
+        if half: rep['half_dropped']=0
         if self.lang!='en':
-            result.update({k:v for k,v in half.items() if k not in result}); return result
+            if half: rep['half_dropped']=len([k for k in half if k not in result])
+            return result
         latin=lambda x: bool(re.fullmatch(r"[^\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]+",x))
         merged={**self.known,**result}
         groups=[(k,srcs) for k,srcs in korean_collisions(merged,list(result)) if all(latin(x) for x in srcs)]
@@ -307,7 +314,7 @@ class TermExtractThread(QThread):
             if k in ans and valid_rendering(k,ans[k]):
                 result[k]=ans[k]; fixed_half+=1
             elif k not in result:
-                result[k]=v                    # kept (light red in the glossary) rather than lost
+                rep['half_dropped']=rep.get('half_dropped',0)+1   # still 엠ily: left out, not shown red
         taken=set(v for k,v in {**self.known,**result}.items())
         for ko,srcs in groups:
             proposal={x:ans[x] for x in srcs if x not in fixed and x in ans and valid_rendering(x,ans[x])}
@@ -1871,7 +1878,7 @@ class MainWindow(QMainWindow):
             # Where the model's entries went: kept, or left out and why (shown for every run,
             # so "the glossary did not grow" is never a mystery).
             reasons=[(report.get('not_candidate',0),'후보 목록에 없는 원문'),(report.get('bad_rendering',0),'한국어 표기 문제(한자·가나 남음 등)'),
-                     (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절'),
+                     (report.get('common_word',0),'일반 낱말·호칭(Sister·Dear 등)'),(report.get('phrase',0),'이름+조사 구절'),
                      (report.get('single',0),'한 글자')]
             fix=report.get('repair') or {}
             left=' · '.join(f'{t} {n}개' for n,t in reasons if n)
@@ -1880,6 +1887,7 @@ class MainWindow(QMainWindow):
                                +(f" · 호칭(姐·哥 등)을 뗀 이름만 확정 {report['address']}개 (누나/언니는 문맥으로)" if report.get('address') else '')
                                +(f" · 호칭이라 넣지 않음 {report['address_only']}개 (老姨·李哥 등, 부르는 사람에 따라 번역)" if report.get('address_only') else '')
                                +(f" · 반쪽 변환 표기(엠ily 등) {fix['half']}개 다시 요청 → {fix['half_fixed']}개 고침" if fix.get('half') else '')
+                               +(f" · 고치지 못한 반쪽 표기 {report['half_dropped']}개는 넣지 않음" if report.get('half_dropped') else '')
                                +(f" · 한글이 겹친 이름 {fix['groups']}건 다시 요청 → 구별되는 표기 {fix['suggested']}개를 겹침 확인 창에 미리 채움" if fix.get('groups') else ''), auto)
         took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
@@ -1897,6 +1905,18 @@ class MainWindow(QMainWindow):
         if ok and getattr(self,'_term_source_sha','')!=self._source_sha():
             # The source changed meanwhile: these names belong to the previous text.
             self.status.setText('원문이 바뀌어 인명·용어 추출 결과를 쓰지 않았습니다'); self._update_ready_state(); return
+        if ok:
+            # Light-red rows an earlier extraction (or an older version) put in — ordinary
+            # words, addresses, renderings with Chinese left in — are removed now, so a
+            # "처음부터 다시" run never translates with them. Rows the user typed, imported
+            # or chose in a review window are kept (and stay light red).
+            dropped=self._drop_unlocked_suspicious()
+            if dropped:
+                msg=(f'인명·용어 추출 · 이전에 들어간 확인 필요(빨간) 항목 {len(dropped)}개 자동 삭제: '
+                     +', '.join(f'{a}→{b}' for a,b in dropped[:12])+(' …' if len(dropped)>12 else '')
+                     +' (직접 넣은 항목은 그대로 둠)')
+                if auto: lines.append(msg)      # the run's lines were taken above; they are logged at the start
+                else: self.on_worker_issue(msg)
         earlier=dict(getattr(self,'_term_earlier',{}) or {})
         if ok and isinstance(res,dict) and earlier:
             # A shared entry the model confirmed keeps the shared rendering (a sequel's names stay the same).
@@ -2402,7 +2422,7 @@ class MainWindow(QMainWindow):
             parts=info.get('parts',1); failed=info.get('failed',0); used=info.get('used') or []
             requests=info.get('requests',0); conflicts=info.get('conflicts',0)
             how=(f' · 분할 분석 {parts}묶음 중 {parts-failed}묶음 성공' if parts>1 else ' · 전체 문맥 1회 분석')+f' · AI 요청 {requests}회'+(f' · 말투 충돌 {conflicts}쌍 제외' if conflicts else '')+(' · '+'·'.join(ENGINE_LABELS.get(u,u) for u in used) if used else '')
-            note=(f'인물 말투표 자동 생성 · {len(rows)}쌍{how} (인물 말투 탭에서 확인·수정할 수 있음): '+', '.join(f"{r['speaker']}→{r['listener']} {r['level']}" for r in rows[:6])+(' …' if len(rows)>6 else '')
+            note=(f'인물 말투표 자동 생성 · {len(rows)}쌍{how} (인물 말투 탭에서 확인·수정할 수 있음 · 모델 원래 답: logs\\analysis_answers.txt): '+', '.join(f"{r['speaker']}→{r['listener']} {r['level']}" for r in rows[:6])+(' …' if len(rows)>6 else '')
                   if rows else '인물 말투표 · 대사에서 확실한 관계를 찾지 못해 말투표 없이 번역합니다'+how)
         else:
             hint=(' · 엔진이 대사 내용을 거부했습니다. API 설정의 용어·말투 분석 엔진을 로컬 LLM(검열 해제 모델)으로 고르면 그 엔진이 만듭니다. [말투 추가]로 직접 넣어도 됩니다.'
@@ -2905,6 +2925,21 @@ class MainWindow(QMainWindow):
             if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS or is_never_term(src) or is_doubtful_term(src)):
                 bad.append((r,src,ko))
         return bad
+
+    def _drop_unlocked_suspicious(self) -> list[tuple[str,str]]:
+        """Remove light-red rows the user did not put in (no lock: not typed, imported or
+        chosen in a review window). Returns the removed (source, Korean) pairs."""
+        locks=getattr(self,'_term_locks',{}) or {}
+        rows=[(r,src,ko) for r,src,ko in self._suspicious_terms() if locks.get(src)!=ko]
+        if not rows: return []
+        self._term_internal_edit=True
+        try:
+            for r,_,_ in sorted(rows,reverse=True):
+                self.term_table.removeRow(r)
+        finally:
+            self._term_internal_edit=False
+        self._save_workspace()
+        return [(src,ko) for _,src,ko in rows]
 
     def _update_terms_tab_title(self):
         try:
