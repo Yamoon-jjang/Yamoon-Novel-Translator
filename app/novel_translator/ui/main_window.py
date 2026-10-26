@@ -334,6 +334,7 @@ class MainWindow(QMainWindow):
                 self.secret_store.save(self.secrets)
             except Exception:
                 pass
+        self._eta_src=''; self._eta_hist=[]
         self.worker=None; self._close_after_worker=False; self._stop_batch=False; self._completion_message=''; self._last_worker_status=''; self._force_restart=False
         # Unattended run: temporary pauses are resumed automatically, hopeless files are skipped.
         self._pending_pause=''; self._auto_resumes={}; self._resume_left=0; self._resume_reason=''
@@ -1051,16 +1052,66 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
+    # A file at least this big gets a visible "opening" note: reading, splitting into
+    # paragraphs and showing a book of tens of MB keeps the window busy for a while.
+    OPEN_NOTE_BYTES = 1_000_000
+
+    def _busy_note_show(self, text: str):
+        """A clear note in the middle of the window plus a wait cursor, painted before the
+        window gets busy (it cannot repaint while a big book is being prepared)."""
+        from PySide6.QtWidgets import QApplication
+        if getattr(self,'_busy_note',None) is not None:
+            return False
+        lab=QLabel(text,self); lab.setObjectName('busyNote'); lab.setAlignment(Qt.AlignCenter)
+        lab.setStyleSheet('QLabel#busyNote{background:palette(base);color:palette(text);border:2px solid palette(highlight);'
+                          'border-radius:10px;padding:18px 30px;font-size:15px;font-weight:600;}')
+        lab.adjustSize(); lab.move(max(0,(self.width()-lab.width())//2), max(0,(self.height()-lab.height())//3))
+        lab.show(); lab.raise_(); self._busy_note=lab
+        self.status.setText(text.replace('\n',' · '))
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        for _ in range(3):
+            QApplication.processEvents()
+        return True
+
+    def _busy_note_hide(self):
+        from PySide6.QtWidgets import QApplication
+        lab=getattr(self,'_busy_note',None)
+        if lab is None:
+            return
+        self._busy_note=None; lab.hide(); lab.deleteLater()
+        QApplication.restoreOverrideCursor()
+
+    def _open_note_text(self, p: Path) -> str:
+        try:
+            size=p.stat().st_size
+        except OSError:
+            return ''
+        if size<self.OPEN_NOTE_BYTES and not document_kind(p):
+            return ''
+        mb=size/1_000_000
+        return f'파일을 여는 중입니다…\n{p.name} · {mb:,.1f}MB\n큰 파일은 잠시 걸립니다. 그대로 기다려 주세요.'
+
     def _open_txt_path(self, fn):
+        note=self._open_note_text(Path(fn))
+        if note:
+            self._busy_note_show(note)
+        try:
+            self._open_txt_path_now(fn)
+        finally:
+            self._busy_note_hide()
+
+    def _open_txt_path_now(self, fn):
         p=Path(fn); kind=document_kind(p)
         try:
             text,enc,raw=self._read_source(p)
         except NoTextError as e:
-            reason=self._no_text_reason(p)
+            self._busy_note_hide(); reason=self._no_text_reason(p)
             QMessageBox.information(self,reason.split(' (')[0],str(e)); self.status.setText(f'{p.name} · {reason}라 열지 않았습니다'); return
         except SourceTextError as e:
+            self._busy_note_hide()
             QMessageBox.warning(self,f'{kind}를 열 수 없음',str(e)); self.status.setText(f'{p.name} · {kind}를 열지 못했습니다'); return
-        except Exception as e: QMessageBox.critical(self,'파일을 열 수 없음',f'{kind or "TXT"}를 읽지 못했습니다.\n{e}'); return
+        except Exception as e:
+            self._busy_note_hide(); QMessageBox.critical(self,'파일을 열 수 없음',f'{kind or "TXT"}를 읽지 못했습니다.\n{e}'); return
         self._prepare_new_input()
         self.input_mode='single'; self.batch_relation.setEnabled(False); self.include_sub.setEnabled(False); self._update_batch_memory_mode(); self.batch_root=None; self.batch_files=[]; self.batch_index=-1; self.batch_results={}; self.batch_selection=None
         self.source_path=p; self.source_bytes=raw; self.source_text=text; self._doc_label=enc if kind else ''; self._origin_kind=kind
@@ -3050,11 +3101,50 @@ class MainWindow(QMainWindow):
         el=self._job_elapsed(); text=f'경과 {self._clock_text(el)}'
         if self._job_paused_at:
             text+=' · 일시정지'
-        else:
+        elif (self.input_mode=='folder' and self.batch_files) or getattr(self.worker,'eta_left',None) is None:
             f=self._job_fraction(); f0=self._prog_start if self._prog_start is not None else 0.0
             if f-f0>=0.02 and el>=15 and f<1.0:
                 text+=f' · 남은 예상 약 {self._clock_text(el*(1.0-f)/(f-f0))}'
+        else:
+            eta=self._eta_seconds()
+            if eta:
+                text+=f' · 남은 예상 약 {self._clock_text(eta)}'
         self.time_label.setText(text)
+
+    # Remaining time of one book: (chunks this run still has to translate) x (seconds per
+    # newly translated chunk). Saved chunks, chunks filled from translation memory and the
+    # earlier trouble chunks give no speed sample, so a resumed book is neither too short at
+    # first nor growing later. Speed = half the long average + half the last 30 chunks.
+    ETA_MIN_SAMPLES = 12
+    ETA_RECENT = 30
+    ETA_KEEP = 400
+
+    def _eta_samples_now(self) -> list[float]:
+        w=self.worker
+        own=list((getattr(w,'eta_all',None) if getattr(w,'eta_trouble_only',False) else getattr(w,'eta_samples',None)) or [])
+        same=getattr(self,'_eta_src','') and self._eta_src==str(getattr(w,'source_path','') or '')
+        return ((list(self._eta_hist) if same else [])+own)[-self.ETA_KEEP:]
+
+    def _eta_seconds(self):
+        left=getattr(self.worker,'eta_left',None)
+        if not left:
+            return None
+        samples=self._eta_samples_now()
+        if len(samples)<self.ETA_MIN_SAMPLES:
+            return None
+        recent=samples[-self.ETA_RECENT:]
+        per=0.5*sum(samples)/len(samples)+0.5*sum(recent)/len(recent)
+        return per*len(left)
+
+    def _eta_keep_history(self, worker):
+        """An automatic resume of the same book starts a new worker: its estimate goes on
+        from the speed already measured instead of waiting for new samples."""
+        src=str(getattr(worker,'source_path','') or '')
+        if not src or getattr(worker,'eta_left',None) is None:
+            return
+        if getattr(self,'_eta_src','')!=src:
+            self._eta_src=src; self._eta_hist=[]
+        self._eta_hist=(self._eta_hist+list(getattr(worker,'eta_samples',None) or []))[-self.ETA_KEEP:]
 
     def _job_clock_start(self):
         if self._job_t0 is not None: return
@@ -3599,6 +3689,8 @@ class MainWindow(QMainWindow):
 
     def _worker_thread_finished(self):
         try: self._add_batch_usage(self.sender() or self.worker)
+        except Exception: pass
+        try: self._eta_keep_history(self.sender() or self.worker)
         except Exception: pass
         if self._close_after_worker:
             self._close_after_worker=False; self._set_running_ui(False); self.close(); return

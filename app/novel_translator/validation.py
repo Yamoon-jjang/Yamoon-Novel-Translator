@@ -216,6 +216,53 @@ _ZH_RUN=re.compile(r'[一-龥]{14,}')
 _EN_RUN=re.compile(r"(?:[A-Za-z][A-Za-z'’-]*[ ,]+){7,}[A-Za-z][A-Za-z'’-]*")
 
 
+# Everyday English words. A comma list made of these is speech ("Oh, yes, please, more")
+# that a model may have avoided translating; a list of user names / handles has few of them.
+_EVERYDAY_EN = frozenset('''
+a an the and or but if so to of in on at by for with from up down out off over into about
+i me my mine you your yours he him his she her hers it its we us our they them their
+am is are was were be been being do does did done have has had will would can could shall
+should may might must not no yes yeah oh ah ahh uh um mm hmm ha god please more harder faster
+slower deeper stop wait come go now here there this that what why how who when where again
+just only very too all some any every one two good bad right wrong okay ok well hey love baby
+dear fuck shit damn hell sorry thanks thank sir madam mom dad yes no never always don't can't
+won't it's i'm you're that's let's
+'''.split())
+
+
+def is_name_list(run: str) -> bool:
+    """A comma-separated list of names or user handles copied as it is in the source
+    ("am, lastjuan, Jamielynn, Ecchi, ...", e.g. an author's thank-you list).
+
+    Deliberately narrow: at least four items, each one or two words, mostly different
+    from each other, and mostly not everyday English words - so an untranslated line of
+    dialogue or moaning ("Oh, yes, harder, please, don't stop") is still caught.
+    """
+    items = [s.strip(" .;:!?'\"“”‘’()[]") for s in re.split(r'[,，、\n]', run or '')]
+    items = [s for s in items if s]
+    if len(items) < 4 or any(len(s.split()) > 2 for s in items):
+        return False
+    if len({s.lower() for s in items}) < 0.8 * len(items):
+        return False
+    everyday = sum(1 for s in items if any(w.lower() in _EVERYDAY_EN for w in s.split()))
+    return everyday <= 0.2 * len(items)
+
+
+_NAME_LIST_RUN = re.compile(r"[A-Za-z0-9_][\w'’.-]*(?:\s*[,，、]\s*[A-Za-z0-9_][\w'’.-]*(?:\s[A-Za-z0-9_][\w'’.-]*)?){3,}")
+
+
+def _without_kept_name_lists(src_para: str, out_para: str) -> str:
+    """The output paragraph minus name / handle lists copied from its own source: such a
+    list rightly stays in English and must not make a chunk look untranslated."""
+    if not out_para or not src_para:
+        return out_para
+    for m in list(_NAME_LIST_RUN.finditer(out_para)):
+        run = m.group(0)
+        if is_name_list(run) and run[:40] in src_para:
+            out_para = out_para.replace(run, ' ')
+    return out_para
+
+
 def untranslated_residue(src_para: str, out_para: str) -> str:
     """Return a long source-script run copied verbatim into the Korean output.
 
@@ -233,6 +280,8 @@ def untranslated_residue(src_para: str, out_para: str) -> str:
                 small={'a','an','the','of','and','or','in','on','at','to','for','by','with','from'}
                 if sum(w[0].isupper() or w.lower() in small for w in words) >= 0.8*len(words):
                     continue   # a title or a list of names kept in English ("Harry Potter and the Order of the Phoenix")
+                if is_name_list(run):
+                    continue   # a list of user names / handles in lower case ("am, lastjuan, Jamielynn, Ecchi")
             probe=run if len(run) <= 40 else run[:40]
             if probe in (src_para or ''):
                 return run
@@ -298,7 +347,7 @@ def validate_translation(source: str, output: str, ignore_pids=None, check_resid
     body = TAG_RE.sub('', out).strip()
     # Code / data lines that are correctly left unchanged do not count against the Korean ratio.
     src_paras = parse_tagged_translation(source); out_paras = parse_tagged_translation(out)
-    prose = '\n'.join(b for k, b in out_paras.items()
+    prose = '\n'.join(_without_kept_name_lists(src_paras.get(k, ''), b) for k, b in out_paras.items()
                       if not (_codeish(b) and re.sub(r'\s+', '', b) == re.sub(r'\s+', '', src_paras.get(k, ''))))
     hangul = len(re.findall(r'[가-힣]', prose))
     letters = len(re.findall(r'[A-Za-z가-힣一-龥ぁ-ゟ゠-ヿ]', prose))

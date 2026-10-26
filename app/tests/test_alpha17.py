@@ -482,10 +482,10 @@ def test_korean_punctuation_can_be_turned_off(tmp_path):
 def test_version_label_and_about_dialog(qt_app,sandbox,monkeypatch):
     import novel_translator as nt
     from novel_translator.ui.about_dialog import AboutDialog, app_icon
-    assert nt.__version__=='2.5.3' and nt.VERSION_LABEL=='v2.5.3'
+    assert nt.__version__=='2.5.4' and nt.VERSION_LABEL=='v2.5.4'
     w=_window(monkeypatch)
     try:
-        assert w.windowTitle()=='야문 Novel Translator v2.5.3' and 'Alpha' not in w.windowTitle()
+        assert w.windowTitle()=='야문 Novel Translator v2.5.4' and 'Alpha' not in w.windowTitle()
         assert w.about_btn.text()=='정보' and w.manual_btn.text()=='사용 설명서'
         assert not app_icon().isNull()
         d=AboutDialog(w)
@@ -503,7 +503,7 @@ def test_manual_is_found_and_opened(qt_app,sandbox,monkeypatch):
     path=manual_path()
     assert path is not None and path.name=='사용설명서.html'
     html=path.read_text(encoding='utf-8')
-    assert 'v2.5.3' in html and 'Alpha' not in html
+    assert 'v2.5.4' in html and 'Alpha' not in html
     for heading in ('API 설정','번역하기','이름·용어','거부·차단','결과 파일','로컬 LLM','자주 묻는 질문'):
         assert heading in html
     opened=[]

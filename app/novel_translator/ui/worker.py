@@ -69,6 +69,7 @@ class TranslationWorker(QThread):
         self._local_warned=False
         self._chunk_label=''; self._pending_traces=[]; self._chunk_prev=''
         self._timing={'chunks':0,'seconds':0.0,'recovered_chunks':0,'recovered_seconds':0.0,'started':time.monotonic()}
+        self.eta_left=None; self.eta_samples=[]; self.eta_all=[]; self.eta_trouble_only=False   # remaining-time estimate
         # Observability only. These counters never influence translation decisions.
         self.recovery_metrics={'reframe_attempts':0,'reframe_successes':0,'split_attempts':0,'split_successes':0}
         self._para_text={p.pid:p.text for p in self.all_paragraphs}
@@ -373,6 +374,17 @@ class TranslationWorker(QThread):
         if self._chunk_requests>1:
             t['recovered_chunks']+=1; t['recovered_seconds']+=took
         return took
+
+    def _eta_note(self, index: int, seconds: float, ordinary: bool):
+        """One chunk of this run is done: it leaves the remaining set, and an ordinary new
+        chunk's time becomes a speed sample for the remaining-time estimate."""
+        left=getattr(self,'eta_left',None)
+        if left is None:
+            return
+        left.discard(index)
+        self.eta_all.append(float(seconds))
+        if ordinary:
+            self.eta_samples.append(float(seconds))
 
     def timing_summary(self) -> str:
         t=self._timing
@@ -1410,15 +1422,27 @@ class TranslationWorker(QThread):
                 self.issue.emit(f'이어 번역 · 이전에 번역한 문단 {len(para_memory):,}개를 문단 단위로 재사용합니다 (청크 구성이 바뀌어도 새 문단만 요청)')
             if partial_map:
                 self.issue.emit(f'이어 번역 · 부분 완료 청크 {len(partial_map)}개는 원문으로 남은 문단만 다시 요청합니다 (이미 번역된 문단은 유지)')
-            prior_fail = {} if self.restart_existing else \
-                {int(r['chunk_index']): self._fine_retry_reason(r['error_type']) for r in db.pending_chunks(pid)
-                 if r['status'] in ('FAILED','PARTIAL')}
+            earlier_trouble = [] if self.restart_existing else \
+                [r for r in db.pending_chunks(pid) if r['status'] in ('FAILED','PARTIAL')]
+            prior_fail = {int(r['chunk_index']): self._fine_retry_reason(r['error_type']) for r in earlier_trouble}
             prior_fail = {i: k for i, k in prior_fail.items() if k}
+            # Chunks an earlier run already had trouble with (failed, partial, or sent again for
+            # leftover source text). A FORMAT failure there again is about that text, not the
+            # server, so it must not count toward the consecutive-failure pause: on resume these
+            # chunks come back to back, and three of them kept pausing the whole book before any
+            # new chunk was reached.
+            known_trouble = {int(r['chunk_index']) for r in earlier_trouble} | set(partial_map)
             if prior_fail:
                 self.issue.emit(f'이어 번역 · 지난번 막힌 청크 {len(prior_fail)}개는 앞 문맥 없이, 문단 단위로 나눠 더 세밀하게 다시 요청합니다')
             prev = self.initial_context[-context_chars:] if self.initial_context else ''
             consecutive_infra_failures = 0
             total = len(self.chunks)
+            # Remaining-time estimate (read by the window): only the chunks this run still has
+            # to translate count, and only ordinary new chunks give the speed - saved chunks,
+            # ones filled from translation memory and earlier trouble chunks would skew it.
+            self.eta_left = {c.index for c in self.chunks if c.index not in translations}
+            self.eta_trouble_only = bool(self.eta_left) and self.eta_left <= known_trouble
+            self.eta_samples = []; self.eta_all = []
             saved_view: list[str] = []
             for i, c in enumerate(self.chunks):
                 if c.index not in translations:
@@ -1486,6 +1510,7 @@ class TranslationWorker(QThread):
                             saved_view.append('\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
                         except Exception:
                             pass
+                        self.eta_left.discard(c.index)
                         self.progress.emit(i+1, total, '저장된 번역 사용'); continue
                 self._chunk_exclusions=[]; self._chunk_fallback_used=False; self._fallback_chain=[]; self._chunk_requests=0; self._chunk_loops=0
                 self._pending_traces=[]; self._chunk_label=f'청크 {i+1}/{total}'; self._chunk_prev=prev
@@ -1519,6 +1544,7 @@ class TranslationWorker(QThread):
                                             error_type=e.kind.value, error_message=str(e), prompt_version=PROMPT_VERSION)
                     detail=str(e).replace('\n',' ')[:500]
                     elapsed=self._note_chunk_time(chunk_started)
+                    self._eta_note(c.index, elapsed, partial_base is None and c.index not in known_trouble)
                     self.issue.emit(f'청크 {i+1}/{total} · 실패 · {elapsed:.1f}초')
                     trail=getattr(e,'trail',None)
                     if trail and len(trail)>1:
@@ -1543,7 +1569,10 @@ class TranslationWorker(QThread):
                     if e.kind == ErrorKind.FATAL:
                         self._pause_with_snapshot(db,pid,'모델 ID·API 요청 형식·프로젝트 접근 권한처럼 다음 청크에서도 반복될 가능성이 높은 오류가 발생해 작업을 즉시 안전 일시정지했습니다. API/모델/프로젝트 설정을 확인한 뒤 이어서 번역하세요.',kind='FATAL')
                         return
-                    if e.kind in {ErrorKind.TRANSIENT, ErrorKind.FORMAT}:
+                    if e.kind == ErrorKind.FORMAT and c.index in known_trouble:
+                        # Same text failed before: content-specific. Neither counts nor resets.
+                        pass
+                    elif e.kind in {ErrorKind.TRANSIENT, ErrorKind.FORMAT}:
                         consecutive_infra_failures += 1
                         if consecutive_infra_failures >= 3:
                             self._pause_with_snapshot(db,pid,'연속적인 네트워크/응답 형식 오류가 발생해 대량 실패를 막기 위해 작업을 안전 일시정지했습니다.',kind='TRANSIENT')
@@ -1589,6 +1618,7 @@ class TranslationWorker(QThread):
                     pass
                 self.provider_chunks[used_provider]=self.provider_chunks.get(used_provider,0)+1
                 elapsed=self._note_chunk_time(chunk_started)
+                self._eta_note(c.index, elapsed, partial_base is None and c.index not in known_trouble)
                 self.issue.emit(f'청크 {i+1}/{total} · '+('부분 완료' if exclusions else '완료')+f' · {elapsed:.1f}초' )
                 usage=self.usage_summary()
                 backup_note=' · 막힌 문단은 보조 엔진이 처리' if self._chunk_fallback_used else ''
