@@ -400,7 +400,7 @@ def retry_status(source: Path, output: Path, provider_name: str, model: str, *,
     untouched result file (0 when there is nothing to retry that way)."""
     try:
         from .textio import read_txt
-        text, _ = read_txt(Path(source))
+        text, _ = read_txt(Path(source), 'ko')
         digest = sha256(text.encode('utf-8','surrogatepass')).hexdigest()
         cp = content_checkpoint_path(digest, checkpoint_dir)
         if not cp.exists() or not Path(output).exists():
@@ -421,7 +421,7 @@ def peek_guidance(source: Path, *, checkpoint_dir: Path | None = None, links_roo
     """(where, summary, table) of the reference table a run on this TXT would use, before
     it starts: the translation record, a sample analysis kept from an earlier run, or none."""
     from .textio import read_txt
-    text, _ = read_txt(Path(source))
+    text, _ = read_txt(Path(source), 'ko')
     ref = find_reference(source, text, links_root)
     if ref:
         return 'translation', reference_summary(ref), reference_guidance(ref)
@@ -467,7 +467,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     if source.stat().st_size >= MAX_REFINEMENT_BYTES:
         raise ValueError('한국어 소설 재정비는 10MB 미만 TXT만 지원합니다. 큰 소설은 장별로 분리해 주세요.')
     from .textio import read_txt
-    text, _encoding = read_txt(source)
+    text, _encoding = read_txt(source, 'ko')
     if not text.strip():
         raise ValueError('교정할 본문이 없습니다.')
     paragraphs = split_paragraphs(text)

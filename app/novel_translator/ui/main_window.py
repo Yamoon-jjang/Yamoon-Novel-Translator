@@ -24,7 +24,7 @@ from .worker import TranslationWorker
 from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES
 from ..workspace import WorkspaceStore
 from ..language_options import option_spec
-from ..language_detection import detect_language, detect_language_bytes
+from ..language_detection import detect_language, detect_language_bytes, damaged_text_reason
 from ..power import set_translation_awake
 from ..protected_literals import count_protectable_literals
 from ..term_extraction import candidates as term_candidates, build_prompts as term_prompts, parse_glossary
@@ -1186,6 +1186,25 @@ class MainWindow(QMainWindow):
         self._apply_profile(target); self._update_output_label(); self._update_ready_state(); self.tabs.setCurrentWidget(self.preview_tab)
         if note: self.status.setText(note)
         self._add_recent(str(p))
+        damaged=self._damaged_source_reason()
+        if damaged:
+            self._busy_note_hide()
+            self.status.setText('원문 글자가 깨진 파일로 보입니다 · 번역 전에 원본 파일을 확인하세요')
+            QMessageBox.warning(self,'원문 글자가 깨져 있음',self._damaged_message(damaged))
+
+    def _damaged_source_reason(self) -> str:
+        """Why the open single source looks already broken ('' when it looks normal)."""
+        if self.input_mode!='single' or not self.source_text:
+            return ''
+        try:
+            return damaged_text_reason(self.source_text,self.pm.active.source_language)
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _damaged_message(reason: str) -> str:
+        return (reason+'\n\n이런 파일은 프로그램이 되돌릴 수 없고, 번역하면 본문도 확정 용어집도 엉터리로 나옵니다. '
+                '처음 받은 원본 파일을 다시 구해 다른 프로그램에서 저장하지 말고 그대로 여세요.')
 
     def _auto_source_profile(self, path: Path, raw: bytes) -> tuple[str, str]:
         """The language profile to open a TXT/PDF/EPUB with: the detected source language when
@@ -3425,13 +3444,18 @@ class MainWindow(QMainWindow):
         expected=self.pm.active.source_language
         names={'ja':'일본어','zh':'중국어','en':'영어'}
         if self.input_mode=='single':
+            damaged=self._damaged_source_reason()
+            if damaged:
+                box=QMessageBox(QMessageBox.Warning,'원문 글자가 깨져 있음',self._damaged_message(damaged)+'\n\n그래도 번역을 시작할까요?',QMessageBox.Yes|QMessageBox.No,self)
+                box.setDefaultButton(QMessageBox.No)
+                if box.exec()!=QMessageBox.Yes: return False
             detected,confidence,_det_enc=detect_language_bytes(self.source_bytes) if self.source_bytes else detect_language(self.source_text)+(None,)
             if detected and detected!=expected and confidence>=0.70:
                 msg=f'현재 원문 언어는 {names.get(expected,expected)}로 설정되어 있지만, 원문은 {names.get(detected,detected)}일 가능성이 높습니다.\n\n잘못된 언어 프로필로 번역하면 인명·호칭·문체 규칙이 어긋날 수 있습니다. 그래도 현재 설정으로 시작할까요?'
                 return QMessageBox.question(self,'원문 언어 확인',msg)==QMessageBox.Yes
             return True
         if self.input_mode=='folder' and self.batch_files:
-            mismatches=[]; detected_set=set()
+            mismatches=[]; detected_set=set(); damaged_files=[]
             # Sample several naturally ordered files. This catches common mixed-folder mistakes
             # without reading a huge library into memory before starting.
             for p in self.batch_files[:8]:
@@ -3450,11 +3474,28 @@ class MainWindow(QMainWindow):
                     else:
                         text,_=decode_txt_bytes(raw,expected,self.encoding.currentData())
                         detected,confidence=detect_language(text)
+                    try:
+                        if damaged_text_reason(decode_txt_bytes(raw,expected,self.encoding.currentData())[0],expected):
+                            damaged_files.append(p)
+                    except Exception:
+                        pass
                 except Exception:
                     continue
                 if detected and confidence>=0.70:
                     detected_set.add(detected)
                     if detected!=expected:mismatches.append((p,detected))
+            if damaged_files:
+                rows=[]
+                for p in damaged_files[:5]:
+                    try: rel=p.relative_to(self.batch_root)
+                    except Exception: rel=p.name
+                    rows.append(f'- {rel}')
+                msg=('폴더 표본 검사에서 원문 글자가 이미 깨진 것으로 보이는 파일이 있습니다 '
+                     '(다른 인코딩으로 잘못 열었다가 다시 저장한 흔적).\n\n'+'\n'.join(rows)+
+                     '\n\n이런 파일은 번역해도 엉터리로 나옵니다. 원본을 다시 구해 바꿔 넣는 것이 좋습니다. 그래도 시작할까요?')
+                box=QMessageBox(QMessageBox.Warning,'원문 글자가 깨져 있음',msg,QMessageBox.Yes|QMessageBox.No,self)
+                box.setDefaultButton(QMessageBox.No)
+                if box.exec()!=QMessageBox.Yes: return False
             if mismatches or len(detected_set)>1:
                 rows=[]
                 for p,det in mismatches[:5]:

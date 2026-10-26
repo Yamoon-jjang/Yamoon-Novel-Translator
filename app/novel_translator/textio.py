@@ -50,6 +50,9 @@ def _score(text: str, lang: str | None) -> float:
     elif lang == 'en':
         ascii_letters = len(re.findall(r'[A-Za-z]', text))
         score += ascii_letters * 0.15
+    elif lang == 'ko':
+        hangul = len(re.findall(r'[가-힣]', text))
+        score += hangul * 4
     return score
 
 def decode_txt_bytes(raw: bytes, source_language: str | None = None, forced_encoding: str | None = None) -> tuple[str, str]:
@@ -108,12 +111,17 @@ def decode_txt_bytes(raw: bytes, source_language: str | None = None, forced_enco
         encs = [('gb18030','GB18030 / GBK'), ('cp950','Big5'), ('big5hkscs','Big5-HKSCS'), ('cp932','CP932')]
     elif source_language == 'en':
         encs = [('cp1252','Windows-1252'), ('latin-1','Latin-1')]
+    elif source_language == 'ko':
+        # Korean novels for refinement: old TXT files are mostly CP949 (EUC-KR). Only this
+        # setting tries it; Chinese/Japanese bytes also "decode" as CP949, so the other
+        # settings never consider it.
+        encs = [('cp949','CP949 / EUC-KR'), ('cp932','CP932 / Shift-JIS'), ('euc_jp','EUC-JP'), ('gb18030','GB18030 / GBK'), ('cp950','Big5'), ('cp1252','Windows-1252')]
     else:
         encs = [('cp932','CP932 / Shift-JIS'), ('euc_jp','EUC-JP'), ('gb18030','GB18030 / GBK'), ('cp950','Big5'), ('big5hkscs','Big5-HKSCS'), ('cp1252','Windows-1252')]
     for enc, label in encs:
         try: candidates.append((raw.decode(enc, 'nt_cp1252_fallback' if enc == 'cp1252' else 'strict'), label))
         except (UnicodeDecodeError, LookupError): pass
-    if not candidates and source_language in {'zh', 'ja'}:
+    if not candidates and source_language in {'zh', 'ja', 'ko'}:
         # One stray or cut-off byte in an otherwise valid CJK file: keep that reading and
         # mark the bad bytes, rather than failing or switching to a Western encoding.
         loose = []
