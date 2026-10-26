@@ -202,3 +202,118 @@ def test_the_speech_answer_is_kept_for_checking(qt_app, monkeypatch):
     t.run()
     assert out[-1][0] and out[-1][1]['rows'][0]['level'] == '해요체'
     assert saved and saved[0][0] == '인물 말투표' and '1쌍 사용' in saved[0][1] and 'informal polite' in saved[0][4]
+
+
+# ---------------------------------------------------------------- v2.5.5 (보완): Chinese / Japanese addresses
+ZH_OUT = ['宝贝', '亲爱的', '美人', '娘子', '相公', '夫人', '主人', '公子', '老爷']
+JA_OUT = ['あなた', 'お前', 'ダーリン', 'お嬢様', '坊ちゃん', 'ご主人様', '旦那様', '奥様']
+ZH_KEEP = ['师父', '前辈', '掌门', '陛下', '殿下', '王夫人', '林若雪', '天剑宗']
+JA_KEEP = ['師匠', '殿', '姫', '陛下', '佐藤', '美咲']
+
+
+def test_chinese_and_japanese_addresses_are_left_out_and_titles_stay():
+    for lang, out, keep in (('zh', ZH_OUT, ZH_KEEP), ('ja', JA_OUT, JA_KEEP)):
+        answer = {w: '호칭' for w in out + keep}
+        rep = {}
+        got = parse_glossary(json.dumps(answer, ensure_ascii=False), [(w, 9) for w in answer], lang=lang, report=rep)
+        assert set(got) == set(keep), (lang, set(got))
+        assert rep['common_word'] == len(out)
+    for w in ZH_OUT + JA_OUT:
+        assert is_doubtful_term(w), w
+    for w in ZH_KEEP + JA_KEEP:
+        assert not is_doubtful_term(w), w
+
+
+def test_cjk_address_rows_already_in_the_glossary_are_marked_red(qt_app, sandbox, monkeypatch):
+    from test_alpha17 import _window
+    w = _window(monkeypatch)
+    try:
+        for a, b in (('娘子', '부인'), ('林若雪', '린뤄쉐'), ('陛下', '폐하')):
+            _put(w, a, b, typed=False)
+        assert {src for _, src, _ in w._suspicious_terms()} == {'娘子'}
+        assert w._drop_unlocked_suspicious() == [('娘子', '부인')]
+        assert _rows(w) == {'林若雪': '린뤄쉐', '陛下': '폐하'}
+    finally:
+        w.close()
+
+
+def test_shared_glossary_does_not_collect_cjk_addresses(tmp_path):
+    from novel_translator import common_terms
+    got = common_terms.new_candidates('zh', {'娘子': '부인', '林若雪': '린뤄쉐', '掌门': '장문인'}, tmp_path)
+    assert got == {'林若雪': '린뤄쉐', '掌门': '장문인'}
+
+
+# ---------------------------------------------------------------- v2.5.5 (보완): "As Alan", "So Alan"
+def test_sentence_start_word_glued_to_a_name_is_not_a_term():
+    from novel_translator.term_extraction import function_word_prefix
+    answer = {'Alan': '앨런', 'As Alan': '앨런', 'So Alan': '앨런', 'Susan': '수전', 'As Susan': '수전',
+              'Suzanne': '수잔', 'As Suzanne': '수잔', 'So Suzanne': '수잔', 'Oh Alan': '앨런',
+              'The Shire': '샤이어', 'Will Turner': '윌 터너', 'Mason': '메이슨'}
+    got = parse_glossary(json.dumps(answer, ensure_ascii=False), [(k, 9) for k in answer], lang='en')
+    assert set(got) == {'Alan', 'Susan', 'Suzanne', 'The Shire', 'Will Turner', 'Mason'}
+    from novel_translator.term_extraction import korean_collisions
+    assert korean_collisions(got) == []                 # no "한글 이름 겹침" window for them
+    assert not function_word_prefix('So Ji Sub', {'Alan'})   # a Korean name 소지섭 stays
+    assert not function_word_prefix('The Count', {'Count'})
+
+
+def test_glued_rows_already_in_the_glossary_are_red_and_cleaned(qt_app, sandbox, monkeypatch):
+    from test_alpha17 import _window
+    w = _window(monkeypatch)
+    try:
+        for a, b in (('Alan', '앨런'), ('As Alan', '앨런'), ('So Alan', '앨런'), ('Susan', '수전')):
+            _put(w, a, b, typed=False)
+        w._mark_suspicious_terms()
+        assert {src for _, src, _ in w._suspicious_terms()} == {'As Alan', 'So Alan'}
+        r = [i for i in range(w.term_table.rowCount()) if w.term_table.item(i, 0).text() == 'As Alan'][0]
+        assert "'Alan'" in w.term_table.item(r, 0).toolTip()
+        w._drop_unlocked_suspicious()
+        assert _rows(w) == {'Alan': '앨런', 'Susan': '수전'}
+    finally:
+        w.close()
+
+
+# ---------------------------------------------------------------- v2.5.5 (보완): 어른 → 아이 해요체
+def test_parent_to_child_polite_becomes_banmal_by_the_models_own_relation():
+    # The real answer of Qwen3.5-35B (2026-10-26): the relation is right, the level is 해요체.
+    pairs = [('수잔', '캣', '해요체', '어머니가 딸에게 (부드러운)'), ('캣', '수잔', '해요체', '딸이 어머니에게 (존경)'),
+             ('에릭', '캣', '해요체', '아버지가 딸에게 (부드러운)'), ('나', '에이미', '해요체', '어른이 아이에게 (설명)'),
+             ('에이미', '나', '해요체', '아이가 어른에게 (존경)'), ('에이미', '캣', '반말', '친구/동등'),
+             ('에릭', '에이미', '합쇼체', '어른이 아이에게'), ('사부', '린위', '하게체', '아버지가 아들에게'),
+             ('린위', '사부', '합쇼체', '제자가 스승에게')]
+    names = {'Susan': '수잔', 'Kat': '캣', 'Eric': '에릭', 'Amy': '에이미', 'I': '나', '林雨': '린위', '师父': '사부'}
+    answer = json.dumps({'pairs': [{'speaker': a, 'listener': b, 'level': c, 'relation': d} for a, b, c, d in pairs]},
+                        ensure_ascii=False)
+    got = {(r['speaker'], r['listener']): r['level'] for r in parse_table(answer, names)}
+    assert got == {('수잔', '캣'): '반말', ('캣', '수잔'): '해요체', ('에릭', '캣'): '반말', ('나', '에이미'): '반말',
+                   ('에이미', '나'): '해요체', ('에이미', '캣'): '반말', ('에릭', '에이미'): '반말',
+                   ('사부', '린위'): '하게체',          # an older style the model chose is kept
+                   ('린위', '사부'): '합쇼체'}
+
+
+# ---------------------------------------------------------------- v2.5.5 (보완): 윗사람 → 아랫사람 해요체 (중·일·영 공통)
+def test_elder_to_younger_polite_becomes_banmal_by_the_models_own_relation():
+    # The real answer of Qwen3.5-35B (2026-10-26, an English novel): the relation is right, the level is 해요체.
+    # The relation note is Korean whatever the book's language, so the same rule serves Chinese and Japanese books.
+    pairs = [('수잔', '캣', '해요체', '어머니가 딸에게 (부드러운)'), ('캣', '수잔', '해요체', '딸이 어머니에게 (존경)'),
+             ('에릭', '캣', '해요체', '아버지가 딸에게 (부드러운)'), ('나', '에이미', '해요체', '어른이 아이에게 (설명)'),
+             ('에이미', '나', '해요체', '아이가 어른에게 (존경)'), ('에이미', '캣', '반말', '친구/동등'),
+             ('에릭', '에이미', '합쇼체', '어른이 아이에게'),
+             ('사부', '린위', '해요체', '사부가 제자에게'), ('린위', '사부', '합쇼체', '제자가 스승에게'),
+             ('쑤칭', '린위', '하게체', '스승→제자'),          # an older style the model chose is kept
+             ('왕레이', '쑤칭', '해요체', '师父对徒弟'), ('쑤칭', '왕레이', '해요체', '모녀'),
+             ('엄마', '나', '해요체', ''), ('나', '엄마', '해요체', '')]
+    names = {'Susan': '수잔', 'Kat': '캣', 'Eric': '에릭', 'Amy': '에이미', 'I': '나', '林雨': '린위', '师父': '사부',
+             '苏晴': '쑤칭', '王磊': '왕레이', '妈妈': '엄마'}
+    answer = json.dumps({'pairs': [{'speaker': a, 'listener': b, 'level': c, 'relation': d} for a, b, c, d in pairs]},
+                        ensure_ascii=False)
+    got = {(r['speaker'], r['listener']): r['level'] for r in parse_table(answer, names)}
+    assert got == {('수잔', '캣'): '반말', ('캣', '수잔'): '해요체', ('에릭', '캣'): '반말', ('나', '에이미'): '반말',
+                   ('에이미', '나'): '해요체', ('에이미', '캣'): '반말', ('에릭', '에이미'): '반말',
+                   ('사부', '린위'): '반말', ('린위', '사부'): '합쇼체', ('쑤칭', '린위'): '하게체',
+                   ('왕레이', '쑤칭'): '반말', ('쑤칭', '왕레이'): '해요체', ('엄마', '나'): '반말', ('나', '엄마'): '해요체'}
+
+
+def test_tab_answers_get_the_same_correction():
+    rows = parse_table('수잔\t캣\t해요체\t어머니가 딸에게\n캣\t수잔\t해요체\t딸이 어머니에게', {'Susan': '수잔', 'Kat': '캣'})
+    assert [(r['speaker'], r['level']) for r in rows] == [('수잔', '반말'), ('캣', '해요체')]

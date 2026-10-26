@@ -363,6 +363,38 @@ def _clean_name(part: str) -> str:
     return part.strip().strip('"“”\'‘’*`').strip()
 
 
+# Someone above the listener in the family or in rank speaking down: a parent or another adult
+# to a child ("어머니가 딸에게", "어른이 아이에게"), a master to a disciple, a lord to a servant
+# or subject ("사부가 제자에게", "주인 → 하인", "师父对徒弟"). Some models (Qwen 3.5 35B) named the
+# relation correctly but still chose 해요체 for it; in a Korean novel a mother does not speak to
+# her daughter, nor a master to his disciple, in 해요체. The relation the model wrote itself
+# decides, whatever the book's language: 해요체 / 합쇼체 there becomes 반말. 하게체 · 해라체 · 하오체
+# (older styles a wuxia or historical novel uses for the same pairs) are left as the model chose,
+# and so is every pair whose relation does not say who is above (모녀, 친구, 연인).
+_ELDER = (r'(?:어른|부모|어머니|아버지|어머님|아버님|엄마|아빠|할머니|할아버지|외할머니|외할아버지|이모|고모|삼촌|외삼촌|'
+          r'숙모|큰아버지|큰어머니|작은아버지|작은어머니|스승|사부|사부님|장로|장문인|문주|주인|주인님|주군|마님|나리|'
+          r'왕|국왕|황제|황후|왕비|폐하|상관|윗사람)')
+_YOUNG = (r'(?:아이|어린이|아이들|딸|아들|자식|자녀|손자|손녀|손주|아기|꼬마|조카|제자|도제|하인|하녀|시녀|시종|종|노비|'
+          r'부하|수하|신하|아랫사람|백성)')
+_ELDER_TO_YOUNG = re.compile(_ELDER + r'\s*(?:님)?(?:이|가|께서)?\s*(?:→|->|=>|⇒)?\s*' + _YOUNG
+                             + r'(?:\s*(?:에게|한테|께)|\s*(?:\)|$|[,(/·]))')
+_ZH_ELDER_TO_YOUNG = re.compile(r'(?:母亲|父亲|妈妈|爸爸|娘|爹|长辈|师父|师傅|师尊|主人|主子|皇上|陛下)\s*(?:对|→)\s*'
+                                r'(?:女儿|儿子|孩子|晚辈|徒弟|弟子|仆人|下人|丫鬟|臣子)')
+# Roles of the speech table (나 ↔ 엄마): a parent or a master speaking to the narrator.
+_ELDER_ROLES = {'엄마', '아빠', '할머니', '할아버지', '사부'}
+
+
+def _elder_level(note: str, level: str, speaker: str = '', listener: str = '') -> str:
+    if level not in ('해요체', '합쇼체'):
+        return level
+    text = str(note or '')
+    if _ELDER_TO_YOUNG.search(text) or _ZH_ELDER_TO_YOUNG.search(text):
+        return '반말'
+    if speaker in _ELDER_ROLES and listener == NARRATOR:
+        return '반말'
+    return level
+
+
 def parse_table(text: str, names: dict[str, str]) -> list[dict]:
     """Strict about the content, tolerant about the shape: both people must be known
     characters (Korean or original name), the level must be one of LEVELS, no self-pairs,
@@ -414,6 +446,7 @@ def parse_table(text: str, names: dict[str, str]) -> list[dict]:
             continue
         seen.add(key)
         note = re.sub(r'\s+', ' ', str(note or '')).strip(' ,:;-')
+        level = _elder_level(note, level, speaker, listener)
         rows.append({'speaker': speaker, 'listener': listener, 'level': level, 'note': note[:40]})
         if len(rows) >= MAX_ROWS:
             break

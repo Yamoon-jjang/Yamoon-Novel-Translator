@@ -123,10 +123,23 @@ def is_never_term(source: str) -> bool:
             or bool(_EN_EXCLAMATION.fullmatch(k)))
 
 
+# Chinese / Japanese endearments, second-person words and addresses whose Korean depends on
+# who says them (娘子: 부인 · 아가씨 · 여보; 主人: 주인 · 주인님 · 남편; 旦那様: 서방님 · 나리 · 주인어른).
+# Like Dear / Honey in English they are not names, and one fixed Korean word would be wrong in
+# half the book. Titles with one meaning (陛下 폐하, 掌门 장문인, 师父 사부, 師匠 스승, 前辈 선배)
+# stay terms. Family words (哥哥, 姐姐, お兄ちゃん) were already left out by is_address_term.
+_CJK_ADDRESS = frozenset('''宝贝 宝贝儿 宝宝 亲爱的 心肝 美人 娘子 相公 夫君 官人 夫人 太太 老爷 主人 公子
+あなた 貴方 あんた アンタ お前 おまえ 貴様 てめえ きみ ダーリン ハニー お嬢様 お嬢さん 坊ちゃん 坊っちゃん
+ご主人様 主人様 旦那様 旦那 奥様 奥さん'''.split())
+
+
 def is_doubtful_term(source: str) -> bool:
-    """An English family/address word or endearment that is almost never a name (Sister, Bro,
-    Dear, Honey), alone or with words that only add to it (My Dear, Big Brother, Young Master)."""
+    """A family/address word or endearment that is almost never a name: English (Sister, Bro,
+    Dear, Honey, alone or with words that only add to it: My Dear, Big Brother, Young Master)
+    and Chinese / Japanese (宝贝, 亲爱的, 娘子, 主人, あなた, ダーリン, 旦那様)."""
     s = str(source or '').strip()
+    if s in _CJK_ADDRESS:
+        return True
     if not s or not re.fullmatch(r"[A-Za-z'\u2019]+(?:[ .][A-Za-z'\u2019]+){0,3}\.?", s):
         return False
     words = [w for w in _en_key(s).replace('.', ' ').split() if w]
@@ -137,6 +150,25 @@ def is_doubtful_term(source: str) -> bool:
         return any(w in _EN_DOUBTFUL for w in words)
     return (bool(heads) and all(w in _EN_DOUBTFUL and w not in _EN_TITLE_WORDS for w in heads)
             and len(heads) < len(words))
+
+
+_EN_PREFIX_KEEP = frozenset({'the', 'a', 'an', 'of'})   # The Count, The Shire: part of the term
+
+
+def function_word_prefix(source: str, names) -> bool:
+    """"As Alan", "So Alan", "And Susan", "Oh Alan": a word from the start of a sentence glued
+    to a name that is already in the list. Not a different person, and not a term (the window
+    "한글 이름 겹침 확인" showed them as Alan · As Alan · So Alan). A name whose first word only
+    looks like one (So Ji-sub) is kept unless its rest is a name of its own in the list."""
+    s = str(source or '').strip()
+    if ' ' not in s or not re.fullmatch(r"[A-Za-z'\u2019 .\-\u00C0-\u017F]+", s):
+        return False
+    first, rest = s.split(' ', 1)
+    k = _en_key(first).strip('.,')
+    if k in _EN_PREFIX_KEEP or not (k in _EN_CLOSED or k in _EN_PRONOUNS):
+        return False
+    rest = rest.strip()
+    return bool(rest) and rest in set(names or ())
 
 
 _CJK_IN_KOREAN = re.compile(r'[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]')
@@ -661,6 +693,8 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         # left in it (郝장화), and never an ordinary word (公司 -> 회사).
         if k in COMMON_WORDS or is_never_term(k) or is_doubtful_term(k):
             why['common_word'] += 1; continue       # Sister, Bro, Dear: an address, not a name
+        if function_word_prefix(k, bases | {str(a).strip() for a, _ in pairs}):
+            why['common_word'] += 1; continue       # As Alan, So Alan: Alan with a word before it
         # One Chinese character alone is a surname or a word (李, 剑), almost never a name used
         # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.
         if lang == 'zh' and len(k) == 1:

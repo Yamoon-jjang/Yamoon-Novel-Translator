@@ -2917,12 +2917,14 @@ class MainWindow(QMainWindow):
             self.term_table.removeRow(r)
         self._save_workspace()
     def _suspicious_terms(self) -> list[tuple[int,str,str]]:
-        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term, is_doubtful_term
+        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term, is_doubtful_term, function_word_prefix
         bad=[]
+        names={(self.term_table.item(r,0).text().strip() if self.term_table.item(r,0) else '') for r in range(self.term_table.rowCount())}
         for r in range(self.term_table.rowCount()):
             a=self.term_table.item(r,0); b=self.term_table.item(r,1)
             src=(a.text().strip() if a else ''); ko=(b.text().strip() if b else '')
-            if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS or is_never_term(src) or is_doubtful_term(src)):
+            if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS or is_never_term(src) or is_doubtful_term(src)
+                               or function_word_prefix(src,names)):
                 bad.append((r,src,ko))
         return bad
 
@@ -2960,6 +2962,7 @@ class MainWindow(QMainWindow):
         self._marking_terms=True
         try:
             bad={r for r,_,_ in self._suspicious_terms()}
+            names_now={(self.term_table.item(r,0).text().strip() if self.term_table.item(r,0) else '') for r in range(self.term_table.rowCount())}
             for r in range(self.term_table.rowCount()):
                 for c in (0,1):
                     it=self.term_table.item(r,c)
@@ -2969,8 +2972,10 @@ class MainWindow(QMainWindow):
                         from ..term_extraction import COMMON_WORDS, is_never_term, is_doubtful_term
                         src_text=src_item.text().strip() if src_item else ''
                         common=bool(src_text in COMMON_WORDS or is_never_term(src_text))
+                        glued=' ' in src_text and src_text.split(' ',1)[1].strip() in names_now
                         it.setBackground(QBrush(QColor('#fde2e2')))
-                        it.setToolTip('확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.' if common
+                        it.setToolTip(f"확인 필요: 문장 첫머리 낱말이 이름 '{src_text.split(' ',1)[1].strip()}'에 붙어 잡힌 것입니다(As Alan → Alan). 다른 인물이 아니니 지우세요." if glued and not common
+                                      else '확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.' if common
                                       else '확인 필요: 보통은 이름이 아닌 일반 단어(신·가족·부르는 말)입니다. 이 책에서 인물 이름이나 고유한 호칭으로 쓰일 때만 두고, 아니면 지우세요. 용어집에 두면 책 전체에서 항상 같은 말로만 번역됩니다.' if is_doubtful_term(src_text)
                                       else '확인 필요: 한국어 표기에 한자·가나가 남아 있거나, 한글과 영문이 한 낱말에 섞였거나(엠ily), 원문과 같습니다. 고치거나 지우세요.')
                     elif it.toolTip():
