@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from ..api_keys import ApiKeyRecord, normalize_key_records, stable_key_id, MAX_KEYS_PER_PROVIDER
 from ..providers.gemini import GeminiProvider
 from ..providers.openai import OpenAIProvider
-from ..providers.local_llm import LocalLLMProvider
+from ..providers.local_llm import LocalLLMProvider, local_provider_args
 from ..providers.base import TranslationRequest, ProviderError
 from .. import config as _config
 
@@ -52,7 +52,8 @@ class ApiKeyTestThread(QThread):
             elif self.provider_id == 'openai':
                 provider=OpenAIProvider(self.endpoint or None)
             elif self.provider_id == 'local':
-                provider=LocalLLMProvider(self.endpoint or None, 180, think=bool(self.local_options.get('think',False)), num_ctx=self.local_options.get('num_ctx'))
+                args,kw=local_provider_args(dict(self.local_options, endpoint=self.endpoint), timeout=180)
+                provider=LocalLLMProvider(*args, **kw)
             else:
                 raise ValueError(f'지원하지 않는 provider: {self.provider_id}')
             resp=provider.translate(TranslationRequest(self.model,'You are a connection test. Return exactly OK.','Reply exactly OK.',timeout=20),self.secret)

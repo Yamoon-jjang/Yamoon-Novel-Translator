@@ -249,10 +249,10 @@ from novel_translator import name_rename as nr
 
 def test_rename_text_keeps_words_and_fixes_particles():
     t = '좌경은 웃었다. "좌경아!" 그녀가 좌경을 불렀다. 좌경이었다. 좌경으로. 좌경과 좌경에게 좌경의. 흑좌경'
-    out, n = nr.apply(t, {'좌경': '쭤지'})
+    out, n, _ = nr.apply_counted(t, {'좌경': '쭤지'})
     assert out == '쭤지는 웃었다. "쭤지야!" 그녀가 쭤지를 불렀다. 쭤지였다. 쭤지로. 쭤지와 쭤지에게 쭤지의. 흑좌경' and n == 8
-    assert nr.apply('소희였다. 소희가 왔다. 소희는', {'소희': '소현'})[0] == '소현이었다. 소현이 왔다. 소현은'
-    assert nr.apply('이훤시를', {'이훤시': '리쉬안스'})[0] == '리쉬안스를'
+    assert nr.apply_counted('소희였다. 소희가 왔다. 소희는', {'소희': '소현'})[0] == '소현이었다. 소현이 왔다. 소현은'
+    assert nr.apply_counted('이훤시를', {'이훤시': '리쉬안스'})[0] == '리쉬안스를'
     assert nr.renames_between({'左京': '좌경', '白颖': '백영'}, {'左京': '쭤징', '白颖': '백영'}) == {'좌경': '쭤징'}
     assert nr.renames_between({'左京': '좌경'}, {'左京': '좌경', '白颖': '백영'}) == {}       # an added term is a real change
     assert nr.renames_between({'左京': '좌'}, {'左京': '쭤'}) == {}                          # one syllable: too risky

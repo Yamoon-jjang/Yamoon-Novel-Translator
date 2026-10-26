@@ -47,10 +47,10 @@ def _save_all(data: dict, base=None) -> None:
 
 
 def acceptable(source: str, korean: str) -> bool:
-    from .term_extraction import valid_rendering, COMMON_WORDS, split_address, is_address_term, is_never_term, is_doubtful_term
+    from .term_extraction import valid_rendering, split_address, is_address_term, is_not_name
     s = str(source or '').strip(); k = str(korean or '').strip()
-    return (len(s) >= 2 and bool(k) and len(k) <= 30 and s != k and s not in COMMON_WORDS
-            and not is_never_term(s) and not is_doubtful_term(s)   # He's / My God / Son: not for every book
+    return (len(s) >= 2 and bool(k) and len(k) <= 30 and s != k
+            and not is_not_name(s)               # 公司 / He's / My God / Son: not for every book
             and valid_rendering(s, k) and bool(re.search(r'[가-힣]', k))
             and split_address(s, k) is None      # 丹丹姐 = 단단 언니 depends on the speaker
             and not is_address_term(s))          # 老姨 = 노이 is an address, not a name
@@ -77,8 +77,12 @@ def new_candidates(lang: str, terms: dict, base=None) -> dict[str, str]:
     return out
 
 
-def is_full(lang: str, base=None) -> bool:
-    return len(load(lang, base)) >= MAX_PER_LANG
+def hits(source: str, common: dict, current: dict) -> dict:
+    """Shared entries that occur in this text (2+ times; 5+ for two characters) and are not
+    in the book's glossary yet. They are only CANDIDATES for the extraction."""
+    if not source or not common:
+        return {}
+    return {a: b for a, b in present_in(source, common).items() if a not in current}
 
 
 def add(lang: str, terms: dict, base=None) -> list[tuple[str, str]]:

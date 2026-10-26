@@ -93,12 +93,6 @@ def _attached_ok(p: str, nxt: str) -> bool:
     return nxt in _AFTER_PARTICLE_OK
 
 
-def apply(text: str, renames: dict[str, str]) -> tuple[str, int]:
-    """Text with every free-standing old rendering replaced. Returns (text, count)."""
-    out, count, _ = apply_counted(text, renames)
-    return out, count
-
-
 def apply_counted(text: str, renames: dict[str, str]) -> tuple[str, int, int]:
     """(text, replaced, skipped): skipped counts occurrences left alone as part of a longer word."""
     if not text or not renames:

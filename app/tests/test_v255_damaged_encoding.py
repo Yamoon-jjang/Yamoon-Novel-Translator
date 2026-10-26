@@ -42,13 +42,19 @@ KO_HANJA = """第一章 비 오는 밤
 그날 밤 美英은 驛 앞에 홀로 서서 거리를 오가는 사람들을 바라보았다. 그는 東京에서 온 大學 동창이었고, 두 사람은 오랫동안 消息을 모르고 지냈다. 時間은 이미 자정에 가까웠다.
 """
 import pytest
-from novel_translator.language_detection import damaged_text_reason, detect_language_bytes
-from novel_translator.textio import decode_txt_bytes
+from novel_translator.language_detection import detect_language_bytes
+from novel_translator.textio import decode_txt_bytes, damaged_text_reason
 
 N = 12
 # Characters Big5 has no code for become '?' so the sample is a valid Big5 file.
 ZH_B5 = ZH_T.encode('cp950', 'replace').decode('cp950')
 RARE = '龍嘯天 慕容雪 獨孤劍 歐陽鋒 蕭炎 淩霄閣 青雲峰 萬劍宗 玄冥殿 赤焰谷 寒冰淵 紫霞仙子 '*80
+
+
+def _short_id(value):
+    """Short test names: Windows refuses an environment variable (PYTEST_CURRENT_TEST)
+    longer than 32,767 characters, and a sample book is far longer."""
+    return f'text{len(value)}' if isinstance(value, str) and len(value) > 24 else str(value)
 
 
 def _broken(text, real, wrong):
@@ -58,7 +64,7 @@ def _broken(text, real, wrong):
 @pytest.mark.parametrize('text,lang', [
     (ZH_S*N, 'zh'), (ZH_T*N, 'zh'), (JA*N, 'ja'), (EN*N, 'en'), (KO*N, 'zh'), (KO_HANJA*N, 'zh'),
     (JA*N, 'zh'), (ZH_S*N, 'ja'), (EN*N, 'zh'), (RARE, 'zh'), (RARE, 'ja'), ('', 'zh'), (ZH_S, 'zh'),
-])
+], ids=_short_id)
 def test_normal_text_never_warns(text, lang):
     assert damaged_text_reason(text, lang) == ''
 
@@ -69,7 +75,7 @@ def test_normal_text_never_warns(text, lang):
     (ZH_T*N, 'cp950', 'gbk', 'zh', 'Big5'), (ZH_S*N, 'gbk', 'cp950', 'zh', 'Big5'),
     (ZH_S*N, 'utf-8', 'cp1252', 'zh', '서유럽'), (ZH_S*N, 'gbk', 'latin-1', 'zh', '서유럽'),
     (JA*N, 'cp932', 'latin-1', 'ja', '서유럽'), (EN*N, 'utf-8', 'cp1252', 'en', 'â€'),
-])
+], ids=_short_id)
 def test_damaged_text_is_noticed(text, real, wrong, lang, word):
     assert word in damaged_text_reason(_broken(text, real, wrong), lang)
 
@@ -84,7 +90,7 @@ def test_damaged_with_lost_characters_still_noticed():
 @pytest.mark.parametrize('text,enc,lang', [
     (ZH_S*N, 'gb18030', 'zh'), (ZH_T*N, 'gb18030', 'zh'), (ZH_B5*N, 'cp950', 'zh'), (JA*N, 'cp932', 'ja'),
     (JA*N, 'euc_jp', 'ja'), (EN*N, 'cp1252', 'en'), (ZH_S*N, 'utf-8', 'zh'), (JA*N, 'utf-8', 'ja'),
-])
+], ids=_short_id)
 def test_correctly_read_legacy_files_do_not_warn(text, enc, lang):
     raw = text.encode(enc)
     detected, _conf, _label = detect_language_bytes(raw[:262144])

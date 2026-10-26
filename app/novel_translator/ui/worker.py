@@ -6,7 +6,7 @@ from ..storage import Database
 from ..config import DATA_DIR, CONFIG_DIR, load_json
 from ..providers.gemini import GeminiProvider
 from ..providers.openai import OpenAIProvider
-from ..providers.local_llm import LocalLLMProvider
+from ..providers.local_llm import LocalLLMProvider, local_provider_args
 from ..providers.base import TranslationCancelled, ProviderError, ErrorKind, is_loop_error
 from ..orchestrator import TranslationOrchestrator, KeyState
 from ..api_keys import normalize_key_records
@@ -146,9 +146,6 @@ class TranslationWorker(QThread):
         """문장 스타일 changed in the window while this job runs: used from the next chunk
         (the one in flight finishes with the style it started with)."""
         self._pending_style = 'natural' if style == 'natural' else 'normal'
-
-    def is_paused(self) -> bool:
-        return bool(self._paused)
 
     def _wait_if_paused(self, raise_on_stop: bool = True):
         if not self._paused or self._stop:
@@ -1290,6 +1287,44 @@ class TranslationWorker(QThread):
         except Exception:
             pass
 
+    def _make_engines(self, keys, openai_keys, mode_retry, mode_timeout, rate_cfg, repair):
+        """(Gemini, OpenAI, local LLM) engines of this job; None for an engine that is off
+        or has no key/model. All three share the same stop/pause/repair/usage hooks."""
+        shared = dict(cancel_check=lambda: self._stop, pause_fn=self._wait_if_paused,
+                      repair_script=repair, content_kind=self.content_kind)
+        cloud = dict(retries=mode_retry, timeout=mode_timeout,
+                     target_rpm=float(rate_cfg.get('start_rpm', 12)), min_rpm=float(rate_cfg.get('min_rpm', 2)),
+                     max_rpm=float(rate_cfg.get('max_rpm', 30)),
+                     successes_before_step_up=int(rate_cfg.get('successes_before_step_up', 5)))
+        orch = None
+        if keys:
+            orch = TranslationOrchestrator(GeminiProvider(), keys, self.model, thinking_level=self.thinking_level,
+                wait_fn=lambda msg: self.api_state.emit(f'{self._chunk_label} · Gemini · {msg}'),
+                event_fn=lambda msg: self._provider_event('Gemini', msg),
+                usage_fn=lambda p, m, u, ok: self._on_usage(p, m, u, ok, getattr(orch, '_usage_key', None)), provider_id='gemini',
+                key_selected_fn=lambda key: self.api_state.emit(f'{self._chunk_label} · Gemini · {self.model} · {self._key_tier_text(key)} · 프로젝트 {key.project_group or "default"} · 요청 중'),
+                **cloud, **shared)
+        openai_orch = None
+        openai_model = str(self.openai_settings.get('model') or '').strip()
+        if bool(self.openai_settings.get('enabled')) and openai_keys and openai_model:
+            openai_orch = TranslationOrchestrator(OpenAIProvider(str(self.openai_settings.get('endpoint') or '').strip() or None),
+                openai_keys, openai_model,
+                wait_fn=lambda msg: self.api_state.emit(f'{self._chunk_label} · OpenAI · {msg}'),
+                event_fn=lambda msg: self._provider_event('OpenAI', msg),
+                usage_fn=self._on_usage, provider_id='openai', **cloud, **shared)
+        local_orch = None
+        local_model = str(self.local_settings.get('model') or '').strip()
+        if bool(self.local_settings.get('enabled')) and local_model:
+            local_timeout = int(self.local_settings.get('timeout_seconds') or 300)
+            local_args, local_kw = local_provider_args(self.local_settings, timeout=local_timeout)
+            local_orch = TranslationOrchestrator(
+                LocalLLMProvider(*local_args, **local_kw, structured=self.local_structured, sampling=self.local_sampling),
+                [KeyState('LOCAL', 'local', 'local', True)], local_model,
+                retries=min(mode_retry, 1), timeout=local_timeout, target_rpm=600.0, min_rpm=60.0, max_rpm=600.0,
+                event_fn=lambda msg: self._provider_event('Local', msg),
+                usage_fn=self._on_usage, provider_id='local', **shared)
+        return orch, openai_orch, local_orch
+
     def run(self):
         try:
             self.api_state.emit('번역 준비 중 · 저장된 번역 확인')
@@ -1373,32 +1408,7 @@ class TranslationWorker(QThread):
                 app_cfg={}; rate_cfg={}
             repair=bool(app_cfg.get('repair_leftover_script', True))
             self._repair_enabled=repair
-            orch = TranslationOrchestrator(GeminiProvider(), keys, self.model, retries=mode_retry, timeout=mode_timeout,
-                                           target_rpm=float(rate_cfg.get('start_rpm',12)), min_rpm=float(rate_cfg.get('min_rpm',2)), max_rpm=float(rate_cfg.get('max_rpm',30)),
-                                           thinking_level=self.thinking_level, successes_before_step_up=int(rate_cfg.get('successes_before_step_up',5)),
-                                           wait_fn=lambda msg:self.api_state.emit(f'{self._chunk_label} · Gemini · {msg}'),
-                                           event_fn=lambda msg:self._provider_event('Gemini',msg), cancel_check=lambda:self._stop, pause_fn=self._wait_if_paused, repair_script=repair, content_kind=self.content_kind,
-                                           usage_fn=lambda p,m,u,ok:self._on_usage(p,m,u,ok,getattr(orch,'_usage_key',None)), provider_id='gemini',
-                                           key_selected_fn=lambda key:self.api_state.emit(f'{self._chunk_label} · Gemini · {self.model} · {self._key_tier_text(key)} · 프로젝트 {key.project_group or "default"} · 요청 중')) if keys else None
-            openai_orch=None
-            if bool(self.openai_settings.get('enabled')) and openai_keys and str(self.openai_settings.get('model') or '').strip():
-                openai_orch=TranslationOrchestrator(OpenAIProvider(str(self.openai_settings.get('endpoint') or '').strip() or None), openai_keys,
-                    str(self.openai_settings.get('model') or '').strip(), retries=mode_retry, timeout=mode_timeout,
-                    target_rpm=float(rate_cfg.get('start_rpm',12)), min_rpm=float(rate_cfg.get('min_rpm',2)), max_rpm=float(rate_cfg.get('max_rpm',30)),
-                    successes_before_step_up=int(rate_cfg.get('successes_before_step_up',5)),
-                    wait_fn=lambda msg:self.api_state.emit(f'{self._chunk_label} · OpenAI · {msg}'),
-                    event_fn=lambda msg:self._provider_event('OpenAI',msg), cancel_check=lambda:self._stop, pause_fn=self._wait_if_paused, repair_script=repair, content_kind=self.content_kind,
-                    usage_fn=self._on_usage, provider_id='openai')
-            local_orch=None
-            if bool(self.local_settings.get('enabled')) and str(self.local_settings.get('model') or '').strip():
-                local_timeout=int(self.local_settings.get('timeout_seconds') or 300)
-                local_orch=TranslationOrchestrator(LocalLLMProvider(str(self.local_settings.get('endpoint') or '').strip() or None, local_timeout,
-                    think=bool(self.local_settings.get('think', False)), num_ctx=(int(self.local_settings['num_ctx']) if self.local_settings.get('num_ctx') else None),
-                    structured=self.local_structured, sampling=self.local_sampling),
-                    [KeyState('LOCAL','local','local',True)], str(self.local_settings.get('model') or '').strip(),
-                    retries=min(mode_retry,1), timeout=local_timeout, target_rpm=600.0, min_rpm=60.0, max_rpm=600.0,
-                    event_fn=lambda msg:self._provider_event('Local',msg), cancel_check=lambda:self._stop, pause_fn=self._wait_if_paused, repair_script=repair, content_kind=self.content_kind,
-                    usage_fn=self._on_usage, provider_id='local')
+            orch, openai_orch, local_orch = self._make_engines(keys, openai_keys, mode_retry, mode_timeout, rate_cfg, repair)
             for _o in (orch,openai_orch,local_orch):
                 if _o is not None: _o.sentence_style=self.sentence_style
             engines=self._engines({'gemini':orch,'openai':openai_orch,'local':local_orch})

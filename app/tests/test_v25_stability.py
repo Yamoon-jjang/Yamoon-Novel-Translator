@@ -142,7 +142,7 @@ def test_rename_leaves_words_that_only_start_with_the_name():
     out, n, skipped = nr.apply_counted('하늘색 원피스를 입은 하늘이 들어왔다. 하늘나라 하늘아래 하늘이야기',
                                        {'하늘': '하늬'})
     assert out == '하늘색 원피스를 입은 하늬가 들어왔다. 하늘나라 하늘아래 하늘이야기' and n == 1 and skipped == 4
-    assert nr.apply('백영화를 본 백영이', {'백영': '바이'})[0] == '백영화를 본 바이가'
+    assert nr.apply_counted('백영화를 본 백영이', {'백영': '바이'})[0] == '백영화를 본 바이가'
 
 
 def test_rename_still_follows_particles_endings_and_forms_of_address():
@@ -151,7 +151,7 @@ def test_rename_still_follows_particles_endings_and_forms_of_address():
     out, n, skipped = nr.apply_counted(t, {'좌경': '쭤징'})
     assert '좌경' not in out and skipped == 0
     assert '쭤징이었다' in out and '쭤징과의' in out and '쭤징으로서' in out and '쭤징이다' in out
-    assert nr.apply('소희와의 약속. 소희는요?', {'소희': '소현'})[0] == '소현과의 약속. 소현은요?'
+    assert nr.apply_counted('소희와의 약속. 소희는요?', {'소희': '소현'})[0] == '소현과의 약속. 소현은요?'
 
 
 def test_rename_in_the_stored_book_reports_what_it_left_alone(tmp_path):

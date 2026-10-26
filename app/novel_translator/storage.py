@@ -260,11 +260,6 @@ class Database:
                                retry_count=0, fallback_used=0, updated_at=CURRENT_TIMESTAMP
                            WHERE project_id=? AND chunk_index>=?""", (project_id, chunk_index))
 
-    def first_incomplete_index(self, project_id: int) -> int | None:
-        with self.connect() as con:
-            row=con.execute("SELECT MIN(chunk_index) AS idx FROM chunks WHERE project_id=? AND status!='COMPLETED'", (project_id,)).fetchone()
-            return None if row is None or row['idx'] is None else int(row['idx'])
-
     def pending_chunks(self, project_id: int):
         with self.connect() as con:
             return con.execute("SELECT * FROM chunks WHERE project_id=? AND status!='COMPLETED' ORDER BY chunk_index", (project_id,)).fetchall()
@@ -308,25 +303,64 @@ class Database:
     def get_or_create_project(self, source_path: str, source_language: str, profile_id: str, source_sha256: str, job_fingerprint: str = '', settings_key: str = '') -> int:
         row = self.find_project(source_path, source_language, profile_id, source_sha256, job_fingerprint)
         pid = int(row['id']) if row else self.create_project(source_path, source_language, profile_id, source_sha256, job_fingerprint)
-        if settings_key:
-            with self.connect() as con:
-                con.execute('UPDATE projects SET settings_key=? WHERE id=?', (settings_key, pid))
+        with self.connect() as con:
+            # The job is being worked on again: it counts as recent for the clean-up below.
+            if settings_key:
+                con.execute('UPDATE projects SET settings_key=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (settings_key, pid))
+            else:
+                con.execute('UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?', (pid,))
         return pid
 
-    def cached_translation(self, profile_id: str, settings_key: str, source_text: str, exclude_project: int | None = None) -> str | None:
-        """Translation memory: a COMPLETED translation of exactly this chunk source,
-        made with the same profile and translation settings in another job."""
-        if not settings_key:
-            return None
+    # ------------------------------------------------------------ clean-up (v2.5.6)
+    def remove_old_projects(self, keep_days: int) -> tuple[int, int]:
+        """Delete the jobs nobody has worked on for `keep_days` days (no chunk translated,
+        retried or resumed, and the job not started again since). Returns (jobs, chunks)
+        removed. A job in use is never this old; keep_days <= 0 keeps everything."""
+        if int(keep_days or 0) <= 0:
+            return 0, 0
+        cutoff = f'-{int(keep_days)} days'
         with self.connect() as con:
-            row = con.execute('''SELECT c.translation, c.source_text FROM chunks c JOIN projects p ON p.id=c.project_id
-                                 WHERE c.source_sha=? AND c.status='COMPLETED' AND p.profile_id=? AND p.settings_key=?
-                                       AND c.project_id<>? AND c.translation IS NOT NULL
-                                 ORDER BY c.updated_at DESC LIMIT 1''',
-                              (_sha(source_text), profile_id, settings_key, exclude_project if exclude_project is not None else -1)).fetchone()
-            if row and row['source_text'] == source_text:
-                return row['translation']
-        return None
+            old = [int(r['id']) for r in con.execute(
+                """SELECT p.id FROM projects p LEFT JOIN chunks c ON c.project_id=p.id
+                   GROUP BY p.id
+                   HAVING MAX(p.updated_at, COALESCE(MAX(c.updated_at), p.updated_at)) < datetime('now', ?)""",
+                (cutoff,)).fetchall()]
+            chunks = 0
+            for i in range(0, len(old), 500):
+                part = old[i:i + 500]; marks = ','.join('?' * len(part))
+                chunks += int(con.execute(f'SELECT COUNT(*) FROM chunks WHERE project_id IN ({marks})', part).fetchone()[0])
+                con.execute(f'DELETE FROM chunks WHERE project_id IN ({marks})', part)
+                con.execute(f'DELETE FROM terms WHERE project_id IN ({marks})', part)
+                con.execute(f'DELETE FROM projects WHERE id IN ({marks})', part)
+            # Rows left behind by very old builds whose job is already gone.
+            chunks += con.execute('DELETE FROM chunks WHERE project_id NOT IN (SELECT id FROM projects)').rowcount or 0
+            con.execute('DELETE FROM terms WHERE project_id NOT IN (SELECT id FROM projects)')
+            con.execute("DELETE FROM events WHERE created_at < datetime('now', ?)", (cutoff,))
+        return len(old), chunks
+
+    def compact(self, max_bytes: int = 1_000_000_000, min_free_share: float = 0.25) -> bool:
+        """Shrink the file (VACUUM) when at least a quarter of it is free space left by
+        deleted rows. Skipped for a very large file (it would take long). True when done."""
+        try:
+            if self.path.stat().st_size > max_bytes:
+                return False
+            with self.connect() as con:
+                pages = int(con.execute('PRAGMA page_count').fetchone()[0] or 0)
+                free = int(con.execute('PRAGMA freelist_count').fetchone()[0] or 0)
+            if not pages or free / pages < min_free_share:
+                return False
+            con = sqlite3.connect(self.path, timeout=30)
+            try:
+                con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                con.execute('VACUUM')
+                # In WAL mode the rewritten pages land in the -wal file first: move them into
+                # the database file so it really becomes smaller.
+                con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            finally:
+                con.close()
+            return True
+        except Exception:
+            return False
 
     def replace_terms(self, project_id: int, terms: dict[str, str]) -> None:
         with self.connect() as con:

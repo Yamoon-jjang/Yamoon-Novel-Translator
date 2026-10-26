@@ -11,6 +11,15 @@ class _NativeUnavailable(Exception):
     """The server on this address does not speak the Ollama native API."""
 
 
+def local_provider_args(settings: dict | None, timeout: int | None = None) -> tuple[tuple, dict]:
+    """(args, keyword args) for LocalLLMProvider from the saved 로컬 LLM settings (address,
+    response wait, thinking, context length). Translation, analysis and the connection test
+    all read the settings here, so they always build the provider the same way."""
+    s = dict(settings or {})
+    return ((str(s.get('endpoint') or '').strip() or None, int(timeout or s.get('timeout_seconds') or 300)),
+            {'think': bool(s.get('think', False)), 'num_ctx': (int(s['num_ctx']) if s.get('num_ctx') else None)})
+
+
 class LocalLLMProvider(TranslationProvider):
     """Last-resort backup on the user's own machine (Ollama / LM Studio / llama.cpp).
 
@@ -81,7 +90,7 @@ class LocalLLMProvider(TranslationProvider):
         return self._translate_compat(request, api_key)
 
     def _headers(self, api_key: str) -> dict:
-        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.5.5'}
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'NovelTranslator/2.5.6'}
         if api_key and api_key not in {'local', 'none', '-'}:
             headers['Authorization'] = f'Bearer {api_key}'
         return headers
@@ -149,7 +158,7 @@ class LocalLLMProvider(TranslationProvider):
         tried as IPv6 (::1) first, and Ollama listens on IPv4 only, so the refused IPv6
         attempt alone costs about a second before the list arrives. Falls back to the
         address as written when nothing answers on 127.0.0.1."""
-        headers = {'User-Agent': 'NovelTranslator/2.5.5'}
+        headers = {'User-Agent': 'NovelTranslator/2.5.6'}
         if (parts.hostname or '').lower() == 'localhost':
             fast = url.replace(base, base.replace(parts.hostname, '127.0.0.1', 1), 1)
             try:

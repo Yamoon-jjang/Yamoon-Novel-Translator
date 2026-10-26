@@ -329,7 +329,6 @@ def test_pause_button_pauses_and_resumes_the_running_worker(qt_app,sandbox,monke
             super().__init__(k.get('parent')); self.source_path=source_path; self.out_dir=Path(out_dir); self.final_context=''; self.pause_kind=''
         def pause(self): state['paused']=True
         def resume(self): state['paused']=False
-        def is_paused(self): return state['paused']
         def stop(self): state['release']=True
         def run(self):
             while not state['release']: time.sleep(0.01)

@@ -425,6 +425,27 @@ def repair_prompt(half: dict[str, str], groups: list[tuple[str, list[str]]], fix
     return EN_REPAIR_SYSTEM, '\n'.join(lines) + '\n\nReturn the JSON object now.'
 
 
+def prepare_candidates(source: str, lang: str, common: dict, current: dict, find=None):
+    """(candidates for the model, shared-glossary entries found in this book, English
+    glossary entries this book uses as ordinary words).
+
+    Shared-glossary entries in this text are not copied into the book's glossary as they
+    are: they go to the model as candidates too, and only those it confirms as names/terms
+    of THIS book are added (with the shared rendering). `find` is the candidate finder
+    (the window passes its own; defaults to candidates())."""
+    from . import common_terms
+    cands = (find or candidates)(source, lang)
+    earlier = common_terms.hits(source, common, current)
+    ordinary = set()
+    if lang == 'en':
+        stats = en_word_stats(source)
+        earlier = {a: b for a, b in earlier.items() if not en_ordinary_word(a, stats)}   # junk stored by an older version
+        ordinary = {a for a in current if en_ordinary_word(a, stats)}
+    known = {k for k, _ in cands}
+    cands = cands + [(a, source.count(a)) for a in earlier if a not in known]
+    return cands, earlier, ordinary
+
+
 def candidate_contexts(text: str, cands: list[tuple[str, int]], limit: int = 80, width: int = 45, stats=None) -> dict[str, str]:
     """One short line from the book for each English candidate that is also an ordinary word
     (Will, Grace, Come, Dear), so the model can tell a name from a word. Only for the local
@@ -716,6 +737,66 @@ _ADDRESS_READINGS = {
 }
 
 
+# ---------------------------------------------------------------- one place for "is it a term?"
+# Every part of the program that judges a glossary entry (the extraction, the light-red
+# marks, the speech table roster, the shared glossary) uses these instead of its own mix
+# of checks, so a rule changed here changes everywhere at once.
+
+def is_ordinary_word(source: str) -> bool:
+    """Never a term in any book: listed ordinary words (公司, 时候) and pronouns,
+    exclamations, contractions (He's, My God)."""
+    return source in COMMON_WORDS or is_never_term(source)
+
+
+def is_not_name(source: str) -> bool:
+    """An ordinary word, or a word that is usually not a name (Son, God, Sister)."""
+    return is_ordinary_word(source) or is_doubtful_term(source)
+
+
+def is_address_only(source: str, korean: str, bases=None) -> bool:
+    """A form of address on its own (哥哥, 二姐, 老姨): the Korean depends on who speaks.
+    A name with an address (丹丹姐) is not this; it is split into the name instead."""
+    return split_address(source, korean, bases) is None and is_address_term(source)
+
+
+# Why a glossary row is shown light red (needs a look), most specific first.
+REVIEW_TIPS = {
+    'glued': "확인 필요: 문장 첫머리 낱말이 이름 '{name}'에 붙어 잡힌 것입니다(As Alan → Alan). 다른 인물이 아니니 지우세요.",
+    'ordinary': '확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.',
+    'doubtful': '확인 필요: 보통은 이름이 아닌 일반 단어(신·가족·부르는 말)입니다. 이 책에서 인물 이름이나 고유한 호칭으로 쓰일 때만 두고, 아니면 지우세요. 용어집에 두면 책 전체에서 항상 같은 말로만 번역됩니다.',
+    'address': '확인 필요: 부르는 사람에 따라 한국어가 달라지는 호칭입니다(哥哥 · 二姐 · 老姨 등). 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니, 일부러 넣은 것이 아니면 지우세요.',
+    'rendering': '확인 필요: 한국어 표기에 한자·가나가 남아 있거나, 한글과 영문이 한 낱말에 섞였거나(엠ily), 원문과 같습니다. 고치거나 지우세요.',
+}
+
+
+def review_reason(source: str, korean: str, names=()) -> str:
+    """'' when a glossary row looks fine; otherwise the REVIEW_TIPS key for it.
+    `names` are the other sources in the glossary (for "As Alan" next to "Alan")."""
+    names = set(names or ())
+    if not (source and korean):
+        return ''
+    bad = (not valid_rendering(source, korean) or is_not_name(source)
+           or function_word_prefix(source, names) or is_address_only(source, korean, names))
+    if not bad:
+        return ''
+    glued = ' ' in source and source.split(' ', 1)[1].strip() in names
+    ordinary = is_ordinary_word(source)
+    if glued and not ordinary:
+        return 'glued'
+    if ordinary:
+        return 'ordinary'
+    if is_doubtful_term(source):
+        return 'doubtful'
+    if valid_rendering(source, korean) and not function_word_prefix(source, names) and is_address_only(source, korean, names):
+        return 'address'
+    return 'rendering'
+
+
+def review_tip(source: str, reason: str) -> str:
+    name = source.split(' ', 1)[1].strip() if ' ' in source else source
+    return REVIEW_TIPS.get(reason, '').format(name=name)
+
+
 def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict: bool = False,
                    known: dict[str, str] | None = None, report: dict | None = None, lang: str = '') -> dict[str, str]:
     """Parse the model's JSON answer; keep only candidates that really exist.
@@ -758,7 +839,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             why['not_candidate'] += 1; continue
         # A Korean rendering must be Korean (or a deliberate Latin name) with no Chinese/kana
         # left in it (郝장화), and never an ordinary word (公司 -> 회사).
-        if k in COMMON_WORDS or is_never_term(k) or is_doubtful_term(k):
+        if is_not_name(k):
             why['common_word'] += 1; continue       # Sister, Bro, Dear: an address, not a name
         if function_word_prefix(k, bases | {str(a).strip() for a, _ in pairs}):
             why['common_word'] += 1; continue       # As Alan, So Alan: Alan with a word before it
@@ -766,7 +847,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.
         if lang == 'zh' and len(k) == 1:
             why['single'] += 1; continue
-        if split_address(k, v, bases) is None and is_address_term(k):
+        if is_address_only(k, v, bases):
             why['address_only'] += 1; continue      # name + address (阿强哥) is split below instead
         if _half_bad(k, v) and not _CJK_IN_KOREAN.search(v):
             half[k] = v; why['half'] += 1; continue   # 엠ily: asked again by the extraction

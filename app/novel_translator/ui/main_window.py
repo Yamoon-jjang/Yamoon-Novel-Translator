@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,QTabBar,QDialog
 )
 from ..profiles import ProfileManager
-from ..textio import decode_txt_bytes, atomic_write_text, directory_writable, read_txt_sample, read_source_file
+from ..textio import decode_txt_bytes, atomic_write_text, directory_writable, read_txt_sample, read_source_file, ENCODING_CHOICES, saved_encoding, damaged_text_reason
 from ..source_formats import document_kind, SourceTextError, NoTextError, document_sample_text
 from ..rendering import output_stem
 from ..chunking import split_paragraphs,make_chunks,mark_translatable
@@ -24,7 +24,7 @@ from .worker import TranslationWorker
 from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES
 from ..workspace import WorkspaceStore
 from ..language_options import option_spec
-from ..language_detection import detect_language, detect_language_bytes, damaged_text_reason
+from ..language_detection import detect_language, detect_language_bytes
 from ..power import set_translation_awake
 from ..protected_literals import count_protectable_literals
 from ..term_extraction import candidates as term_candidates, build_prompts as term_prompts, parse_glossary
@@ -43,9 +43,9 @@ def _make_provider(provider_id, endpoint='', local_options=None):
             cfg=dict(load_json(CONFIG_DIR/'app.json').get('local_llm') or {})
         except Exception:
             cfg={}
-        return LocalLLMProvider(endpoint or None, int(local_options.get('timeout_seconds') or 300),
-                                think=bool(local_options.get('think',False)), num_ctx=local_options.get('num_ctx'),
-                                structured=bool(cfg.get('structured_output', True)),
+        from ..providers.local_llm import local_provider_args
+        args,kw=local_provider_args(dict(local_options, endpoint=endpoint))
+        return LocalLLMProvider(*args, **kw, structured=bool(cfg.get('structured_output', True)),
                                 sampling=str(cfg.get('sampling') or 'recommended'))
     from ..providers.openai import OpenAIProvider; return OpenAIProvider(endpoint or None)
 
@@ -362,6 +362,8 @@ class MainWindow(QMainWindow):
         from .about_dialog import app_icon
         self.setWindowTitle(f'{APP_NAME} {VERSION_LABEL}'); self.setWindowIcon(app_icon())
         self.setAcceptDrops(True)   # drop a TXT file or a folder anywhere on the window
+        from .tooltips import install as _install_tooltips
+        _install_tooltips()   # long hover texts are shown wrapped (every window of the app)
         self.resize(1120,780)
         self.pm=ProfileManager()
         if getattr(self.pm,'load_errors',None):
@@ -542,7 +544,8 @@ class MainWindow(QMainWindow):
         c.addWidget(model_box,0,3); c.addWidget(QLabel('번역 방식'),1,0)
         self.mode=QComboBox(); self.mode.addItem('균형 (권장)','balanced'); self.mode.addItem('품질 우선','quality'); self.mode.addItem('속도 우선','speed')
         self.mode.currentIndexChanged.connect(self._mode_changed); c.addWidget(self.mode,1,1); c.addWidget(QLabel('TXT 인코딩'),1,2)
-        self.encoding=QComboBox(); self.encoding.addItem('자동 감지','auto'); self.encoding.addItem('UTF-8','utf-8'); self.encoding.addItem('일본어 CP932 / Shift-JIS','cp932'); self.encoding.addItem('일본어 EUC-JP','euc_jp'); self.encoding.addItem('중국어 GB18030 / GBK','gb18030'); self.encoding.addItem('중국어 번체 Big5 (CP950)','cp950'); self.encoding.addItem('영어 Windows-1252','cp1252'); self.encoding.addItem('UTF-16 LE','utf-16-le'); self.encoding.addItem('UTF-16 BE','utf-16-be')
+        self.encoding=QComboBox()
+        for name,value in ENCODING_CHOICES: self.encoding.addItem(name,value)
         self.encoding.currentIndexChanged.connect(self._encoding_changed); c.addWidget(self.encoding,1,3)
         self.profile_hint=QLabel(''); self.profile_hint.setStyleSheet('color:#2563eb;font-weight:600;'); c.addWidget(self.profile_hint,0,4,2,1); c.setColumnStretch(1,1); c.setColumnStretch(3,2)
         settings_layout.addWidget(controls)
@@ -1641,7 +1644,7 @@ class MainWindow(QMainWindow):
         if not state:return
         if hasattr(self,'book_memory'): self.book_memory.setPlainText(str(state.get('book_memory') or ''))
         self._auto_terms_sha=str(state.get('auto_terms_sha') or '')
-        enc=state.get('encoding'); enc='cp950' if enc=='big5' else enc; idx=self.encoding.findData(enc) if enc else -1
+        enc=saved_encoding(state.get('encoding')); idx=self.encoding.findData(enc) if enc else -1
         if idx>=0:
             self.encoding.blockSignals(True); self.encoding.setCurrentIndex(idx); self.encoding.blockSignals(False)
         mode=state.get('mode'); idx=self.mode.findData(mode) if mode else -1
@@ -1840,25 +1843,11 @@ class MainWindow(QMainWindow):
         lang=self.pm.active.source_language
         common=self._common_terms_for_job() if (self._common_enabled() and not getattr(self,'_term_replace',False)) else {}
         current=self._terms()
-        def prepare():
-            # Runs beside the window (see _busy_call): on a 20 MB book this takes a few seconds.
-            from .. import common_terms as _ct
-            from ..term_extraction import en_word_stats, en_ordinary_word
-            c=term_candidates(source,lang)
-            hits={a:b for a,b in _ct.present_in(source,common).items() if a not in current} if common else {}
-            ordinary=set()
-            if lang=='en':
-                stats=en_word_stats(source)
-                hits={a:b for a,b in hits.items() if not en_ordinary_word(a,stats)}   # junk stored by an older version
-                ordinary={a for a in current if en_ordinary_word(a,stats)}
-            return c,hits,ordinary
-        cands,earlier,self._term_ordinary=self._busy_call(prepare,'인명·용어 후보를 찾는 중…')
-        # Shared-glossary entries in this text are no longer copied into the book's glossary
-        # as they are: they go to the model as candidates, and only those it confirms as
-        # names/terms of THIS book are added (with the shared rendering).
+        from ..term_extraction import prepare_candidates
+        # Runs beside the window (see _busy_call): on a 20 MB book this takes a few seconds.
+        cands,earlier,self._term_ordinary=self._busy_call(lambda: prepare_candidates(source,lang,common,current,term_candidates),
+                                                         '인명·용어 후보를 찾는 중…')
         self._term_earlier=earlier
-        _known={k for k,_ in cands}
-        cands=cands+[(a,source.count(a)) for a in self._term_earlier if a not in _known]
         if not cands:
             if not auto: QMessageBox.information(self,'후보 없음','원문에서 반복되는 이름/용어 후보를 찾지 못했습니다.')
             self._auto_terms_fail='인명·용어 자동 추출 · 원문에서 여러 번 나오는 이름·용어 후보를 찾지 못해 용어집 없이 번역합니다'
@@ -2097,14 +2086,6 @@ class MainWindow(QMainWindow):
         try: return common_terms.usable(common_terms.load(self.pm.active.source_language, DATA_DIR))
         except Exception: return {}
 
-    def _common_hits(self, source: str) -> dict[str,str]:
-        """Shared entries that occur in this text (2+ times; 5+ for two characters) and are not
-        in the book's glossary yet. They are only CANDIDATES for the extraction."""
-        if not self._common_enabled() or not source: return {}
-        from .. import common_terms
-        current=self._terms()
-        return {a:b for a,b in common_terms.present_in(source,self._common_terms_for_job()).items() if a not in current}
-
     def _common_note(self) -> str:
         got=getattr(self,'_common_pulled',[]) or []
         seen=len(getattr(self,'_term_earlier',{}) or {})
@@ -2167,14 +2148,14 @@ class MainWindow(QMainWindow):
         table=QTableWidget(0,2); table.setHorizontalHeaderLabels(['원문','한국어']); table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.verticalHeader().setVisible(False)
         for a,b in sorted(entries.items()):
             r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b))
-        from ..term_extraction import is_never_term, is_doubtful_term
+        from ..term_extraction import is_not_name, is_ordinary_word
         from PySide6.QtGui import QBrush, QColor
         flagged=0
         for r in range(table.rowCount()):
             a=table.item(r,0).text().strip()
-            if is_never_term(a) or is_doubtful_term(a):
+            if is_not_name(a):
                 flagged+=1
-                tip=('이름이 아닌 일반 단어입니다(대명사·감탄사). 새 책에는 쓰이지 않으니 지우세요.' if is_never_term(a)
+                tip=('이름이 아닌 일반 단어입니다(대명사·감탄사). 새 책에는 쓰이지 않으니 지우세요.' if is_ordinary_word(a)
                      else '보통은 이름이 아닌 일반 단어입니다. 일부러 넣은 이름이 아니면 지우세요.')
                 for c in (0,1):
                     table.item(r,c).setBackground(QBrush(QColor('#fde2e2'))); table.item(r,c).setToolTip(tip)
@@ -2334,7 +2315,7 @@ class MainWindow(QMainWindow):
 
     def _speech_names(self) -> dict[str,str]:
         """Book glossary first; shared entries are considered only if they occur in this book."""
-        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term
+        from ..term_extraction import valid_rendering, is_ordinary_word
         out={}
         # The book's confirmed glossary only: a shared-glossary entry becomes a character of
         # this book once the extraction confirms it (an unconfirmed 慢慢 is the word "slowly").
@@ -2342,7 +2323,7 @@ class MainWindow(QMainWindow):
         from ..term_extraction import drop_name_phrases
         merged=drop_name_phrases(merged)   # 陈屿放 -> 진서가 놓다 is not a character
         for src,ko in merged.items():
-            if src in COMMON_WORDS or is_never_term(src) or not valid_rendering(src,ko): continue
+            if is_ordinary_word(src) or not valid_rendering(src,ko): continue
             if not re.fullmatch(r'[가-힣 ]{1,10}',ko.strip()): continue
             out[src]=ko.strip()
         return out
@@ -2505,9 +2486,6 @@ class MainWindow(QMainWindow):
 
     def _source_sha(self) -> str:
         return hashlib.sha256((self.source_text or '').encode('utf-8')).hexdigest() if self.source_text else ''
-
-    def _auto_terms_due(self) -> bool:
-        return self._auto_terms_plan()[0]=='extract'
 
     def _auto_terms_plan(self) -> tuple[str,str]:
         """('extract'|'ask'|'skip', note for the log). Every skip says why in the log,
@@ -2977,15 +2955,16 @@ class MainWindow(QMainWindow):
             self.term_table.removeRow(r)
         self._save_workspace()
     def _suspicious_terms(self) -> list[tuple[int,str,str]]:
-        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term, is_doubtful_term, function_word_prefix
+        from ..term_extraction import review_reason
         bad=[]
         names={(self.term_table.item(r,0).text().strip() if self.term_table.item(r,0) else '') for r in range(self.term_table.rowCount())}
+        self._review_reasons={}
         for r in range(self.term_table.rowCount()):
             a=self.term_table.item(r,0); b=self.term_table.item(r,1)
             src=(a.text().strip() if a else ''); ko=(b.text().strip() if b else '')
-            if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS or is_never_term(src) or is_doubtful_term(src)
-                               or function_word_prefix(src,names)):
-                bad.append((r,src,ko))
+            reason=review_reason(src,ko,names)
+            if reason:
+                bad.append((r,src,ko)); self._review_reasons[r]=(src,reason)
         return bad
 
     def _drop_unlocked_suspicious(self) -> list[tuple[str,str]]:
@@ -3033,22 +3012,15 @@ class MainWindow(QMainWindow):
         self._marking_terms=True
         try:
             bad={r for r,_,_ in self._suspicious_terms()}
-            names_now={(self.term_table.item(r,0).text().strip() if self.term_table.item(r,0) else '') for r in range(self.term_table.rowCount())}
             for r in range(self.term_table.rowCount()):
                 for c in (0,1):
                     it=self.term_table.item(r,c)
                     if not it: continue
                     if r in bad:
-                        src_item=self.term_table.item(r,0)
-                        from ..term_extraction import COMMON_WORDS, is_never_term, is_doubtful_term
-                        src_text=src_item.text().strip() if src_item else ''
-                        common=bool(src_text in COMMON_WORDS or is_never_term(src_text))
-                        glued=' ' in src_text and src_text.split(' ',1)[1].strip() in names_now
+                        from ..term_extraction import review_tip
+                        src_text,reason=self._review_reasons.get(r,('', 'rendering'))
                         it.setBackground(QBrush(QColor('#fde2e2')))
-                        it.setToolTip(f"확인 필요: 문장 첫머리 낱말이 이름 '{src_text.split(' ',1)[1].strip()}'에 붙어 잡힌 것입니다(As Alan → Alan). 다른 인물이 아니니 지우세요." if glued and not common
-                                      else '확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.' if common
-                                      else '확인 필요: 보통은 이름이 아닌 일반 단어(신·가족·부르는 말)입니다. 이 책에서 인물 이름이나 고유한 호칭으로 쓰일 때만 두고, 아니면 지우세요. 용어집에 두면 책 전체에서 항상 같은 말로만 번역됩니다.' if is_doubtful_term(src_text)
-                                      else '확인 필요: 한국어 표기에 한자·가나가 남아 있거나, 한글과 영문이 한 낱말에 섞였거나(엠ily), 원문과 같습니다. 고치거나 지우세요.')
+                        it.setToolTip(review_tip(src_text,reason))
                     elif it.toolTip():
                         it.setBackground(QBrush()); it.setToolTip('')
         finally:
@@ -4136,7 +4108,37 @@ class MainWindow(QMainWindow):
         t=getattr(self,'_local_models_thread',None)
         if t is not None and t.isRunning(): t.wait(10000)   # short local model-list request (a few seconds at most)
         self._save_window_state()
+        self._clean_translation_db()
         event.accept()
+
+    DB_KEEP_DAYS = 90
+
+    def _clean_translation_db(self):
+        """On closing (no job runs then): remove jobs nobody touched for 90 days and shrink
+        the file when much of it is free. Never stops the program from closing."""
+        if self.worker and self.worker.isRunning():
+            return
+        try:
+            days=int((load_json(CONFIG_DIR/'app.json').get('db_keep_days', self.DB_KEEP_DAYS)))
+        except Exception:
+            days=self.DB_KEEP_DAYS
+        path=DATA_DIR/'translations.db'
+        if days<=0 or not path.exists():
+            return
+        try:
+            before=path.stat().st_size
+            db=Database(path)
+            jobs,chunks=db.remove_old_projects(days)
+            shrunk=db.compact() if jobs else False
+            if jobs:
+                from ..config import LOG_DIR
+                LOG_DIR.mkdir(parents=True,exist_ok=True)
+                after=path.stat().st_size
+                with open(LOG_DIR/'db_cleanup.log','a',encoding='utf-8') as f:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} · {days}일 넘게 손대지 않은 번역 작업 {jobs}개(청크 {chunks:,}개) 정리"
+                            +(f' · DB {before/1e6:,.1f}MB → {after/1e6:,.1f}MB' if shrunk else '')+'\n')
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 최근 연 파일 (v2.5.3)
     # Newest first, at most 20, the same file once; each with how far its translation got.

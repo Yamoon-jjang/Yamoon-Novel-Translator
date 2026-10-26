@@ -291,7 +291,7 @@ def test_pause_holds_new_requests_until_resume(tmp_path):
     while not w._waiting_in_pause and time.monotonic()<deadline: time.sleep(0.02)   # slow CI machines
     assert w._waiting_in_pause, 'worker never reached the pause'
     time.sleep(0.6)
-    assert len(calls)==1 and w.is_paused(), 'no new request may be sent while paused'
+    assert len(calls)==1 and w._paused, 'no new request may be sent while paused'
     w.resume(); t.join(20); wall=time.monotonic()-t0
     assert not t.is_alive() and len(calls)==len(chunks)
     assert all(r['status']=='COMPLETED' for r in rows(tmp_path))

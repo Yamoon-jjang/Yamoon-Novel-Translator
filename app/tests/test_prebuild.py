@@ -100,7 +100,7 @@ def test_resume_invalidates_suffix_after_first_gap(tmp_path):
         db.upsert_chunk(pid,i,f'<P{i+1:06d}>\nx{i}')
         db.set_chunk_status(pid,i,'COMPLETED',translation=f'<P{i+1:06d}>\ny{i}')
     db.set_chunk_status(pid,2,'FAILED',error_type='SAFETY')
-    assert db.first_incomplete_index(pid)==2
+    assert min(r['chunk_index'] for r in db.all_chunks(pid) if r['status']!='COMPLETED')==2
     db.reset_chunks_from(pid,2)
     rows=db.all_chunks(pid)
     assert [r['status'] for r in rows]==['COMPLETED','COMPLETED','PENDING','PENDING','PENDING']
