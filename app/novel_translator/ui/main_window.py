@@ -1789,14 +1789,55 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요. (폴더 작업은 첫 파일을 따로 열어 추출하면 같은 작품 전체에 활용할 수 있습니다)'); return
         self._begin_term_extraction(source, auto=False)
 
+    def _busy_call(self, fn, label: str):
+        """Run fn() beside the window and keep the window painting meanwhile (wait cursor and
+        a status line, user input held back), so preparing a big book never looks frozen."""
+        import threading
+        box={}
+        def run():
+            try: box['v']=fn()
+            except BaseException as e: box['e']=e
+        t=threading.Thread(target=run,name='prepare',daemon=True); t.start()
+        t.join(0.15)
+        if t.is_alive():
+            from PySide6.QtCore import QEventLoop
+            from PySide6.QtWidgets import QApplication
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            old=self.status.text() if hasattr(self,'status') else ''
+            if hasattr(self,'status'): self.status.setText(label)
+            try:
+                while t.is_alive():
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents,50)
+                    t.join(0.03)
+            finally:
+                QApplication.restoreOverrideCursor()
+                if hasattr(self,'status') and self.status.text()==label: self.status.setText(old)
+        if 'e' in box: raise box['e']
+        return box.get('v')
+
     def _begin_term_extraction(self, source: str, auto: bool) -> bool:
         """Start one extraction request. auto=True: no dialogs; translation starts when it ends."""
         self._auto_terms_fail=''
-        cands=term_candidates(source,self.pm.active.source_language)
+        lang=self.pm.active.source_language
+        common=self._common_terms_for_job() if (self._common_enabled() and not getattr(self,'_term_replace',False)) else {}
+        current=self._terms()
+        def prepare():
+            # Runs beside the window (see _busy_call): on a 20 MB book this takes a few seconds.
+            from .. import common_terms as _ct
+            from ..term_extraction import en_word_stats, en_ordinary_word
+            c=term_candidates(source,lang)
+            hits={a:b for a,b in _ct.present_in(source,common).items() if a not in current} if common else {}
+            ordinary=set()
+            if lang=='en':
+                stats=en_word_stats(source)
+                hits={a:b for a,b in hits.items() if not en_ordinary_word(a,stats)}   # junk stored by an older version
+                ordinary={a for a in current if en_ordinary_word(a,stats)}
+            return c,hits,ordinary
+        cands,earlier,self._term_ordinary=self._busy_call(prepare,'인명·용어 후보를 찾는 중…')
         # Shared-glossary entries in this text are no longer copied into the book's glossary
         # as they are: they go to the model as candidates, and only those it confirms as
         # names/terms of THIS book are added (with the shared rendering).
-        self._term_earlier=self._common_hits(source) if not getattr(self,'_term_replace',False) else {}
+        self._term_earlier=earlier
         _known={k for k,_ in cands}
         cands=cands+[(a,source.count(a)) for a in self._term_earlier if a not in _known]
         if not cands:
@@ -1821,7 +1862,7 @@ class MainWindow(QMainWindow):
         user_local=''
         if self.pm.active.source_language=='en':
             from ..term_extraction import candidate_contexts
-            try: ctx=candidate_contexts(source,cands)
+            try: ctx=self._busy_call(lambda: candidate_contexts(source,cands),'인명·용어 후보를 찾는 중…')
             except Exception: ctx={}
             if ctx:
                 user_local=term_prompts(cands,'en',policy,existing,earlier=self._term_earlier,contexts=ctx)[1]
@@ -2933,6 +2974,17 @@ class MainWindow(QMainWindow):
         chosen in a review window). Returns the removed (source, Korean) pairs."""
         locks=getattr(self,'_term_locks',{}) or {}
         rows=[(r,src,ko) for r,src,ko in self._suspicious_terms() if locks.get(src)!=ko]
+        # English words this book writes in lower case more often (People, Imagine, Luckily),
+        # found while the extraction was being prepared.
+        ordinary=set(getattr(self,'_term_ordinary',()) or ())
+        if ordinary:
+            seen={r for r,_,_ in rows}
+            for r in range(self.term_table.rowCount()):
+                a=self.term_table.item(r,0); b=self.term_table.item(r,1)
+                src=a.text().strip() if a else ''; ko=b.text().strip() if b else ''
+                if r not in seen and src in ordinary and locks.get(src)!=ko:
+                    rows.append((r,src,ko))
+        self._term_ordinary=set()
         if not rows: return []
         self._term_internal_edit=True
         try:

@@ -80,6 +80,7 @@ let lets one two three four five six seven eight nine ten first second third
 oh ohh ooh ah ahh aah uh uhh er erm hmm hm hmph huh eh heh haha hah wow whoa woah ugh urgh ow ouch oops whoops
 shh psst hey yeah yep yup nope yes okay ok alright damn dammit dang darn shit fuck fucking gosh geez jeez gee
 yay hooray alas aw aww mm mmm mhm aha ahem bah pfft tsk well please thanks
+duh argh arrgh aargh arg eww ew gah meh yikes phew whew ugh blah nah yeh ya geez oops
 hello hi goodbye bye amen hark aye nay except moreover furthermore nevertheless nonetheless meanwhile anyway
 indeed therefore otherwise instead rather perhaps maybe suddenly finally certainly surely probably actually really
 everyone everybody everything nobody nothing nowhere someone somebody something somewhere anyone anybody anything anywhere'''.split())
@@ -254,6 +255,60 @@ def _en_possessive(word: str) -> str:
     return word
 
 
+_EN_OF_HINT = re.compile(r" of (?:the )?[A-Z]")
+_EN_CAP_WORD = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}])[{_EN_U}][{_EN_L}]+(?:[{_EN_AP}][{_EN_L}]+)?(?![{_EN_U}{_EN_L}])")
+_EN_CAP_AT_START = re.compile(r"(?:^|[.!?\"\u201c\u201d\u2019\u2018'\n:;\u2014\u2026*(\[])[ \t\u3000]*"
+                              rf"([{_EN_U}][{_EN_L}]+(?:[{_EN_AP}][{_EN_L}]+)?)(?![{_EN_U}{_EN_L}])", re.M)
+# Drawn-out interjections and sounds: Oooh, Awww, Duuuuh, Hmmm, Arrrgh (no name has a letter
+# three times in a row).
+_EN_DRAWN_OUT = re.compile(r'([a-z])\1\1', re.I)
+
+
+_STATS_CACHE: list = [None, None]
+
+
+def en_word_stats(text: str) -> tuple[Counter, Counter]:
+    key = (len(text or ''), hash(text or ''))
+    if _STATS_CACHE[0] == key:
+        return _STATS_CACHE[1]
+    stats = _en_word_stats(text)
+    _STATS_CACHE[0], _STATS_CACHE[1] = key, stats
+    return stats
+
+
+def _en_word_stats(text: str) -> tuple[Counter, Counter]:
+    """(lower-case word counts, counts of capitalized words INSIDE a sentence). A word the book
+    writes in lower case at least as often as it capitalizes it inside a sentence is an ordinary
+    word (People / people, Imagine / imagine, Luckily / luckily), whatever an analysis model
+    answers. A sentence here also starts after a colon, a dash, an ellipsis or a quote mark, so
+    chat lines ("Susan: Obviously …") do not count as inside a sentence."""
+    t = (text or '').replace('\u2019', "'")
+    low = Counter(_EN_LOWER_WORD.findall(t))
+    total = Counter(_EN_CAP_WORD.findall(t))
+    at_start = Counter(_EN_CAP_AT_START.findall(t))
+    mid = Counter({w: n - at_start.get(w, 0) for w, n in total.items() if n > at_start.get(w, 0)})
+    return low, mid
+
+
+def en_ordinary_word(word: str, stats) -> bool:
+    """One English word that is an ordinary word in THIS book (see en_word_stats), or a drawn-out
+    interjection (Oooh, Awww). Names the book also uses as words keep working when the book
+    capitalizes them inside sentences at least as often (Rose, Grace, Tiger); Will is always kept."""
+    w = str(word or '').strip().replace('\u2019', "'")
+    if not w or ' ' in w or not re.fullmatch(r"[A-Za-z\u00C0-\u017F'\-]+", w):
+        return False
+    if _EN_DRAWN_OUT.search(w):
+        return True
+    if w in _EN_NAME_ALSO_WORD or w.upper() == w:
+        return False
+    low, mid = stats
+    n = low.get(w.lower(), 0); m = mid.get(w, 0)
+    # More often in lower case than capitalized inside a sentence (a tie keeps the name: Rose
+    # rose), or in lower case and almost never capitalized inside a sentence (Luckily, Most:
+    # capitalized only where a sentence or a chat line starts).
+    return (n >= 3 and n > m) or (n >= 1 and m < 2)
+
+
 def _en_candidates(text: str, limit: int) -> list[tuple[str, int]]:
     """English candidates. Everything the earlier rules found is still found (in the same
     order, now with Emily's and EMILY counted as Emily); the names they missed are added
@@ -270,7 +325,7 @@ def _en_candidates(text: str, limit: int) -> list[tuple[str, int]]:
         # A capitalized word that starts a sentence is a weak name signal ("Suddenly",
         # "Nothing"), unless a title stands before it ("Mr. Darcy", "Dr. Watson").
         at_start = (not before and m.start() < 40) or (bool(before) and before[-1] in '.!?"“”’\n')
-        titled = bool(_EN_TITLE_BEFORE.search(before))
+        titled = at_start and bool(_EN_TITLE_BEFORE.search(before))   # only matters at a start
         if not at_start and raw[0] in _EN_NAME_ALSO_WORD and not any(w in _EN_CALENDAR for w in raw):
             also = list(raw)
             while len(also) > 1 and also[-1] in _EN_COMMON:
@@ -297,19 +352,20 @@ def _en_candidates(text: str, limit: int) -> list[tuple[str, int]]:
         for k in list(mid):
             if ' ' not in k and k.upper() in caps and k.upper() != k:
                 mid[k] += caps[k.upper()]
-    # Sentence-start occurrences count only for names also seen inside a sentence.
-    counts = Counter({k: mid[k] + start.get(k, 0) for k in mid if not is_never_term(k)})
+    stats = en_word_stats(text)
+    # Sentence-start occurrences count only for names also seen inside a sentence. Ordinary
+    # words of this book (People, Imagine, Luckily, Oooh) are left out: a strong analysis
+    # model answered almost every candidate it was given as a term.
+    counts = Counter({k: mid[k] + start.get(k, 0) for k in mid if not is_never_term(k) and not en_ordinary_word(k, stats)})
     base = _top(counts, limit, 3)
     have = {k for k, _ in base}
     extra: Counter = Counter()
     # A capitalized word met only at the start of sentences ("Harper nodded.") is a name when
     # the book never writes it in lower case: "Suddenly" also appears as "suddenly".
-    lower = None
+    lower = stats[0]
     for k, n in start.items():
-        if k in counts or k in have or n < 3 or is_never_term(k) or len(k) < 3:
+        if k in counts or k in have or n < 3 or is_never_term(k) or len(k) < 3 or en_ordinary_word(k, stats):
             continue
-        if lower is None:
-            lower = set(w.replace('\u2019', "'") for w in _EN_LOWER_WORD.findall(text))
         if any(w.lower() in lower or w in _EN_COMMON or w in _EN_TITLES for w in k.split()):
             continue
         if '-' in k and is_never_term(k.split('-', 1)[0]):
@@ -319,7 +375,10 @@ def _en_candidates(text: str, limit: int) -> list[tuple[str, int]]:
             continue                     # "Tell DeShawn", "Ask José": a verb before a known name
         extra[k] = n
     # "Order of the Silver Hand", "Bank of England": one name, not two pieces.
-    for m in _EN_OF_NAME.finditer(text):
+    # Only paragraphs with " of " before a capital letter can hold such a name: running the
+    # pattern on those alone keeps a 17 MB book fast.
+    of_text = '\n'.join(ln for ln in text.split('\n') if _EN_OF_HINT.search(ln))
+    for m in _EN_OF_NAME.finditer(of_text):
         words = m.group(0).split()
         while words and (words[0] in _EN_COMMON or words[0] in _EN_TITLES):
             words = words[1:]
@@ -366,32 +425,40 @@ def repair_prompt(half: dict[str, str], groups: list[tuple[str, list[str]]], fix
     return EN_REPAIR_SYSTEM, '\n'.join(lines) + '\n\nReturn the JSON object now.'
 
 
-def candidate_contexts(text: str, cands: list[tuple[str, int]], limit: int = 80, width: int = 45) -> dict[str, str]:
+def candidate_contexts(text: str, cands: list[tuple[str, int]], limit: int = 80, width: int = 45, stats=None) -> dict[str, str]:
     """One short line from the book for each English candidate that is also an ordinary word
     (Will, Grace, Come, Dear), so the model can tell a name from a word. Only for the local
     model: cloud engines get no prose, as before."""
     text = text or ''
     if not text:
         return {}
-    lower = set(w.replace('\u2019', "'") for w in _EN_LOWER_WORD.findall(text))
+    lower = (stats or en_word_stats(text))[0]
+    letters = re.compile(rf"[{_EN_U}{_EN_L}{_EN_AP}]")
     out: dict[str, str] = {}
     for k, _n in cands:
         if len(out) >= limit:
             break
         if ' ' in k or not (k.lower() in lower or is_doubtful_term(k)):
             continue
-        best = None
-        pat = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}]){re.escape(k)}(?![{_EN_L}{_EN_AP}])")
-        for i, m in enumerate(pat.finditer(text)):
-            if best is None:
-                best = m
-            if re.search(r"[a-z,;] $", text[max(0, m.start() - 2):m.start()]):
-                best = m; break              # a use inside a sentence says the most
-            if i >= 200:
+        # str.find instead of a regular expression over the whole book for every candidate
+        # (v2.5.4 보완 2 took about 9 seconds on a 17 MB book, with the window frozen).
+        best = None; pos = 0; seen = 0
+        while seen <= 200:
+            i = text.find(k, pos)
+            if i < 0:
                 break
+            pos = i + 1
+            j = i + len(k)
+            if (i > 0 and letters.match(text, i - 1)) or (j < len(text) and (text[j].islower() or text[j] in "'\u2019")):
+                continue                  # inside another word (Willow, Will's is fine as Will)
+            seen += 1
+            if best is None:
+                best = i
+            if re.match(r"[a-z,;] $", text[max(0, i - 2):i]):
+                best = i; break           # a use inside a sentence says the most
         if best is None:
             continue
-        a = max(0, best.start() - width); b = min(len(text), best.end() + width)
+        a = max(0, best - width); b = min(len(text), best + len(k) + width)
         line = re.sub(r'\s+', ' ', text[a:b]).strip()
         if a > 0:
             line = line.split(' ', 1)[-1]

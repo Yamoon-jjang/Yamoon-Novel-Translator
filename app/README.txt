@@ -6,6 +6,10 @@ v2.5.5 (2026-10-26) · 빨간 표시 항목은 처음부터 넣지 않음, 영�
 - 영어 호칭 · 애칭(dear · bro · sister · brother · sis · honey · aunt · uncle · mister · miss …, My Dear · Big Brother ·
   Young Master · Second Brother)을 추출에서 뺍니다. 상위 모델도 이름처럼 답하던 것들입니다. Brother Tuck · Sister Mary ·
   Mr Son처럼 이름이 붙은 것은 이름으로 둡니다. 阿Q → 아Q처럼 원문에 있는 영문자는 반쪽 표기로 보지 않습니다.
+- (보완) 이 책에서 일반 낱말로 쓰이는 영어(People · Imagine · Luckily · Call · Keep · Little …)는 후보에서 뺌: 책 안에서
+  소문자로 쓰인 횟수가 문장 가운데 대문자보다 많으면 일반 낱말. Oooh · Awww · Duuuuh 같은 늘인 감탄사도 뺌. 강한 모델이
+  후보를 거의 다 용어로 답해 "피플 · 럭키"가 들어가던 문제. 예전에 들어간 것도 추출 때 지움(직접 넣은 항목 제외).
+- (보완) 추출 전 멈춤: 17MB 책에서 후보 찾기 · 예문 줄 찾기가 12초 → 약 3초, 그동안 창이 멈추지 않고 안내 표시.
 - (보완) 문장 첫 낱말이 이름에 붙은 항목(As Alan · So Alan · As Susan → 앨런 · 수전)을 넣지 않음. 같은 인물인데 한글 이름
   겹침 확인 창에 다른 인물처럼 나오던 문제. 이미 들어간 것도 추출 때 지움. The Count · The Shire는 그대로.
 - (보완) 중국어 · 일본어 애칭 · 2인칭과 부르는 사람에 따라 뜻이 달라지는 호칭도 추출에서 뺍니다: 宝贝 · 亲爱的 · 美人 ·

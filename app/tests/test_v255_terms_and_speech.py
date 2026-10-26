@@ -317,3 +317,66 @@ def test_elder_to_younger_polite_becomes_banmal_by_the_models_own_relation():
 def test_tab_answers_get_the_same_correction():
     rows = parse_table('수잔\t캣\t해요체\t어머니가 딸에게\n캣\t수잔\t해요체\t딸이 어머니에게', {'Susan': '수잔', 'Kat': '캣'})
     assert [(r['speaker'], r['level']) for r in rows] == [('수잔', '반말'), ('캣', '해요체')]
+
+
+# ---------------------------------------------------------------- v2.5.5 (보완): ordinary English words of THIS book
+def _web_story():
+    names = ['Alan', 'Susan', 'Suzanne', 'Tiger', 'Bo', 'Joy', 'Glory', 'Kat']
+    words = ['Imagine', 'People', 'Luckily', 'Obviously', 'Forget', 'Needless', 'Call', 'Keep', 'Things', 'Most',
+             'Trying', 'Try', 'Little', 'Big', 'Young', 'Note', 'Part', 'More', 'Come']
+    out = []
+    for i in range(60):
+        a, b = names[i % 8], names[(i + 3) % 8]
+        w = words[i % len(words)]
+        out.append(f'{a}: {w} that, {b}. I told {a} that people keep trying to call me, and {b} said things got more complicated.')
+        out.append(f'"{w} it," said {a}. Oooh. Awww. Duh. Duuuuh. {b} laughed while {a} watched {b} again.')
+        out.append(f'Then {a} and {b} walked home. Most young people try to forget a little part of it, she would note. '
+                   f'Luckily, imagine the big things; obviously needless. Come here, come with me.')
+        out.append(f'We met {a} and {b} at the park; {a} smiled at {b} and {b} smiled back at {a}.')
+        out.append('we were luckily early, most of us obviously tired; imagine it, forget it, keep calm, call me, '
+                   'note it, needless to say, it was a big part of the young crowd, little by little, more or less.')
+    return '\n'.join(out), names, words
+
+
+def test_ordinary_words_of_the_book_are_not_candidates():
+    from novel_translator.term_extraction import candidates
+    text, names, words = _web_story()
+    got = {k for k, _ in candidates(text, 'en')}
+    assert set(names) <= got, set(names) - got
+    assert not (set(words) & got), set(words) & got
+    assert not ({'Oooh', 'Awww', 'Duh', 'Duuuuh'} & got)
+
+
+def test_ordinary_word_rule():
+    from novel_translator.term_extraction import en_word_stats, en_ordinary_word
+    text = ('Rose smiled. I saw Rose and Rose saw me; Rose rose early. People said people were people, and people '
+            'stayed. Will you? Will came. I met Will.')
+    stats = en_word_stats(text)
+    assert en_ordinary_word('People', stats) and en_ordinary_word('Oooh', stats) and en_ordinary_word('Awww', stats)
+    assert not en_ordinary_word('Rose', stats) and not en_ordinary_word('Will', stats)
+    assert not en_ordinary_word('Alan Grant', stats) and not en_ordinary_word('林雨', stats)
+
+
+def test_ordinary_rows_put_in_earlier_are_removed_by_the_next_extraction(qt_app, sandbox, monkeypatch):
+    names = {'Jonathan': '조너선', 'Margaret': '마거릿'}
+    w, calls, started = v252._setup(qt_app, sandbox, monkeypatch, names=names, auto_terms=False, auto_speech=False)
+    monkeypatch.setattr(ui.QMessageBox, 'information', lambda *a, **k: None)
+    try:
+        # The test book writes "town" and "tomorrow" in lower case (… go to the town tomorrow …).
+        _put(w, 'Town', '타운', typed=False)
+        _put(w, 'Tomorrow', '투모로', typed=True)          # typed by the user: kept
+        w._extract_terms()
+        assert _wait(qt_app, lambda: '인명·용어 추출 완료' in w.error_view.toPlainText(), 15)
+        rows = _rows(w)
+        assert 'Town' not in rows and rows['Tomorrow'] == '투모로' and rows['Jonathan'] == '조너선'
+    finally:
+        w.close()
+
+
+def test_preparing_a_big_book_stays_quick():
+    import time
+    from novel_translator.term_extraction import candidates, candidate_contexts
+    text, _, _ = _web_story()
+    big = (text + '\n') * 400                         # about 9 MB
+    t = time.time(); c = candidates(big, 'en'); candidate_contexts(big, c); took = time.time() - t
+    assert took < 20, took                            # v2.5.4 보완 2 needed several times longer
