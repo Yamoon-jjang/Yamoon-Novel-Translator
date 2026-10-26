@@ -47,9 +47,10 @@ def _save_all(data: dict, base=None) -> None:
 
 
 def acceptable(source: str, korean: str) -> bool:
-    from .term_extraction import valid_rendering, COMMON_WORDS, split_address, is_address_term
+    from .term_extraction import valid_rendering, COMMON_WORDS, split_address, is_address_term, is_never_term, is_doubtful_term
     s = str(source or '').strip(); k = str(korean or '').strip()
     return (len(s) >= 2 and bool(k) and len(k) <= 30 and s != k and s not in COMMON_WORDS
+            and not is_never_term(s) and not is_doubtful_term(s)   # He's / My God / Son: not for every book
             and valid_rendering(s, k) and bool(re.search(r'[가-힣]', k))
             and split_address(s, k) is None      # 丹丹姐 = 단단 언니 depends on the speaker
             and not is_address_term(s))          # 老姨 = 노이 is an address, not a name
@@ -58,8 +59,11 @@ def acceptable(source: str, korean: str) -> bool:
 def usable(entries: dict[str, str]) -> dict[str, str]:
     """Entries a book may use. An older shared entry that fixes a speaker-dependent address
     (丹丹姐 = 단단 언니) is left out; the file itself is not changed."""
-    from .term_extraction import split_address, is_address_term
-    return {a: b for a, b in (entries or {}).items() if split_address(a, b) is None and not is_address_term(a)}
+    from .term_extraction import split_address, is_address_term, is_never_term
+    # He's / My God stored before v2.5.4 are never a term; a doubtful word (Son, God) is kept,
+    # since the user may have put it there on purpose for a name.
+    return {a: b for a, b in (entries or {}).items() if split_address(a, b) is None and not is_address_term(a)
+            and not is_never_term(a)}
 
 
 def new_candidates(lang: str, terms: dict, base=None) -> dict[str, str]:

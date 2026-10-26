@@ -45,6 +45,46 @@ COMMON_WORDS = set('''
 那样 这里 那里 这个 那个 一个 两个 没有 不是 就是 还有 只是 心里 脸上 嘴里 手上 床上 桌上 车上 办公室 电梯 酒店 饭店 公寓
 先輩 先生 学校 会社 部屋 時間 今日 明日 昨日 自分 彼女 彼氏 友達 家族 仕事 世界 本当 大丈夫 気持ち 毎日
 '''.split())
+# English words that are never a name or a term, in any book: pronouns, their contractions
+# (He's, We're, That's) and exclamations built on God/Lord/Jesus (Oh God, My God). A small
+# analysis model may still answer them as terms; a glossary entry would then force "He's ->
+# \uadf8\ub294" or "My God -> \ub9c8\uc774 \uac13" into every sentence. They are dropped from the extraction.
+_EN_PRONOUNS = frozenset('''i me my mine myself he him his himself she her hers herself it its itself
+we us our ours ourselves they them their theirs themselves you your yours yourself yourselves
+this that these those there here who whom whose what which'''.split())
+_EN_CONTRACTION = re.compile(r"(?:i|he|she|it|we|they|you|that|there|here|who|what|where|when|why|how|this|let)"
+                             r"['\u2019](?:s|d|ll|re|ve|m)", re.I)
+_EN_EXCLAMATION = re.compile(r"(?:(?:oh|o|ah|my|oh my|oh dear|oh good|good|dear|thank|thank you|for|by|great|sweet|holy|"
+                             r"oh sweet|good lord|lord)\s+(?:god|gods|lord|jesus|christ|heavens|heaven|gosh|goodness)"
+                             r"|jesus christ|god ?damn(?:it)?|goddammit|god almighty)", re.I)
+
+# English words that are usually not names but can be one in some books (a god who is a
+# character, Jes\u00fas, the Korean surname Son, a nickname like Boy or Sis). They are kept,
+# but shown light red for a look, and never stored in the shared glossary on their own.
+_EN_DOUBTFUL = frozenset('''god gods lord jesus christ son sons boy boys girl girls sis bro brother sister
+mom mommy mum mummy mother dad daddy father papa mama ma pa baby babe honey sweetheart darling dear
+kid kids man dude buddy sir madam ma'am lady gentleman master'''.split())
+
+
+def _en_key(source: str) -> str:
+    return re.sub(r'\s+', ' ', str(source or '').strip().replace('\u2019', "'")).lower()
+
+
+def is_never_term(source: str) -> bool:
+    """An English pronoun, contraction or God-exclamation: never a glossary term."""
+    s = str(source or '').strip()
+    if not s or not re.fullmatch(r"[A-Za-z'\u2019 .!,-]+", s):
+        return False
+    k = _en_key(s).strip(' .!,')
+    return k in _EN_PRONOUNS or bool(_EN_CONTRACTION.fullmatch(k)) or bool(_EN_EXCLAMATION.fullmatch(k))
+
+
+def is_doubtful_term(source: str) -> bool:
+    """An English word that is usually an ordinary word but may be a name in some books."""
+    s = str(source or '').strip()
+    return bool(s) and bool(re.fullmatch(r"[A-Za-z'\u2019]+", s)) and _en_key(s) in _EN_DOUBTFUL
+
+
 _CJK_IN_KOREAN = re.compile(r'[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]')
 _HANGUL = re.compile(r'[가-힣]')
 
@@ -127,7 +167,7 @@ def candidates(text: str, lang: str, limit: int = 300) -> list[tuple[str, int]]:
             name = ' '.join(words)
             (start if at_start and not titled and len(m.group(0).split()) == len(words) else mid)[name] += 1
         # Sentence-start occurrences count only for names also seen inside a sentence.
-        counts = Counter({k: mid[k] + start.get(k, 0) for k in mid})
+        counts = Counter({k: mid[k] + start.get(k, 0) for k in mid if not is_never_term(k)})
         return _top(counts, limit, 3)
     return []
 
@@ -390,7 +430,7 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             why['not_candidate'] += 1; continue
         # A Korean rendering must be Korean (or a deliberate Latin name) with no Chinese/kana
         # left in it (郝장화), and never an ordinary word (公司 -> 회사).
-        if k in COMMON_WORDS:
+        if k in COMMON_WORDS or is_never_term(k):
             why['common_word'] += 1; continue
         # One Chinese character alone is a surname or a word (李, 剑), almost never a name used
         # by itself. Japanese is left alone: one-kanji given names (誠, 翼, 薫) are common.

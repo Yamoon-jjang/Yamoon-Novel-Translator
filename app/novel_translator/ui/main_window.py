@@ -1063,7 +1063,7 @@ class MainWindow(QMainWindow):
         if getattr(self,'_busy_note',None) is not None:
             return False
         lab=QLabel(text,self); lab.setObjectName('busyNote'); lab.setAlignment(Qt.AlignCenter)
-        lab.setStyleSheet('QLabel#busyNote{background:palette(base);color:palette(text);border:2px solid palette(highlight);'
+        lab.setStyleSheet('QLabel#busyNote{background:palette(base);color:palette(text);border:1px solid palette(highlight);'
                           'border-radius:10px;padding:18px 30px;font-size:15px;font-weight:600;}')
         lab.adjustSize(); lab.move(max(0,(self.width()-lab.width())//2), max(0,(self.height()-lab.height())//3))
         lab.show(); lab.raise_(); self._busy_note=lab
@@ -2023,6 +2023,20 @@ class MainWindow(QMainWindow):
         table=QTableWidget(0,2); table.setHorizontalHeaderLabels(['원문','한국어']); table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.verticalHeader().setVisible(False)
         for a,b in sorted(entries.items()):
             r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b))
+        from ..term_extraction import is_never_term, is_doubtful_term
+        from PySide6.QtGui import QBrush, QColor
+        flagged=0
+        for r in range(table.rowCount()):
+            a=table.item(r,0).text().strip()
+            if is_never_term(a) or is_doubtful_term(a):
+                flagged+=1
+                tip=('이름이 아닌 일반 단어입니다(대명사·감탄사). 새 책에는 쓰이지 않으니 지우세요.' if is_never_term(a)
+                     else '보통은 이름이 아닌 일반 단어입니다. 일부러 넣은 이름이 아니면 지우세요.')
+                for c in (0,1):
+                    table.item(r,c).setBackground(QBrush(QColor('#fde2e2'))); table.item(r,c).setToolTip(tip)
+        if flagged:
+            warn=QLabel(f'빨간 줄 {flagged}개는 이름이 아닐 가능성이 큰 일반 단어입니다. 확인해 지운 뒤 [저장]하세요.'); warn.setWordWrap(True)
+            warn.setObjectName('commonFlagNote'); v.addWidget(warn)
         v.addWidget(table,1)
         def apply_filter(t):
             t=t.strip()
@@ -2176,7 +2190,7 @@ class MainWindow(QMainWindow):
 
     def _speech_names(self) -> dict[str,str]:
         """Book glossary first; shared entries are considered only if they occur in this book."""
-        from ..term_extraction import valid_rendering, COMMON_WORDS
+        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term
         out={}
         # The book's confirmed glossary only: a shared-glossary entry becomes a character of
         # this book once the extraction confirms it (an unconfirmed 慢慢 is the word "slowly").
@@ -2184,7 +2198,7 @@ class MainWindow(QMainWindow):
         from ..term_extraction import drop_name_phrases
         merged=drop_name_phrases(merged)   # 陈屿放 -> 진서가 놓다 is not a character
         for src,ko in merged.items():
-            if src in COMMON_WORDS or not valid_rendering(src,ko): continue
+            if src in COMMON_WORDS or is_never_term(src) or not valid_rendering(src,ko): continue
             if not re.fullmatch(r'[가-힣 ]{1,10}',ko.strip()): continue
             out[src]=ko.strip()
         return out
@@ -2816,12 +2830,12 @@ class MainWindow(QMainWindow):
             self.term_table.removeRow(r)
         self._save_workspace()
     def _suspicious_terms(self) -> list[tuple[int,str,str]]:
-        from ..term_extraction import valid_rendering, COMMON_WORDS
+        from ..term_extraction import valid_rendering, COMMON_WORDS, is_never_term, is_doubtful_term
         bad=[]
         for r in range(self.term_table.rowCount()):
             a=self.term_table.item(r,0); b=self.term_table.item(r,1)
             src=(a.text().strip() if a else ''); ko=(b.text().strip() if b else '')
-            if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS):
+            if src and ko and (not valid_rendering(src,ko) or src in COMMON_WORDS or is_never_term(src) or is_doubtful_term(src)):
                 bad.append((r,src,ko))
         return bad
 
@@ -2850,10 +2864,12 @@ class MainWindow(QMainWindow):
                     if not it: continue
                     if r in bad:
                         src_item=self.term_table.item(r,0)
-                        from ..term_extraction import COMMON_WORDS
-                        common=bool(src_item and src_item.text().strip() in COMMON_WORDS)
+                        from ..term_extraction import COMMON_WORDS, is_never_term, is_doubtful_term
+                        src_text=src_item.text().strip() if src_item else ''
+                        common=bool(src_text in COMMON_WORDS or is_never_term(src_text))
                         it.setBackground(QBrush(QColor('#fde2e2')))
                         it.setToolTip('확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.' if common
+                                      else '확인 필요: 보통은 이름이 아닌 일반 단어(신·가족·부르는 말)입니다. 이 책에서 인물 이름이나 고유한 호칭으로 쓰일 때만 두고, 아니면 지우세요. 용어집에 두면 책 전체에서 항상 같은 말로만 번역됩니다.' if is_doubtful_term(src_text)
                                       else '확인 필요: 한국어 표기에 한자·가나가 남아 있거나 원문과 같습니다. 고치거나 지우세요.')
                     elif it.toolTip():
                         it.setBackground(QBrush()); it.setToolTip('')
