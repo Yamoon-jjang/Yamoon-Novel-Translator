@@ -227,6 +227,8 @@ class TermExtractThread(QThread):
         self.system=system; self.user=user; self.cands=cands; self.parse=parse
         self.known={}   # current glossary (set by the window): its names are bases for the name-phrase guard
         self.lang=''    # source language (set by the window): one-character entries are dropped for Chinese
+        self.user_local=''   # English: the same request plus example lines, sent to the local model only
+        self.suggestions={}  # English: distinct Korean names proposed for names that got one Korean
     def requestInterruption(self):
         self._cancel_requested=True
         super().requestInterruption()
@@ -243,13 +245,18 @@ class TermExtractThread(QThread):
             try:
                 provider=_make_provider(provider_id,endpoint,options)
                 self.stage.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} 요청 중'+(' · 앞 엔진: '+errors[-1][:60] if errors else ''))
+                user=self.user_local if (provider_id=='local' and self.user_local and not self.parse) else self.user
                 resp=_call_until_cancelled(provider,
-                    TranslationRequest(model,self.system,self.user,timeout=60,purpose='json',cancel=self._cancelled,partial_ok=True),
+                    TranslationRequest(model,self.system,user,timeout=60,purpose='json',cancel=self._cancelled,partial_ok=True),
                     secret,self._cancelled)
                 if self._cancelled():
                     self.done.emit(False,'사용자 취소'); return
                 rep={}
                 result=self.parse(resp.text) if self.parse else parse_glossary(resp.text,self.cands,strict=True,known=self.known,report=rep,lang=self.lang)
+                if not self.parse and isinstance(result,dict):
+                    result=self._repair(provider,model,secret,result,rep)
+                    if self._cancelled():
+                        self.done.emit(False,'사용자 취소'); return
                 self.report=dict(rep,engine=ENGINE_LABELS.get(provider_id,provider_id))
                 if rep and rep.get('kept',0)<rep.get('answer',0):
                     _save_analysis_answer('인명·용어 추출', f"모델 답 {rep.get('answer',0)}개 중 {rep.get('kept',0)}개 사용", ENGINE_LABELS.get(provider_id,provider_id), model, resp.text)
@@ -265,6 +272,51 @@ class TermExtractThread(QThread):
                 errors.append(f'{ENGINE_LABELS.get(provider_id,provider_id)} '+(kind+' · ' if kind else '')+str(e)[:120])
                 self.attempt_failed.emit(f'{ENGINE_LABELS.get(provider_id,provider_id)} 실패 · '+(kind+' · ' if kind else '')+str(e).strip().replace('\n',' ')[:100])
         self.done.emit(False,'사용자 취소' if self._cancelled() else (' · '.join(errors) or '응답 없음'))
+
+
+    def _repair(self, provider, model, secret, result, rep):
+        """English: one more short request for names that came back half converted (엠ily)
+        or with one Korean name for two spellings (Susan · Suzanne -> 수잔). A half-converted
+        name that is still wrong afterwards is kept as it is (shown light red), so no name is
+        lost; the proposals for colliding names are only offered in the 한글 이름 겹침 window.
+        Other languages: half-converted renderings are kept as before."""
+        from ..providers.base import TranslationRequest
+        from ..term_extraction import korean_collisions, repair_prompt, parse_glossary, valid_rendering
+        half=dict(rep.get('half_entries') or {})
+        result=dict(result)
+        if self.lang!='en':
+            result.update({k:v for k,v in half.items() if k not in result}); return result
+        latin=lambda x: bool(re.fullmatch(r"[^\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]+",x))
+        merged={**self.known,**result}
+        groups=[(k,srcs) for k,srcs in korean_collisions(merged,list(result)) if all(latin(x) for x in srcs)]
+        if not half and not groups:
+            return result
+        fixed={x:merged[x] for _,srcs in groups for x in srcs if x in self.known}
+        system,user=repair_prompt(half,groups,fixed)
+        ans={}
+        try:
+            names=list(half)+[x for _,srcs in groups for x in srcs]
+            resp=_call_until_cancelled(provider,
+                TranslationRequest(model,system,user,timeout=60,purpose='json',cancel=self._cancelled,partial_ok=True),
+                secret,self._cancelled)
+            ans=parse_glossary(resp.text,[(x,1) for x in names],lang='en')
+        except Exception:
+            ans={}
+        fixed_half=0
+        for k,v in half.items():
+            if k in ans and valid_rendering(k,ans[k]):
+                result[k]=ans[k]; fixed_half+=1
+            elif k not in result:
+                result[k]=v                    # kept (light red in the glossary) rather than lost
+        taken=set(v for k,v in {**self.known,**result}.items())
+        for ko,srcs in groups:
+            proposal={x:ans[x] for x in srcs if x not in fixed and x in ans and valid_rendering(x,ans[x])}
+            final={x:proposal.get(x,merged[x]) for x in srcs}
+            others=taken-{merged[x] for x in srcs}
+            if len(set(final.values()))==len(srcs) and not (set(proposal.values()) & others):
+                self.suggestions.update({x:v for x,v in proposal.items() if v!=merged[x]})
+        rep['repair']={'half':len(half),'half_fixed':fixed_half,'groups':len(groups),'suggested':len(self.suggestions)}
+        return result
 
 
 class ElidedLabel(QLabel):
@@ -1757,8 +1809,15 @@ class MainWindow(QMainWindow):
             opts[USER_GUIDELINES_KEY]=self.user_guide.toPlainText().strip()
         policy=' '.join(prompt_instructions(opts))
         self._common_pulled=[]
-        system,user=term_prompts(cands,self.pm.active.source_language,policy,{} if (getattr(self,'_term_replace',False) or not auto) else self._terms(),
-                                 earlier=self._term_earlier)
+        existing={} if (getattr(self,'_term_replace',False) or not auto) else self._terms()
+        system,user=term_prompts(cands,self.pm.active.source_language,policy,existing,earlier=self._term_earlier)
+        user_local=''
+        if self.pm.active.source_language=='en':
+            from ..term_extraction import candidate_contexts
+            try: ctx=candidate_contexts(source,cands)
+            except Exception: ctx={}
+            if ctx:
+                user_local=term_prompts(cands,'en',policy,existing,earlier=self._term_earlier,contexts=ctx)[1]
         self._term_auto=auto; self._term_source_sha=self._source_sha()
         self._analysis_kind='인명·용어 추출'; self._analysis_is_auto=auto; self._analysis_lines=[]
         self._analysis_log(('번역 전 ' if auto else '')+f'인명·용어 추출 시작 · 후보 {len(cands)}개'
@@ -1773,6 +1832,7 @@ class MainWindow(QMainWindow):
         self._term_thread=TermExtractThread(provider_id,secret,model,endpoint,system,user,cands,self,local_options=local_opts)
         self._term_thread.known=self._terms()
         self._term_thread.lang=self.pm.active.source_language
+        self._term_thread.user_local=user_local
         self._term_thread.engines=analysis_engines
         self._connect_stage(self._term_thread)
         self._term_result=(False,'추출이 종료되었습니다.')
@@ -1804,6 +1864,7 @@ class MainWindow(QMainWindow):
     def _extract_terms_finished(self):
         ok,res=self._term_result; thread=self._term_thread; self._term_thread=None
         report=dict(getattr(thread,'report',{}) or {})
+        self._name_suggestions=dict(getattr(thread,'suggestions',{}) or {})
         if thread is not None: thread.deleteLater()
         auto=getattr(self,'_term_auto',False); self._term_auto=False
         if report.get('answer'):
@@ -1812,11 +1873,14 @@ class MainWindow(QMainWindow):
             reasons=[(report.get('not_candidate',0),'후보 목록에 없는 원문'),(report.get('bad_rendering',0),'한국어 표기 문제(한자·가나 남음 등)'),
                      (report.get('common_word',0),'일반 낱말'),(report.get('phrase',0),'이름+조사 구절'),
                      (report.get('single',0),'한 글자')]
+            fix=report.get('repair') or {}
             left=' · '.join(f'{t} {n}개' for n,t in reasons if n)
             self._analysis_log(f"인명·용어 추출 · {report.get('engine','')} 답에 든 항목 {report['answer']}개 중 {report.get('kept',0)}개 사용"
                                +(f' · 걸러 냄: {left} (원래 답: logs\\analysis_answers.txt)' if left else '')
                                +(f" · 호칭(姐·哥 등)을 뗀 이름만 확정 {report['address']}개 (누나/언니는 문맥으로)" if report.get('address') else '')
-                               +(f" · 호칭이라 넣지 않음 {report['address_only']}개 (老姨·李哥 등, 부르는 사람에 따라 번역)" if report.get('address_only') else ''), auto)
+                               +(f" · 호칭이라 넣지 않음 {report['address_only']}개 (老姨·李哥 등, 부르는 사람에 따라 번역)" if report.get('address_only') else '')
+                               +(f" · 반쪽 변환 표기(엠ily 등) {fix['half']}개 다시 요청 → {fix['half_fixed']}개 고침" if fix.get('half') else '')
+                               +(f" · 한글이 겹친 이름 {fix['groups']}건 다시 요청 → 구별되는 표기 {fix['suggested']}개를 겹침 확인 창에 미리 채움" if fix.get('groups') else ''), auto)
         took=self._analysis_took(); lines=list(getattr(self,'_analysis_lines',[]) or []); self._analysis_lines=[]
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
@@ -2795,7 +2859,10 @@ class MainWindow(QMainWindow):
         counts={s:text.count(s) for _,srcs in groups for s in srcs} if text else {}
         held={r[k] for r in self._speech_rows() for k in ('speaker','listener')} if hasattr(self,'speech_table') else set()
         from .name_collision_dialog import NameCollisionDialog
-        dlg=NameCollisionDialog(groups,counts,held,timeout=180 if auto else 0,parent=self)
+        wanted={x for _,srcs in groups for x in srcs}
+        suggest={k:v for k,v in (getattr(self,'_name_suggestions',{}) or {}).items() if k in wanted}
+        self._name_suggestions={}
+        dlg=NameCollisionDialog(groups,counts,held,timeout=180 if auto else 0,parent=self,**({'suggestions':suggest} if suggest else {}))
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.term_table.parentWidget()))
         shown=', '.join(f"{'·'.join(s)} → {k}" for k,s in groups[:6])+(' …' if len(groups)>6 else '')
         if dlg.exec()!=QDialog.DialogCode.Accepted or not dlg.changes:
@@ -2870,7 +2937,7 @@ class MainWindow(QMainWindow):
                         it.setBackground(QBrush(QColor('#fde2e2')))
                         it.setToolTip('확인 필요: 이름이 아닌 일반 단어입니다. 용어집에 두면 책 전체에서 항상 같은 말로만 번역되니 지우는 것을 권합니다.' if common
                                       else '확인 필요: 보통은 이름이 아닌 일반 단어(신·가족·부르는 말)입니다. 이 책에서 인물 이름이나 고유한 호칭으로 쓰일 때만 두고, 아니면 지우세요. 용어집에 두면 책 전체에서 항상 같은 말로만 번역됩니다.' if is_doubtful_term(src_text)
-                                      else '확인 필요: 한국어 표기에 한자·가나가 남아 있거나 원문과 같습니다. 고치거나 지우세요.')
+                                      else '확인 필요: 한국어 표기에 한자·가나가 남아 있거나, 한글과 영문이 한 낱말에 섞였거나(엠ily), 원문과 같습니다. 고치거나 지우세요.')
                     elif it.toolTip():
                         it.setBackground(QBrush()); it.setToolTip('')
         finally:

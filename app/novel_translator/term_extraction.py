@@ -20,8 +20,20 @@ _ZH_PARTICLE = set('的了着过吗呢吧啊么地得和把被让给')
 _JA_HONORIFIC = re.compile(r'((?<![一-龥々])[一-龥々]{2,8}|(?<![ァ-ヴー])[ァ-ヴ][ァ-ヴー]{1,15})(?:さん|くん|君|ちゃん|様|さま|先輩|先生|殿|氏)')
 # Katakana names may be long and joined with ・ or ＝ (アリシア・フォン・ローゼンベルク).
 _KATAKANA = re.compile(r'[ァ-ヴ][ァ-ヴー・＝]{1,31}')
-# Capitalized name words, incl. McGonagall, MacLeod, O'Brien, D'Artagnan; up to three in a row.
-_EN_NAME_SEQ = re.compile(r"(?<![A-Za-z'’])(?:(?:Mc|Mac|O['’]|D['’])?[A-Z][a-z]+(?:[-'’][A-Z]?[a-z]+)?)(?:[ ](?:(?:Mc|Mac|O['’]|D['’])?[A-Z][a-z]+(?:[-'’][A-Z]?[a-z]+)?)){0,2}")
+# Capitalized name words, incl. McGonagall, MacLeod, O'Brien, D'Artagnan, accented letters
+# (Zoë, Renée, José, Łukasz, Søren) and an inner capital (DeShawn, LeBron, DiCaprio); up to
+# three in a row. Before v2.5.4 only A-Z/a-z counted, so Zoë came out as "Zo" and DeShawn as "De".
+_EN_U = "A-Z\u00C0-\u00D6\u00D8-\u00DE\u0100-\u017F"
+_EN_L = "a-z\u00DF-\u00F6\u00F8-\u00FF\u0100-\u017F"
+_EN_AP = "'\u2019"
+_EN_WORD = (rf"(?:(?:Mc|Mac|O[{_EN_AP}]|D[{_EN_AP}])?[{_EN_U}][{_EN_L}]+(?:[{_EN_U}][{_EN_L}]+)?"
+            rf"(?:[-{_EN_AP}][{_EN_U}]?[{_EN_L}]+)?)")
+_EN_NAME_SEQ = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}])(?:{_EN_WORD})(?:[ ](?:{_EN_WORD})){{0,2}}")
+# A proper name with "of (the)" inside: Order of the Silver Hand, Bank of England.
+_EN_OF_NAME = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}])(?:{_EN_WORD})(?:[ ](?:{_EN_WORD})){{0,2}}"
+                         rf" of(?: the)? (?:{_EN_WORD})(?:[ ](?:{_EN_WORD})){{0,2}}")
+_EN_CAPS = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}])[{_EN_U}]{{2,}}(?![{_EN_U}{_EN_L}{_EN_AP}])")
+_EN_LOWER_WORD = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}-])[{_EN_L}][{_EN_L}{_EN_AP}-]*")
 _EN_TITLE_BEFORE = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|St|Prof|Capt|Col|Gen|Lt|Sgt)\.$")
 _EN_TITLES = {'Mr','Mrs','Ms','Dr','St','Prof','Capt','Col','Gen','Lt','Sgt','Lord','Lady','Sir','Dame','Miss','Mister','Master','Madam','Madame','King','Queen','Prince','Princess','Duke','Duchess',
               'Count','Countess','Baron','Captain','Professor','Doctor','Father','Mother','Uncle','Aunt','Saint','General','Colonel'}
@@ -52,18 +64,38 @@ COMMON_WORDS = set('''
 _EN_PRONOUNS = frozenset('''i me my mine myself he him his himself she her hers herself it its itself
 we us our ours ourselves they them their theirs themselves you your yours yourself yourselves
 this that these those there here who whom whose what which'''.split())
+# Closed-class words (articles, prepositions, conjunctions, auxiliaries, question words,
+# number words) and one-word interjections. Capitalized at the start of a sentence or a
+# line of dialogue they turned up as "names" in real novels (If, In, As, To, Why, Oh).
+# Words that can also be a name (Will, May, Grace, Rose) are NOT here.
+_EN_CLOSED = frozenset('''a an the some any every each all both either neither none another such
+of in on at to for by with from into onto upon about above below over under after before since until till
+through throughout during without within among amongst between against toward towards across behind beyond near
+off out up down around along beside besides inside outside
+and or nor but so yet if though although because unless while whilst whereas whether than as
+how why when where whatever whenever wherever however whoever whichever then thus hence
+also only just even still too very not never always often once twice again soon later almost already ever
+is are was were be been being am do does did done doing have has having had can could shall should would might must
+let lets one two three four five six seven eight nine ten first second third
+oh ohh ooh ah ahh aah uh uhh er erm hmm hm hmph huh eh heh haha hah wow whoa woah ugh urgh ow ouch oops whoops
+shh psst hey yeah yep yup nope yes okay ok alright damn dammit dang darn shit fuck fucking gosh geez jeez gee
+yay hooray alas aw aww mm mmm mhm aha ahem bah pfft tsk well please thanks
+hello hi goodbye bye amen hark aye nay except moreover furthermore nevertheless nonetheless meanwhile anyway
+indeed therefore otherwise instead rather perhaps maybe suddenly finally certainly surely probably actually really
+everyone everybody everything nobody nothing nowhere someone somebody something somewhere anyone anybody anything anywhere'''.split())
 _EN_CONTRACTION = re.compile(r"(?:i|he|she|it|we|they|you|that|there|here|who|what|where|when|why|how|this|let)"
-                             r"['\u2019](?:s|d|ll|re|ve|m)", re.I)
+                             r"['\u2019](?:s|d|ll|re|ve|m)|[a-z]+n['\u2019]t", re.I)
 _EN_EXCLAMATION = re.compile(r"(?:(?:oh|o|ah|my|oh my|oh dear|oh good|good|dear|thank|thank you|for|by|great|sweet|holy|"
                              r"oh sweet|good lord|lord)\s+(?:god|gods|lord|jesus|christ|heavens|heaven|gosh|goodness)"
-                             r"|jesus christ|god ?damn(?:it)?|goddammit|god almighty)", re.I)
+                             r"|jesus christ|god ?damn(?:it)?|goddammit|god almighty|good[- ]?(?:bye|by|day|night|morning|evening|afternoon))", re.I)
 
 # English words that are usually not names but can be one in some books (a god who is a
 # character, Jes\u00fas, the Korean surname Son, a nickname like Boy or Sis). They are kept,
 # but shown light red for a look, and never stored in the shared glossary on their own.
 _EN_DOUBTFUL = frozenset('''god gods lord jesus christ son sons boy boys girl girls sis bro brother sister
 mom mommy mum mummy mother dad daddy father papa mama ma pa baby babe honey sweetheart darling dear
-kid kids man dude buddy sir madam ma'am lady gentleman master'''.split())
+kid kids man dude buddy sir madam ma'am lady gentleman master
+ha um no hell'''.split())   # ha / um: Korean surnames 하 · 엄; Dr. No; Hell as a place
 
 
 def _en_key(source: str) -> str:
@@ -76,7 +108,8 @@ def is_never_term(source: str) -> bool:
     if not s or not re.fullmatch(r"[A-Za-z'\u2019 .!,-]+", s):
         return False
     k = _en_key(s).strip(' .!,')
-    return k in _EN_PRONOUNS or bool(_EN_CONTRACTION.fullmatch(k)) or bool(_EN_EXCLAMATION.fullmatch(k))
+    return (k in _EN_PRONOUNS or k in _EN_CLOSED or bool(_EN_CONTRACTION.fullmatch(k))
+            or bool(_EN_EXCLAMATION.fullmatch(k)))
 
 
 def is_doubtful_term(source: str) -> bool:
@@ -150,30 +183,173 @@ def candidates(text: str, lang: str, limit: int = 300) -> list[tuple[str, int]]:
             counts.pop(w, None)
         return _top(counts, limit, 4)
     if lang == 'en':
-        mid: Counter = Counter(); start: Counter = Counter()
-        for m in _EN_NAME_SEQ.finditer(text):
-            words = m.group(0).split()
-            before = text[max(0, m.start() - 40):m.start()].rstrip()   # a short window: linear time on big files
-            # A capitalized word that starts a sentence is a weak name signal ("Suddenly",
-            # "Nothing"), unless a title stands before it ("Mr. Darcy", "Dr. Watson").
-            at_start = (not before and m.start() < 40) or (bool(before) and before[-1] in '.!?"“”’\n')
-            titled = bool(_EN_TITLE_BEFORE.search(before))
-            while words and (words[0] in _EN_COMMON or words[0] in _EN_TITLES):
-                words = words[1:]            # "Lord Voldemort" -> "Voldemort", "Miss Bennet" -> "Bennet"
-            while words and words[-1] in _EN_COMMON:
-                words = words[:-1]
-            if not words or any(w in _EN_CALENDAR for w in words):
-                continue
-            name = ' '.join(words)
-            (start if at_start and not titled and len(m.group(0).split()) == len(words) else mid)[name] += 1
-        # Sentence-start occurrences count only for names also seen inside a sentence.
-        counts = Counter({k: mid[k] + start.get(k, 0) for k in mid if not is_never_term(k)})
-        return _top(counts, limit, 3)
+        return _en_candidates(text, limit)
     return []
 
 
+# Ordinary words that are also common first names: kept out of a name's edges as before
+# ("Will you ..."), but counted as a name too when capitalized inside a sentence (Will).
+_EN_NAME_ALSO_WORD = frozenset({'Will'})
+_EN_EXTRA_MAX = 60   # names found only by the v2.5.4 rules, on top of the usual list
+
+
+def _en_possessive(word: str) -> str:
+    """Emily's / Emily’s -> Emily (the same person, counted once)."""
+    for tail in ("'s", "\u2019s"):
+        if word.endswith(tail) and len(word) > len(tail) + 1:
+            return word[:-len(tail)]
+    return word
+
+
+def _en_candidates(text: str, limit: int) -> list[tuple[str, int]]:
+    """English candidates. Everything the earlier rules found is still found (in the same
+    order, now with Emily's and EMILY counted as Emily); the names they missed are added
+    after them: names only ever seen at the start of a sentence, Will, and names with "of
+    (the)" inside. Closed-class words and interjections (If, In, Oh) are left out."""
+    mid: Counter = Counter(); start: Counter = Counter()
+    for m in _EN_NAME_SEQ.finditer(text):
+        raw = m.group(0).split()
+        owner = _en_possessive(raw[-1])
+        named_title = owner != raw[-1] and len(raw) == 1 and (owner in _EN_TITLES or owner in _EN_CALENDAR)
+        raw[-1] = owner
+        words = list(raw)
+        before = text[max(0, m.start() - 40):m.start()].rstrip()   # a short window: linear time on big files
+        # A capitalized word that starts a sentence is a weak name signal ("Suddenly",
+        # "Nothing"), unless a title stands before it ("Mr. Darcy", "Dr. Watson").
+        at_start = (not before and m.start() < 40) or (bool(before) and before[-1] in '.!?"“”’\n')
+        titled = bool(_EN_TITLE_BEFORE.search(before))
+        if not at_start and raw[0] in _EN_NAME_ALSO_WORD and not any(w in _EN_CALENDAR for w in raw):
+            also = list(raw)
+            while len(also) > 1 and also[-1] in _EN_COMMON:
+                also = also[:-1]
+            mid[' '.join(also)] += 1           # "Later, Will smiled" / "Will Turner"
+        if named_title:
+            # "the Count's castle", "Mrs. March's house": a title or month word with a
+            # possessive is used as a name (before v2.5.4 it was kept as "Count's").
+            (start if at_start and not titled else mid)[owner] += 1
+            continue
+        while words and (words[0] in _EN_COMMON or words[0] in _EN_TITLES):
+            words = words[1:]            # "Lord Voldemort" -> "Voldemort", "Miss Bennet" -> "Bennet"
+        while words and words[-1] in _EN_COMMON:
+            words = words[:-1]
+        if not words or any(w in _EN_CALENDAR for w in words):
+            continue
+        if len(words) == 1 and len(raw) > 1 and is_never_term(words[0]) and raw[0] in _EN_TITLES:
+            words = raw                  # "Doctor Who": the title is part of the name here
+        name = ' '.join(words)
+        (start if at_start and not titled and len(raw) == len(words) else mid)[name] += 1
+    # Shouted forms count for the name (EMILY! -> Emily).
+    caps = Counter(_EN_CAPS.findall(text))
+    if caps:
+        for k in list(mid):
+            if ' ' not in k and k.upper() in caps and k.upper() != k:
+                mid[k] += caps[k.upper()]
+    # Sentence-start occurrences count only for names also seen inside a sentence.
+    counts = Counter({k: mid[k] + start.get(k, 0) for k in mid if not is_never_term(k)})
+    base = _top(counts, limit, 3)
+    have = {k for k, _ in base}
+    extra: Counter = Counter()
+    # A capitalized word met only at the start of sentences ("Harper nodded.") is a name when
+    # the book never writes it in lower case: "Suddenly" also appears as "suddenly".
+    lower = None
+    for k, n in start.items():
+        if k in counts or k in have or n < 3 or is_never_term(k) or len(k) < 3:
+            continue
+        if lower is None:
+            lower = set(w.replace('\u2019', "'") for w in _EN_LOWER_WORD.findall(text))
+        if any(w.lower() in lower or w in _EN_COMMON or w in _EN_TITLES for w in k.split()):
+            continue
+        if '-' in k and is_never_term(k.split('-', 1)[0]):
+            continue                     # To-morrow, By-and-by, Good-night
+        rest = k.split(' ', 1)[1] if ' ' in k else ''
+        if rest and (rest in counts or rest in start):
+            continue                     # "Tell DeShawn", "Ask José": a verb before a known name
+        extra[k] = n
+    # "Order of the Silver Hand", "Bank of England": one name, not two pieces.
+    for m in _EN_OF_NAME.finditer(text):
+        words = m.group(0).split()
+        while words and (words[0] in _EN_COMMON or words[0] in _EN_TITLES):
+            words = words[1:]
+        while words and words[-1] in _EN_TITLES:
+            words = words[:-1]
+        name = ' '.join(words)
+        if (name and ' of ' in name and not name.startswith('of ') and not re.search(r' (?:of|the)$', name)
+                and name not in have):
+            extra[name] += 1
+    extra = Counter({k: v for k, v in extra.items() if v >= 3})
+    return base + _top(extra, _EN_EXTRA_MAX, 3)
+
+
+EN_RULES = (
+    ' FOR THIS ENGLISH NOVEL: a capitalized word is not a name by itself. Never select pronouns or contractions '
+    '(He, It, We, He\'s, We\'re, That\'s), interjections and exclamations (Oh, Ah, Hmm, Wow, Hey, Oh God, My God), '
+    'question words, conjunctions or prepositions (If, Why, How, As, At), or ordinary words capitalized at the start '
+    'of a sentence (Suddenly, Nothing, Come). Do select every character name, surname, nickname, place and organization, '
+    'including names that are also ordinary words when the novel uses them as names (Will, Grace, Rose, Hope). '
+    'Write each name completely in Hangul by its English pronunciation: Emily -> 에밀리, never 엠ily or a mix of Hangul '
+    'and Latin letters. Different source spellings are different people unless they are clearly one name: give them '
+    'different Korean renderings that follow the spelling (Susan -> 수전, Suzanne -> 수잔). A first name and the full name of the same '
+    'person share the first name (Emily -> 에밀리, Emily Clarke -> 에밀리 클라크).'
+)
+# Ask once more for names that came back half converted or with one Korean for two spellings.
+EN_REPAIR_SYSTEM = (
+    'You fix Korean renderings of English names in a translation glossary. Return ONLY a JSON object mapping each '
+    'source name to its corrected Korean rendering. Rules: write the whole name in Hangul by its English pronunciation '
+    '(Emily -> 에밀리, never 엠ily); names listed together in a GROUP are different people with different spellings and '
+    'must get DIFFERENT Korean renderings that follow their spelling (Susan -> 수전, Suzanne -> 수잔). Names marked FIXED '
+    'keep their Korean; give a new Korean only for the others, different from every FIXED one.'
+)
+
+
+def repair_prompt(half: dict[str, str], groups: list[tuple[str, list[str]]], fixed: dict[str, str]) -> tuple[str, str]:
+    """(system, user) for the repair request: half-converted renderings and colliding names."""
+    lines = []
+    if half:
+        lines.append('HALF CONVERTED (write fully in Hangul):')
+        lines += [f'{k}\t{v}' for k, v in half.items()]
+    for i, (ko, sources) in enumerate(groups, 1):
+        lines.append(f'GROUP {i} (now all "{ko}"; must differ):')
+        lines += [f'{s}\t{fixed[s]}\tFIXED' if s in fixed else f'{s}\t{ko}' for s in sources]
+    return EN_REPAIR_SYSTEM, '\n'.join(lines) + '\n\nReturn the JSON object now.'
+
+
+def candidate_contexts(text: str, cands: list[tuple[str, int]], limit: int = 80, width: int = 45) -> dict[str, str]:
+    """One short line from the book for each English candidate that is also an ordinary word
+    (Will, Grace, Come, Dear), so the model can tell a name from a word. Only for the local
+    model: cloud engines get no prose, as before."""
+    text = text or ''
+    if not text:
+        return {}
+    lower = set(w.replace('\u2019', "'") for w in _EN_LOWER_WORD.findall(text))
+    out: dict[str, str] = {}
+    for k, _n in cands:
+        if len(out) >= limit:
+            break
+        if ' ' in k or not (k.lower() in lower or is_doubtful_term(k)):
+            continue
+        best = None
+        pat = re.compile(rf"(?<![{_EN_U}{_EN_L}{_EN_AP}]){re.escape(k)}(?![{_EN_L}{_EN_AP}])")
+        for i, m in enumerate(pat.finditer(text)):
+            if best is None:
+                best = m
+            if re.search(r"[a-z,;] $", text[max(0, m.start() - 2):m.start()]):
+                best = m; break              # a use inside a sentence says the most
+            if i >= 200:
+                break
+        if best is None:
+            continue
+        a = max(0, best.start() - width); b = min(len(text), best.end() + width)
+        line = re.sub(r'\s+', ' ', text[a:b]).strip()
+        if a > 0:
+            line = line.split(' ', 1)[-1]
+        if b < len(text):
+            line = line.rsplit(' ', 1)[0]
+        out[k] = line
+    return out
+
+
 def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = '', existing: dict | None = None,
-                  earlier: dict | None = None) -> tuple[str, str]:
+                  earlier: dict | None = None, contexts: dict | None = None) -> tuple[str, str]:
     lang_name = {'zh': 'Chinese', 'ja': 'Japanese', 'en': 'English'}.get(lang, lang)
     system = (
         'You build a translation glossary for a professional Korean translator. '
@@ -211,15 +387,31 @@ def build_prompts(cands: list[tuple[str, int]], lang: str, name_policy: str = ''
                 'If selected, use exactly this Korean:\n' + '\n'.join(f'{a} => {b}' for a, b in list(earlier.items())[:200]))
     if lang == 'zh':
         system += ' Never select a single-character string.'
+    if lang == 'en':
+        system += EN_RULES
+    ctx = ''
+    if contexts:
+        ctx = ('\n\nEXAMPLE USE (one line from the novel, only for candidates that are also ordinary English words; '
+               'use it to tell a name from a word):\n' + '\n'.join(f'{k}\t{v}' for k, v in contexts.items()))
     policy = f'\n\nNAME POLICY: {name_policy}' if name_policy else ''
-    user = f'CANDIDATES (string<TAB>count):\n{rows}{keep}{seen}{policy}\n\nReturn the JSON object now.'
+    user = f'CANDIDATES (string<TAB>count):\n{rows}{keep}{seen}{ctx}{policy}\n\nReturn the JSON object now.'
     return system, user
 
 
+# Hangul and Latin letters inside one word: a half-converted name (Emily -> 엠ily).
+# Separate words are fine (Dr. 왓슨, J.K. 롤링).
+_HALF_CONVERTED = re.compile(r'[가-힣][A-Za-z]|[A-Za-z][가-힣]')
+
+
+def half_converted(korean: str) -> bool:
+    return bool(_HALF_CONVERTED.search(korean or ''))
+
+
 def valid_rendering(source: str, korean: str) -> bool:
-    """A usable glossary rendering: Hangul (or a Latin name), no leftover Chinese/kana."""
+    """A usable glossary rendering: Hangul (or a Latin name), no leftover Chinese/kana,
+    no half-converted word (엠ily)."""
     k = (korean or '').strip()
-    if not k or k == (source or '').strip() or _CJK_IN_KOREAN.search(k):
+    if not k or k == (source or '').strip() or _CJK_IN_KOREAN.search(k) or half_converted(k):
         return False
     return bool(_HANGUL.search(k) or re.fullmatch(r"[A-Za-z][A-Za-z .'\-]*", k))
 
@@ -415,7 +607,9 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
         return {}
     allowed = {k for k, _ in (cands or [])}
     bases = allowed | set(known or {})
-    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0, 'address_only': 0, 'single': 0}
+    why = {'not_candidate': 0, 'bad_rendering': 0, 'common_word': 0, 'phrase': 0, 'address': 0, 'address_only': 0, 'single': 0,
+           'half': 0}
+    half: dict[str, str] = {}
     out: dict[str, str] = {}
     keys = set()
     for k, v in pairs:
@@ -438,6 +632,8 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
             why['single'] += 1; continue
         if split_address(k, v, bases) is None and is_address_term(k):
             why['address_only'] += 1; continue      # name + address (阿强哥) is split below instead
+        if half_converted(v) and not _CJK_IN_KOREAN.search(v):
+            half[k] = v; why['half'] += 1; continue   # 엠ily: asked again by the extraction
         if not valid_rendering(k, v):
             why['bad_rendering'] += 1; continue
         out[k] = v
@@ -452,7 +648,9 @@ def parse_glossary(text: str, cands: list[tuple[str, int]] | None = None, strict
     kept = drop_name_phrases(out, known)
     why['phrase'] = len(out) - len(kept)
     if report is not None:
-        report.update(answer=len(keys), kept=len(kept), **why)
+        if not half:
+            why.pop('half', None)          # the report stays as before when nothing was half converted
+        report.update(answer=len(keys), kept=len(kept), **({'half_entries': half} if half else {}), **why)
     return kept
 
 

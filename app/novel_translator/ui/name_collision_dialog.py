@@ -10,7 +10,7 @@ class NameCollisionDialog(QDialog):
     `timeout` (seconds, 0 = none) keeps everything as it is when nobody answers, so a
     translation started before leaving the PC never waits for hours."""
 
-    def __init__(self, groups, counts=None, speech_names=(), timeout=0, parent=None):
+    def __init__(self, groups, counts=None, speech_names=(), timeout=0, parent=None, suggestions=None):
         super().__init__(parent)
         self.setWindowTitle('한글 이름 겹침 확인')
         self._groups = [(str(k), [str(s) for s in srcs]) for k, srcs in groups]
@@ -23,6 +23,11 @@ class NameCollisionDialog(QDialog):
                       '이대로 번역하면 서로 다른 인물이 한 사람처럼 옮겨집니다. 다른 인물이면 [고칠 한글 이름] 칸을 '
                       '두 번 눌러 서로 다르게 고쳐 주세요. 같은 인물(별명·다른 표기)이면 그대로 두셔도 됩니다.')
         note.setWordWrap(True); root.addWidget(note)
+        suggestions = {str(k): str(v) for k, v in (suggestions or {}).items()}
+        if suggestions:
+            tip = QLabel('철자에 맞춰 구별되는 한글 이름을 [고칠 한글 이름] 칸에 미리 채워 두었습니다(굵은 글씨). '
+                         '맞으면 [고친 대로 적용]만 누르세요. 같은 인물이면 [그대로 두기]를 누르세요.')
+            tip.setWordWrap(True); tip.setObjectName('collisionSuggestNote'); root.addWidget(tip)
         total = sum(len(s) for _, s in self._groups)
         self.table = QTableWidget(total, 4, self)
         self.table.setHorizontalHeaderLabels(['겹친 한글', '원문', '본문 등장', '고칠 한글 이름'])
@@ -43,8 +48,11 @@ class NameCollisionDialog(QDialog):
                     item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable); item.setBackground(shade)
                     if col == 2: item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     self.table.setItem(row, col, item)
-                edit = QTableWidgetItem(ko); edit.setBackground(shade)
+                edit = QTableWidgetItem(suggestions.get(src, ko)); edit.setBackground(shade)
                 edit.setToolTip('두 번 눌러 고칩니다')
+                if src in suggestions:
+                    f = edit.font(); f.setBold(True); edit.setFont(f)
+                    edit.setToolTip(f'추천: {suggestions[src]} (원래 {ko}) · 두 번 눌러 고칩니다')
                 self.table.setItem(row, 3, edit)
                 self._rows.append((src, ko)); row += 1
         if total: self.table.setCurrentCell(0, 3)
@@ -103,7 +111,7 @@ class NameCollisionDialog(QDialog):
             if new != ko:
                 changes[src] = new
         if bad:
-            QMessageBox.warning(self, '한글 이름 확인', '한자·가나가 남았거나 원문과 같은 이름은 쓸 수 없습니다:\n\n' + '\n'.join(bad[:8]))
+            QMessageBox.warning(self, '한글 이름 확인', '한자·가나가 남았거나, 한글과 영문이 섞였거나(엠ily), 원문과 같은 이름은 쓸 수 없습니다:\n\n' + '\n'.join(bad[:8]))
             return
         self.changes = changes
         self._timer.stop()
