@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from .providers.base import *
 from .prompting import build_system_prompt, build_user_prompt, REPAIR_SYSTEM, build_repair_prompt, SKIP_MARKER, relevant_terms
 from .validation import TAG_RE, validate_translation, normalize_translation_output, id_forms, skipped_paragraph_ids, parse_tagged_translation, leftover_script, _is_refusal, meta_leak
-from .protected_literals import protect_literals, restore_literals
+from .protected_literals import protect_literals, restore_literals, bracket_prose
 from .lexical_guidance import relevant_guidance
 
 
@@ -295,6 +295,12 @@ class TranslationOrchestrator:
         # leftover checks and repairs below still allow every confirmed rendering.
         prompt_terms = relevant_terms(terms, chunk_text)
         user_prompt = build_user_prompt(protected.text, prompt_terms, previous_context, recovery_mode=recovery_mode, book_memory=book_memory, language_options=language_options, lexical_guidance=guidance, recovery_reason=reason)
+        if bracket_prose(chunk_text):
+            # Sound effects / system words in brackets are prose (v2.5.7); the user prompt only,
+            # so the job identity and translation memory key stay the same.
+            user_prompt += ('\nBracketed English sound effects and system-window words (<WHACK>, <Slurp, slurp>, '
+                            '[System]) are prose: translate the words inside into Korean and keep the brackets '
+                            '(<퍽>, <후릅, 후릅>, [시스템]).')
         attempt = 0
         while True:
             self._check_cancelled()

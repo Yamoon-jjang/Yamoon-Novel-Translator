@@ -71,6 +71,12 @@ def should_translate_text(text: str, source_lang: str) -> bool:
     letters=hangul+kana+han+latin
     if letters == 0:
         return False
+    if source_lang in ('zh', 'ja') and hangul == 0 and han == 0 and kana == 0:
+        # A line that is only an English sound effect / system word in a Chinese or
+        # Japanese novel (<WHACK>, “<Slurp, slurp>”, [System]) is translated too (v2.5.7).
+        from .protected_literals import bracket_prose
+        if bracket_prose(s):
+            return True
     if source_lang == 'ja':
         if hangul == 0 and (kana >= 1 or han >= 1):
             return True   # no Korean at all: short headings/names/exclamations are Japanese too

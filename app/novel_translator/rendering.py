@@ -12,6 +12,24 @@ def _has_letters(text: str) -> bool:
 
 _ID_RE=re.compile(r'(?m)^<P(\d{6})>\s*$')
 
+# A TXT copied from a web page often keeps HTML line breaks (문장<br>문장, 문장<br>\n).
+# They are protected during translation so they come back exactly, but a reading TXT
+# must show them as line breaks, not as "<br>". A <br> already followed by a newline
+# is just dropped; one at the very start or end of a paragraph adds nothing.
+_HTML_BR=re.compile(r'[ \t　]*<br\s*/?>[ \t　]*(?:\r?\n)?', re.I)
+
+
+def html_line_breaks(text: str) -> str:
+    if not text or '<' not in text:
+        return text
+    out=_HTML_BR.sub('\n', text)
+    if out == text:
+        return text
+    bare=_HTML_BR.sub('', text)   # newlines that were there without the tags
+    lead=bare[:len(bare)-len(bare.lstrip('\r\n'))]
+    tail=bare[len(bare.rstrip('\r\n')):]
+    return lead+out.strip('\r\n')+tail
+
 
 def _row_value(row, key: str, default=''):
     try:
@@ -117,17 +135,17 @@ def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallba
     rendered=[]
     for paragraph in paragraphs:
         if not getattr(paragraph,'translatable',True):
-            body=paragraph.text
+            body=html_line_breaks(paragraph.text)
             if korean_punct and not _has_letters(body):
                 body=korean_punctuation(body,quote_style)   # punctuation-only line, e.g. “。。。。。”
         elif paragraph.pid in translated_by_pid:
-            body=translated_by_pid[paragraph.pid]
+            body=html_line_breaks(translated_by_pid[paragraph.pid])
             if korean_punct:
                 body=korean_punctuation(body,quote_style)
         else:
             # Never create a hole in the readable output. The raw source is safer
             # than a missing scene and enables DB-less mixed-language retry later.
-            body=paragraph.text
+            body=html_line_breaks(paragraph.text)
         rendered.append(paragraph.prefix_before+body+paragraph.separator_after)
     # Atomic replacement leaves an existing file untouched if the write fails.
     # Avoid creating a dated backup beside the source on every snapshot.

@@ -15,7 +15,8 @@ from ..translation_settings import canonical_kind
 from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
 from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script
-from ..rendering import render_snapshot
+from ..rendering import render_snapshot, html_line_breaks
+from ..protected_literals import stale_bracket_prose
 
 _TAG = re.compile(r'(?m)^<P\d{6}>\s*\n?')
 
@@ -546,6 +547,13 @@ class TranslationWorker(QThread):
                 bad.add(para.pid)
         return bad
 
+    @staticmethod
+    def _bracket_pids(chunk, text: str) -> set[int]:
+        """Paragraphs whose saved Korean still holds <WHACK> / [System] in English (saved by a
+        build before v2.5.6, which kept those words untranslated): translated again (v2.5.7)."""
+        out=parse_tagged_translation(text or '')
+        return {p.pid for p in chunk.paragraphs if stale_bracket_prose(p.text, out.get(p.pid, ''))}
+
     def _partial_retry_chunk(self, chunk, stored: str, kept=(), handled=()):
         """A PARTIAL chunk from an earlier run: keep its translated paragraphs and
         return a chunk of only the paragraphs still left as source (or None)."""
@@ -696,7 +704,7 @@ class TranslationWorker(QThread):
                 if k in kept:
                     continue
                 if t and self._norm_para(t)!=self._norm_para(body) and not meta_leak(body,t) and not untranslated_residue(body,t) \
-                        and len(leftover_script(t, ''.join(self.terms.values())))<2:
+                        and len(leftover_script(t, ''.join(self.terms.values())))<2 and not stale_bracket_prose(body,t):
                     # Keyed by the paragraph's place AND its text: the same book keeps its paragraph
                     # numbers (they come from the source text alone), so a resumed or re-chunked job
                     # finds every paragraph it translated. A short line repeated elsewhere in the book
@@ -1375,6 +1383,15 @@ class TranslationWorker(QThread):
             if leftover_retry:
                 n = sum(len(b) for _, b in leftover_retry.values())
                 self.issue.emit(f'이어 번역 · 한자·가나가 남은 문단 {n}개(청크 {len(leftover_retry)}개)를 다시 번역합니다')
+            bracket_retry = {} if self.restart_existing else \
+                {i: (t, bad) for i, t in done_map.items() if i in by_index and (bad := self._bracket_pids(by_index[i], t))}
+            for i, (t, bad) in bracket_retry.items():
+                done_map.pop(i, None)
+                old_t, old_bad = leftover_retry.get(i, (t, set()))
+                leftover_retry[i] = (old_t, set(old_bad) | bad)
+            if bracket_retry:
+                n = sum(len(b) for _, b in bracket_retry.values())
+                self.issue.emit(f'이어 번역 · <WHACK>·[System] 같은 영어 효과음이 그대로 남은 문단 {n}개(청크 {len(bracket_retry)}개)를 다시 번역합니다')
             # Translation memory: an identical chunk already translated with the same
             # settings in another job (e.g. the opened file before text was appended
             # or pasted) is reused instead of being paid for again. "처음부터 다시"
@@ -1386,7 +1403,7 @@ class TranslationWorker(QThread):
                 updates=[]
                 for c in todo:
                     cached=found.get(c.index)
-                    if cached and not has_meta_leak(c.source_text, cached):
+                    if cached and not has_meta_leak(c.source_text, cached) and not self._bracket_pids(c, cached):
                         updates.append((c.index, 'COMPLETED', dict(translation=cached, provider='memory', model='',
                                         error_type=None, error_message=None, retry_count=0, fallback_used=0, prompt_version=PROMPT_VERSION)))
                         done_map[c.index]=cached; reused+=1
@@ -1465,7 +1482,7 @@ class TranslationWorker(QThread):
                     self.progress.emit(i+1, total, '저장된 번역 사용')
                     try:   # resumed job: the live view shows the saved part too (sent in one block below)
                         _parsed=parse_tagged_translation(translations[c.index])
-                        saved_view.append('\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
+                        saved_view.append('\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
                     except Exception:
                         pass
                     continue
@@ -1517,7 +1534,7 @@ class TranslationWorker(QThread):
                         translations[c.index]=partial_base; prev=self._roll_context(prev, partial_base, context_chars); self.final_context=prev
                         try:   # the live view shows this saved chunk too
                             _parsed=parse_tagged_translation(partial_base)
-                            saved_view.append('\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
+                            saved_view.append('\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
                         except Exception:
                             pass
                         self.eta_left.discard(c.index)
@@ -1623,7 +1640,7 @@ class TranslationWorker(QThread):
                 translations[c.index] = text; prev = self._roll_context(prev, context_text, context_chars); self.final_context=prev; consecutive_infra_failures = 0
                 try:   # live view: just this chunk's Korean, in paragraph order
                     _parsed=parse_tagged_translation(text)
-                    self.chunk_translated.emit(i+1, total, '\n'.join(_parsed[p.pid].strip() for p in c.paragraphs if p.pid in _parsed))
+                    self.chunk_translated.emit(i+1, total, '\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
                 except Exception:
                     pass
                 self.provider_chunks[used_provider]=self.provider_chunks.get(used_provider,0)+1

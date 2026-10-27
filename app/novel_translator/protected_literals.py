@@ -80,5 +80,33 @@ def restore_literals(text: str, mapping: dict[str,str]) -> str:
     return out
 
 
+# A bracketed English word that is prose, not markup: <WHACK>, <Slurp, slurp>, [System].
+# Before v2.5.6 these were protected (kept in English); the helpers below find them so a
+# line made only of them is translated, and an earlier result that still holds them
+# verbatim is translated again.
+_BRACKET_PROSE = re.compile(r'[<＜〈\[［【][A-Za-z](?:[^<>＜＞〈〉\[\]［］【】\r\n]{0,80}?[^\s<>＜＞〈〉\[\]［］【】])?[>＞〉\]］】]')
+
+
+def bracket_prose(text: str) -> list[str]:
+    if not text or not _BRACKET_PROSE.search(text):
+        return []
+    spans = literal_spans(text)
+    out = []
+    for m in _BRACKET_PROSE.finditer(text):
+        if re.fullmatch(r'[<＜]P\d{6}[>＞]', m.group(0)):
+            continue
+        if any(not (m.end() <= a or m.start() >= b) for a, b in spans):
+            continue
+        out.append(m.group(0))
+    return out
+
+
+def stale_bracket_prose(source: str, translation: str) -> bool:
+    """The translation still holds a bracketed English word of the source unchanged."""
+    if not translation:
+        return False
+    return any(w in translation for w in bracket_prose(source))
+
+
 def count_protectable_literals(text: str) -> int:
     return len(protect_literals(text).mapping)
