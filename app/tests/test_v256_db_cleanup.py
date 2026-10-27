@@ -79,3 +79,14 @@ def test_closing_the_window_cleans_and_logs(qt_app, sandbox, monkeypatch):
 
 
 from test_alpha17 import qt_app, sandbox  # noqa: E402,F401 (pytest fixtures)
+
+
+def test_window_is_hidden_before_the_cleanup_runs(qt_app, sandbox, monkeypatch):
+    """v2.5.7: shrinking a large record can take seconds; the window must not look frozen."""
+    from test_alpha17 import _window
+    w = _window(monkeypatch)
+    w.show()
+    seen = []
+    monkeypatch.setattr(w, '_clean_translation_db', lambda: seen.append(w.isVisible()))
+    w.close()
+    assert seen == [False]

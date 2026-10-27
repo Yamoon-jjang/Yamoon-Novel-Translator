@@ -123,6 +123,19 @@ class TranslationOrchestrator:
             self._raw_sleep(min(0.1,left))
 
     def _call_provider(self, request, secret):
+        # A local LLM raises its context length for a request that would not fit (and keeps
+        # it, so Ollama does not reload the model each time). Say so once per raise: a larger
+        # context uses more VRAM and can slow a 16GB card down (v2.5.7, log only).
+        before = getattr(self.provider, 'num_ctx', None)
+        try:
+            return self._call_provider_once(request, secret)
+        finally:
+            after = getattr(self.provider, 'num_ctx', None)
+            if isinstance(before, int) and isinstance(after, int) and after > before > 0:
+                self._event(f'로컬 LLM 컨텍스트 {before:,} → {after:,}토큰으로 늘림 · 요청(지침·작품 메모·원문·답)이 설정한 길이에 들어가지 않아서 · '
+                            'VRAM이 부족하면 느려질 수 있음(API 설정의 컨텍스트 길이를 이 값으로 맞추면 처음부터 이 크기로 씀)')
+
+    def _call_provider_once(self, request, secret):
         if self.pause_fn:
             self.pause_fn()   # every HTTP request, including retries, waits while paused
         self._check_cancelled()

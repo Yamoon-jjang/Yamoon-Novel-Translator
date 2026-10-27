@@ -4108,6 +4108,13 @@ class MainWindow(QMainWindow):
         t=getattr(self,'_local_models_thread',None)
         if t is not None and t.isRunning(): t.wait(10000)   # short local model-list request (a few seconds at most)
         self._save_window_state()
+        # The window goes away first (v2.5.7): shrinking a large translation record can take
+        # a few seconds, and a window still on screen then looks frozen.
+        try:
+            from PySide6.QtWidgets import QApplication
+            self.hide(); QApplication.processEvents()
+        except Exception:
+            pass
         self._clean_translation_db()
         event.accept()
 

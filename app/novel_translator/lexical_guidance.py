@@ -40,10 +40,24 @@ def _spans(text: str, word: str) -> list[tuple[int, int]]:
     return out
 
 
+_EN_WORD = re.compile(r"[A-Za-z][A-Za-z '\u2019-]*")
+
+
+def _word_spans(text: str, word: str) -> list[tuple[int, int]]:
+    """Occurrences of an English pack word as a whole word, ignoring case (v2.5.7)."""
+    pat = r'(?<![A-Za-z])' + re.escape(word) + r'(?![A-Za-z])'
+    return [m.span() for m in re.finditer(pat, text, re.I)]
+
+
 def _free_occurrence(text: str, word: str, covers: list[str]) -> bool:
     """True when `word` occurs at least once outside every occurrence of the `covers` words."""
-    covered = [sp for c in covers if word in c and c != word for sp in _spans(text, c)]
-    for a, b in _spans(text, word):
+    if _EN_WORD.fullmatch(word):
+        covered = [sp for c in covers if c.lower() != word.lower() for sp in _word_spans(text, c)]
+        spans = _word_spans(text, word)
+    else:
+        covered = [sp for c in covers if word in c and c != word for sp in _spans(text, c)]
+        spans = _spans(text, word)
+    for a, b in spans:
         if not any(ca <= a and b <= cb for ca, cb in covered):
             return True
     return False
@@ -83,8 +97,15 @@ def relevant_guidance(profile, source_text: str, limit: int = 60) -> dict[str,st
         longer=[s for s,_ in hits]
         kept=[]
         for s,t in hits:
-            if re.fullmatch(r"[A-Za-z][A-Za-z '\u2019-]*", s):
-                kept.append((s,t)); continue
+            if _EN_WORD.fullmatch(s):
+                # English: a shorter word inside a longer hint that also matched as a whole
+                # phrase ("jerk" in "jerk off", "cheat" in "cheat on") is dropped there, the
+                # same rule as for CJK entries; elsewhere in the text it stays a hint.
+                covers=[o for o in longer if len(o)>len(s) and _EN_WORD.fullmatch(o)
+                        and re.search(r'(?<![A-Za-z])'+re.escape(s)+r'(?![A-Za-z])', o, re.I)]
+                if not covers or _free_occurrence(source_text, s, covers):
+                    kept.append((s,t))
+                continue
             covers=list(excl.get(s,[]))+[o for o in longer if len(o)>len(s) and s in o]
             if not covers or _free_occurrence(source_text, s, covers):
                 kept.append((s,t))

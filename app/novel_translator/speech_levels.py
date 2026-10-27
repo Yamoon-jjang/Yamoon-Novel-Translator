@@ -111,11 +111,18 @@ def sample_dialogue(text: str, names: dict[str, str], limit: int = SAMPLE_CHARS,
     sources = [s for s in (names or {}) if len(s) >= 2 or not s.isascii()]
     if not lines or not sources:
         return ''
-    cue_words = [c for c in (cues or ()) if c and len(c) >= 1]
+    cue_words = [c for c in (cues or ()) if c and len(c) >= 1 and not re.fullmatch(r"[A-Za-z][A-Za-z '\u2019-]*", c)]
+    # English cues count as whole words only (v2.5.7): "sir" is not a cue inside "desire",
+    # nor "cock" inside "cocktail". CJK cues keep matching inside the line as before.
+    en_cues = [c for c in (cues or ()) if c and re.fullmatch(r"[A-Za-z][A-Za-z '\u2019-]*", c)]
+    en_cue_re = re.compile(r'(?<![A-Za-z])(?:' + '|'.join(re.escape(c) for c in sorted(en_cues, key=len, reverse=True)) + r')(?![A-Za-z])') if en_cues else None
     def mentions(ln: str) -> int:
         return sum(1 for s in sources if s in ln)
     def cue(ln: str) -> int:   # address terms (妈, 师父, 老公, さん, sir…) reveal relationships best
-        return min(2, sum(1 for c in cue_words if c in ln))
+        n = sum(1 for c in cue_words if c in ln)
+        if en_cue_re is not None and n < 2:
+            n += len({m.group(0) for m in en_cue_re.finditer(ln)})
+        return min(2, n)
     scored = []
     for i, ln in enumerate(lines):
         if not ln or len(ln) > 400:
