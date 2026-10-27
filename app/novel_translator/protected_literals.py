@@ -4,13 +4,28 @@ from dataclasses import dataclass
 
 # Protect structural/literal strings that should survive translation byte-for-byte.
 # This is a translation-integrity feature, not a content-filter masking system.
+#
+# Angle and square brackets are only protected when they are real markup. Novels use
+# them for sound effects, system windows and shouted words (<SPANK>, <Slurp, slurp>,
+# [System], [Quest Complete]); those are prose and must reach the model to be
+# translated (<찰싹>, [시스템]). Markup is a known HTML / BBCode tag name, or a tag
+# whose attributes are written name="value".
+_HTML_TAGS = (r'a|abbr|b|big|blockquote|br|center|cite|code|del|div|em|font|h[1-6]|hr|i|img|ins|kbd|'
+              r'li|mark|ol|p|pre|q|rb|rp|rt|rtc|ruby|s|samp|small|span|strike|strong|sub|sup|'
+              r'table|tbody|td|tfoot|th|thead|tr|tt|u|ul|var|wbr|think|thinking|reasoning')
+_ATTR = r'''\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:"[^"<>\r\n]{0,200}"|'[^'<>\r\n]{0,200}'|[^\s"'<>=`]{1,200})'''
+_BBCODE = (r'b|i|u|s|url|img|quote|color|colour|size|font|center|left|right|align|code|'
+           r'spoiler|list|\*|sup|sub|table|tr|td|th|hr|br|email|indent|youtube|media|strike')
 _PATTERNS = [
     re.compile(r'https?://[^\s<>]+', re.I),
     re.compile(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b'),
     re.compile(r'(?<!\w)(?:[A-Za-z]:\\|\\\\)[^\r\n<>|?*]+'),
     re.compile(r'`[^`\r\n]+`'),
-    re.compile(r'<(?!P\d{6}>/?)[A-Za-z][^>]{0,300}>'),
-    re.compile(r'\[(?:/?[A-Za-z][A-Za-z0-9=_ -]{0,80})\]'),
+    # Known HTML tag (opening, closing or self-closing), attributes only as name=value.
+    re.compile(r'</?(?:' + _HTML_TAGS + r')(?![\w-])(?:' + _ATTR + r'){0,20}\s*/?>', re.I),
+    # Any other tag name only when it carries name="value" attributes (<code value="...">, <ruby rb='...'>).
+    re.compile(r'<(?!P\d{6}>)[A-Za-z][\w:-]{0,40}(?:\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:"[^"<>\r\n]{0,200}"|\'[^\'<>\r\n]{0,200}\'))+\s*/?>'),
+    re.compile(r'\[/?(?:' + _BBCODE + r')(?:=[^\]\r\n]{1,80})?\]', re.I),
     re.compile(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'),
     re.compile(r'(?<!\w)(?:[＊*×○〇□■●]{2,})(?!\w)'),
     re.compile(r'［＃[^］\r\n]{1,200}］'),   # Aozora Bunko annotations: ［＃改ページ］ ［＃「X」に傍点］
