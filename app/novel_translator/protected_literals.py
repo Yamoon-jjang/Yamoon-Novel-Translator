@@ -84,7 +84,7 @@ def restore_literals(text: str, mapping: dict[str,str]) -> str:
 # Before v2.5.6 these were protected (kept in English); the helpers below find them so a
 # line made only of them is translated, and an earlier result that still holds them
 # verbatim is translated again.
-_BRACKET_PROSE = re.compile(r'[<＜〈\[［【][A-Za-z](?:[^<>＜＞〈〉\[\]［］【】\r\n]{0,80}?[^\s<>＜＞〈〉\[\]［］【】])?[>＞〉\]］】]')
+_BRACKET_PROSE = re.compile(r'[<＜〈\[［【][A-Za-z](?:[^<>＜＞〈〉\[\]［］【】\r\n]*?[^\s<>＜＞〈〉\[\]［］【】])?[>＞〉\]］】]')
 
 
 def bracket_prose(text: str) -> list[str]:

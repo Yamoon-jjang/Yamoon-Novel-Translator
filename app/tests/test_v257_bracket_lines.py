@@ -18,7 +18,9 @@ from novel_translator import orchestrator as orch_mod
 from novel_translator.ui.worker import TranslationWorker
 
 
-LINES = ['<WHACK>', '<SPANK>', '<SPANK!>', '“<Slurp, slurp>”', '「<Ding!>」', '[System]', '[Quest Complete]',
+LONG = ('<I will never forgive you for what you did to my family, never, not in this life '
+        'and not in the next one either, do you hear me>')
+LINES = [LONG, '[' + LONG[1:-1] + ']', '<WHACK>', '<SPANK>', '<SPANK!>', '“<Slurp, slurp>”', '「<Ding!>」', '[System]', '[Quest Complete]',
          '<WHACK> <WHACK>', '＜BANG＞', '【Level Up】']
 
 
