@@ -266,3 +266,83 @@ def test_refinement_prompt_prioritizes_fluent_rewriting_over_exact_words():
     assert '문장 구조' in system
     assert '문단 안에서는 문장을 합치거나 나눌 수' in system
     assert '줄거리' in system
+
+
+def test_stop_during_a_slow_request_ends_at_once_and_resumes(tmp_path):
+    """v2.5.7 보완: 재정비 중지도 번역처럼 진행 중인 요청을 기다리지 않고 바로 멈추며,
+    다듬은 문단은 저장되어 같은 TXT·같은 엔진으로 다시 시작하면 이어진다."""
+    import threading, time
+    from novel_translator.providers.base import TranslationResponse
+    src=tmp_path/'slow.txt';src.write_text('\n'.join('어색한 문단입니다. '+str(i) for i in range(8)),encoding='utf-8')
+    output=tmp_path/'slow.ko.refined.txt'
+    flag={'stop':False}
+    class Slow(Dummy):
+        def __init__(self):
+            super().__init__(); self.cancels=[]; self.release=threading.Event()
+        def translate(self, request, key):
+            self.cancels.append(getattr(request,'cancel',None))
+            if request.purpose=='edit' and self.calls>=2:
+                flag['stop']=True              # the user presses stop while this one runs
+                self.release.wait(30)          # a long local generation / API wait
+            return Dummy.translate(self, request, key)
+    p=Slow()
+    started=time.monotonic()
+    stopped=run_refinement(src,output,p,'model','test',checkpoint_dir=tmp_path/'cache',
+                           max_items=2,stop=lambda:flag['stop'])
+    took=time.monotonic()-started
+    p.release.set()
+    assert stopped['status']=='stopped' and took < 5          # no waiting for the slow reply
+    assert stopped['done']==2                                   # the finished group is kept
+    assert all(c is not None for c in p.cancels)                # local LLM streams see the stop
+    assert not output.exists()
+    flag['stop']=False
+    q=Dummy()
+    resume=run_refinement(src,output,q,'model','test',checkpoint_dir=tmp_path/'cache',max_items=2)
+    assert resume['status']=='completed' and resume['done']==8
+    assert q.calls==3                                           # only the 3 unfinished groups
+
+
+def test_another_editing_model_is_reported_before_starting_over(tmp_path):
+    from novel_translator.refinement_runtime import resume_conflict
+    src=tmp_path/'m.txt';src.write_text('\n'.join('어색한 문단입니다. '+str(i) for i in range(6)),encoding='utf-8')
+    output=tmp_path/'m.ko.refined.txt'; p=Dummy(); p.name='local'
+    run_refinement(src,output,p,'model-a','test',checkpoint_dir=tmp_path/'cache',max_items=2,stop=lambda:p.calls>=2)
+    assert resume_conflict(src,'local','model-a',checkpoint_dir=tmp_path/'cache',max_items=2)==(0,'')
+    done,engine=resume_conflict(src,'local','model-b',checkpoint_dir=tmp_path/'cache',max_items=2)
+    assert done==2 and engine=='로컬 LLM model-a'
+    # the same model still resumes without a question
+    q=Dummy(); q.name='local'
+    r=run_refinement(src,output,q,'model-a','test',checkpoint_dir=tmp_path/'cache',max_items=2)
+    assert r['status']=='completed' and q.calls==2
+    assert resume_conflict(src,'local','model-b',checkpoint_dir=tmp_path/'cache',max_items=2)==(0,'')
+
+
+def test_dialog_asks_before_starting_over_with_another_editing_model(tmp_path, monkeypatch):
+    """윤문 모델을 바꾼 뒤 시작하면 처음부터 하기 전에 먼저 묻고, [아니요]면 시작하지 않는다."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import novel_translator.ui.refinement_run_dialog as rd
+    from test_v20_refinement_api_integration import Host
+    app=QApplication.instance() or QApplication([])
+    src=tmp_path/'책.txt'; src.write_text('\n'.join('어색한 문단입니다. '+str(i) for i in range(6)),encoding='utf-8')
+    d=rd.RefinementRunDialog(Host())
+    try:
+        d._set_source(src)
+        asked=[]
+        monkeypatch.setattr(rd,'resume_conflict',lambda *a,**k:(12,'로컬 LLM old:latest'))
+        monkeypatch.setattr(QMessageBox,'question',staticmethod(lambda *a,**k:(asked.append(a[2]),QMessageBox.No)[1]))
+        started=[]
+        monkeypatch.setattr(rd.RefinementWorker,'start',lambda self: started.append(self))
+        d._start()
+        assert asked and '로컬 LLM old:latest' in asked[0] and '12문단' in asked[0] and 'editor:latest' in asked[0]
+        assert not started and d.worker is None
+        monkeypatch.setattr(QMessageBox,'question',staticmethod(lambda *a,**k:QMessageBox.Yes))
+        d._start()
+        assert started                                      # [예]: 지금 모델로 처음부터
+        d.worker=None
+        monkeypatch.setattr(rd,'resume_conflict',lambda *a,**k:(0,''))
+        monkeypatch.setattr(QMessageBox,'question',staticmethod(lambda *a,**k:pytest.fail('같은 모델이면 묻지 않음')))
+        started.clear(); d._start()
+        assert started
+        d.worker=None
+    finally:
+        d.close()

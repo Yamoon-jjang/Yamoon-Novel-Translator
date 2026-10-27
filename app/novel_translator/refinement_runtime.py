@@ -3,11 +3,13 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 import re
+import threading
 import time
+from dataclasses import replace
 from .chunking import split_paragraphs, escape_protocol_literals
 from .config import DATA_DIR, load_json, save_json
 from .textio import atomic_write_text
-from .providers.base import TranslationRequest, ProviderError, ErrorKind
+from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
 from .refinement_links import find_reference, reference_guidance, reference_summary, GUIDANCE_MAX
 
 _ID = re.compile(r'(?m)^<P([0-9]{6})>[ \t]*\r?\n')
@@ -45,6 +47,31 @@ _DIALOGUE = re.compile(r'[“"「『]([^”"」』\n]{1,400})[”"」』]')
 _POLITE_END = re.compile(r'(?:요|니다|니까|세요|십시오|십시요|지요|죠|소서)[.!?…~\s]*$')
 _HANGUL_END = re.compile(r'[가-힣][.!?…~\s]*$')
 _SENTENCE = re.compile(r'[^.!?…]+[.!?…]*')
+
+
+def _ask(provider, request, key, stop):
+    """One model request that a stop ends at once, as in translation.
+
+    The stop check travels with the request, so a local LLM stream closes the moment the
+    user stops (Ollama stops generating). An API socket cannot be interrupted, so its wait
+    runs aside and a late reply is simply dropped: it never touches the resume file."""
+    if stop():
+        raise TranslationCancelled('사용자 중지')
+    if getattr(request, 'cancel', None) is None:
+        request = replace(request, cancel=stop)
+    done = threading.Event(); result = []
+    def invoke():
+        try: result.append((True, provider.translate(request, key)))
+        except BaseException as exc: result.append((False, exc))
+        finally: done.set()
+    threading.Thread(target=invoke, daemon=True, name='refinement-http').start()
+    while not done.wait(0.1):
+        if stop():
+            raise TranslationCancelled('사용자 중지')
+    ok, value = result[0]      # a reply that already arrived is kept even if a stop follows
+    if not ok:
+        raise value
+    return value
 
 
 class RefinementRefused(ValueError):
@@ -292,7 +319,9 @@ def prepare_guidance(paragraphs, provider, model, key, *, stop, event):
             '직접 확인되는 사실만 쓰고 불확실한 관계는 미확인이라고 표시하세요. 본문을 재작성하지 마세요. '
             f'전체 {GUIDANCE_MAX}자 안으로 쓰세요.')
     try:
-        reply=provider.translate(TranslationRequest(model,system,sample,temperature=.1,timeout=180,purpose='analysis'),key)
+        reply=_ask(provider,TranslationRequest(model,system,sample,temperature=.1,timeout=180,purpose='analysis'),key,stop)
+    except TranslationCancelled:
+        return ''      # stopped: the caller saves and the analysis runs again on resume
     except ProviderError as e:
         if e.kind in (ErrorKind.AUTH,ErrorKind.KEY_BLOCKED,ErrorKind.QUOTA,ErrorKind.FATAL):
             raise
@@ -353,8 +382,8 @@ def continuity_check(original, edited, provider, model, key, *, stop, event, rea
     system=('두 한국어 장면을 비교하고 중요한 인물, 이름, 호칭, 존댓말·반말, 말하는 사람, 행동, 대화의 뜻이나 사건, '
             '표현 수위가 삭제·추가·반전·변경되었는지 판단하세요. 문장 표현과 어순만 다른 것은 문제가 아닙니다. '
             '문제가 있으면 CHANGED, 없으면 SAME만 답하세요.')
-    response=provider.translate(TranslationRequest(model,system,purpose='analysis',user_prompt=
-        '원문:\n'+original[:5000]+'\n\n수정문:\n'+edited[:6500],temperature=.1,timeout=180),key)
+    response=_ask(provider,TranslationRequest(model,system,purpose='analysis',user_prompt=
+        '원문:\n'+original[:5000]+'\n\n수정문:\n'+edited[:6500],temperature=.1,timeout=180),key,stop)
     return response.text.strip().upper().startswith('SAME')
 
 
@@ -415,6 +444,43 @@ def retry_status(source: Path, output: Path, provider_name: str, model: str, *,
         return sum(1 for p in split_paragraphs(text) if str(p.pid) not in done)
     except Exception:
         return 0
+
+
+def resume_conflict(source: Path, provider_name: str, model: str, *, analysis=None,
+                    checkpoint_dir: Path | None = None, max_items: int = 36) -> tuple[int, str]:
+    """(paragraphs, engine) of an unfinished earlier run on this TXT that the chosen editing
+    engine cannot continue (another model or engine), so the user is asked before it is
+    started over; (0, '') when it resumes normally or there is nothing to resume.
+    `analysis` is the (provider name, model) of the analysis route (identity before v2.5)."""
+    try:
+        from .textio import read_txt
+        text, _ = read_txt(Path(source), 'ko')
+        digest = sha256(text.encode('utf-8','surrogatepass')).hexdigest()
+        cp = content_checkpoint_path(digest, checkpoint_dir)
+        if not cp.exists():
+            return 0, ''
+        state = load_json(cp)
+        if state.get('schema') != 1 or state.get('finished'):
+            return 0, ''
+        done = sum(1 for v in (state.get('completed') or {}).values() if isinstance(v, str) and v.strip())
+        if not done:
+            return 0, ''
+        max_chars = default_max_chars(provider_name)
+        accepted = {job_identity(digest, provider_name, model, max_chars, max_items)}
+        if analysis:
+            a_name, a_model = analysis
+            accepted.add(_legacy_identity(digest, provider_name, model, max_chars, max_items, a_model, a_name))
+        else:
+            accepted.add(_legacy_identity(digest, provider_name, model, max_chars, max_items, model, provider_name))
+        if state.get('identity') in accepted:
+            return 0, ''
+        engine = state.get('engine') or {}
+        names = {'local': '로컬 LLM', 'gemini': 'Gemini', 'openai': 'OpenAI'}
+        label = (f"{names.get(engine.get('provider'), engine.get('provider') or '')} {engine.get('model') or ''}".strip()
+                 or '다른 윤문 엔진 또는 설정')   # resume files before v2.5.7 do not name their engine
+        return done, label
+    except Exception:
+        return 0, ''
 
 
 def peek_guidance(source: Path, *, checkpoint_dir: Path | None = None, links_root: Path | None = None) -> tuple[str, str, str]:
@@ -488,7 +554,8 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             legacy.replace(cp)          # an earlier build's run on this file continues
         except OSError:
             cp = legacy
-    state = {'schema':1, 'identity':identity, 'completed':{}, 'issues':{}, 'source':str(source)}
+    state = {'schema':1, 'identity':identity, 'completed':{}, 'issues':{}, 'source':str(source),
+             'engine':{'provider':provider_name, 'model':str(model)}}
     old = {}
     if cp.exists():
         try:
@@ -524,6 +591,8 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         save_json(cp, state)
     valid_ids = {str(p.pid) for p in paragraphs}
     state['completed']={k:v for k,v in state['completed'].items() if k in valid_ids}
+    if state['completed'] and not old.get('finished'):
+        event(f'이전 실행에서 다듬은 {len(state["completed"]):,}문단은 건너뛰고 이어서 진행')
     residue_before = _residue_paragraphs(paragraphs)
 
     # Reference table: the translation's own speech table and glossary when this TXT is
@@ -563,9 +632,9 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             system,user = refinement_prompt(ps,previous,following,guidance,confirmed)
             event(f'윤문 요청 중 · {ps[0].pid}~{ps[-1].pid}문단 · {getattr(provider,"name","AI")}')
             # 'edit' + the paragraph IDs: a local LLM is held to every ID (structured output).
-            response = provider.translate(TranslationRequest(model,system,user,temperature=.2,timeout=300,
-                                                            purpose='edit',
-                                                            paragraph_ids=tuple(f'P{p.pid:06d}' for p in ps)),key)
+            response = _ask(provider,TranslationRequest(model,system,user,temperature=.2,timeout=300,
+                                                       purpose='edit',
+                                                       paragraph_ids=tuple(f'P{p.pid:06d}' for p in ps)),key,stop)
             accepted,rejected,refused=verified_partial_reply(response.text,ps)
             if rejected and len(accepted)+len(rejected)==len(ps):
                 raise PartialRefinementRefused(accepted,rejected,refused)
@@ -579,6 +648,10 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             try:
                 bodies = request(parts)
             except Exception as exc:
+                if isinstance(exc, TranslationCancelled):
+                    # Stopped mid-request: these paragraphs stay unfinished (not failed) and
+                    # are edited when the same TXT is resumed.
+                    return
                 if isinstance(exc, MissingParagraph):
                     # Keep the other paragraphs; ask again only for the missing one and the
                     # paragraph before it (where its text was likely merged), one at a time.
@@ -654,6 +727,8 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 return
             try:
                 consistent=continuity_check(original,rewritten,provider,model,key,stop=stop,event=event,reason=reason)
+            except TranslationCancelled:
+                return      # stopped during the review: never kept unreviewed, edited again on resume
             except ProviderError:
                 # The review was needed (length, speech level or a name changed) but could
                 # not be done: keep the original so a possible change of meaning never

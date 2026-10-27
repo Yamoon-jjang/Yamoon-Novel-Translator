@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, Q
                                QPushButton, QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit,
                                QSizePolicy)
 from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_duration,
-                                  retry_status, peek_guidance)
+                                  retry_status, peek_guidance, resume_conflict)
 from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
@@ -374,6 +374,20 @@ class RefinementRunDialog(QDialog):
             if answer!=QMessageBox.Yes:
                 return
             update_existing=True
+        else:
+            # An unfinished earlier run that this editing model cannot continue: ask first,
+            # never start over silently (its finished paragraphs would be set aside).
+            done,engine=resume_conflict(self.source,edit[0],edit[1],
+                                        analysis=(analysis[0],analysis[1]) if analysis else None)
+            if done:
+                answer=QMessageBox.question(self,'이어서 할 수 없는 이전 진행',
+                    f'이 TXT는 이전에 [{engine}]로 {done:,}문단까지 다듬다가 중지했습니다.\n'
+                    f'지금 윤문 엔진({edit[1]})으로는 그 진행을 이어 갈 수 없습니다.\n\n'
+                    '[예] 지금 엔진으로 처음부터 다시 시작 (이전 진행은 지워짐)\n'
+                    '[아니요] 취소 — API 설정에서 윤문 엔진을 이전 모델로 되돌리면 이어서 할 수 있습니다.',
+                    QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+                if answer!=QMessageBox.Yes:
+                    return
         # The worker receives the provider's options dict, not this dialog.
         self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis,
                                      update_existing=update_existing)
@@ -475,7 +489,7 @@ class RefinementRunDialog(QDialog):
     def _close_or_stop(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.status.setText('중지 요청됨 · 현재 API 응답 이후 안전하게 중지합니다.')
+            self.status.setText('중지 요청됨 · 진행 중인 요청을 끊고 안전하게 중지합니다. (다듬은 문단은 저장되어 있습니다)')
             return
         self.accept()
 
