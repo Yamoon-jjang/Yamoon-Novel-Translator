@@ -555,6 +555,16 @@ def clean_rows(rows) -> list[dict]:
     return out[:60]
 
 
+def merge_rows(kept, new) -> tuple[list[dict], int]:
+    """(table, rows added): every row of `kept` stays as it is; a row of `new` is added only
+    for a speaker → listener pair the table does not have yet (v2.5.8 folder runs: a later
+    file of the same book adds its new characters' pairs without changing earlier ones)."""
+    base = clean_rows(kept)
+    merged = clean_rows(list(base) + list(clean_rows(new)))
+    have = {(r['speaker'], r['listener']) for r in base}
+    return merged, sum(1 for r in merged if (r['speaker'], r['listener']) not in have)
+
+
 def render_instruction(rows) -> str:
     rows = clean_rows(rows)
     if not rows:

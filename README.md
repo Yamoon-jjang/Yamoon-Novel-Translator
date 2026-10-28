@@ -87,6 +87,7 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 - **번역 기억** — 조금씩 저장하며 번역하므로 중간에 멈추거나 PC가 꺼져도 번역한 곳부터 이어집니다. 파일 이름을 바꿔도 내용이 같으면 이미 번역한 부분은 다시 요청하지 않습니다. 몇 번을 껐다 켜도 한 번에 번역한 것과 같은 결과가 나오고, 지난번에 막혔던 곳에서 다시 멈추지 않고 끝까지 이어 갑니다.
 - **원본 보호** — 원본 파일은 고치지 않습니다. 결과는 `파일이름.ko.txt`, 덜 끝났으면 `파일이름.ko.partial.txt` (원문으로 남은 부분까지 빠짐없이 포함). PDF · EPUB으로 연 책도 같습니다.
 - **폴더 통째로** — 폴더 안의 TXT · PDF · EPUB을 순서대로 끝까지, 하위 폴더 구조 그대로. 파일마다 미번역 부분을 자동으로 다시 번역하고, 그래도 남은 것만 마지막에 모아 알려 줍니다.
+- **폴더에서도 이름 · 말투 그대로** — 폴더 번역도 파일마다 확정 용어집과 인물 말투표를 자동으로 만듭니다. 서로 다른 작품이면 작품마다 따로 만들어 이름이 섞이지 않고, 한 작품의 연속 파일이면 함께 쓰며 새로 나온 이름 · 인물만 더합니다. 중간에 멈추고 파일을 바꾸거나 추가해도, 번역하던 파일은 그때 쓴 용어집 그대로 이어 가 다시 번역하지 않습니다.
 - **설정을 바꿔도 이어서** — 중지한 뒤 용어집 · 작품 메모 · 번역 방식을 바꾸거나 새 버전으로 바꿔도, 이미 번역한 부분을 버리기 전에 무엇이 바뀌었는지 보여 주고 **이어서 번역할지 먼저 묻습니다.** 수천 청크짜리 책도 이어 번역 준비가 1~2초면 끝납니다.
 - **멈추면 바로 멈춘다** — [번역 중지]를 누르면 로컬 LLM이 쓰던 답도 그 자리에서 끊겨, 그래픽카드가 쓸모없는 생성을 계속하지 않고 다음 작업이 기다리지 않습니다. [일시정지]는 받던 답까지 저장한 뒤 멈춥니다.
 
@@ -146,7 +147,7 @@ python -m pip install -r requirements-build.txt
 build_windows.bat
 ```
 
-`build_windows.bat`은 자동 테스트(780여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
+`build_windows.bat`은 자동 테스트(1,170여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
 GitHub Actions(`.github/workflows/build.yml`)도 같은 과정으로 빌드하며, 새 버전이 main에서 모든 점검을 통과하면 Releases에 배포본을 자동으로 올립니다.
 
 ---
@@ -160,7 +161,7 @@ GitHub Actions(`.github/workflows/build.yml`)도 같은 과정으로 빌드하�
 Its goal is faithful translation: no embellishment, no rewriting, no omissions. The source text is always sent as-is — never masked or altered to get past content filters — which is why a local model is the primary engine.
 
 - **No missing paragraphs** — every paragraph is numbered and checked on return; Ollama is asked for structured output, and any missing paragraph is re-requested on its own
-- **Consistent names** — glossary of names, places and terms is extracted automatically and shared across books
+- **Consistent names** — glossary of names, places and terms is extracted automatically and shared across books; folder runs build one per file too (per book for separate novels, one shared and only extended for the volumes of one novel), and a stopped file always resumes with the glossary it was started with
 - **Consistent Korean speech levels** — a character speech-level table (honorific / casual, etc.) is applied across the whole book
 - **Refusal fallback** — refused paragraphs move to the next engine in your chosen order; successful paragraphs are never discarded
 - **Resumable** — translation memory lets you stop and continue (if you change the glossary or other job settings in between, the app shows what changed and asks before re-translating anything already done); untranslated parts are retried automatically (also for every file in a folder run), and only what is still left is reported; source files are never modified

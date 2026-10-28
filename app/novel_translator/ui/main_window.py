@@ -701,7 +701,7 @@ class MainWindow(QMainWindow):
         self.term_extract=QPushButton('인명·용어 자동 추출'); self.term_extract.setToolTip('원문에서 자주 나오는 단어 후보만(본문 문장 없이) 모델에 보내 인명·지명·고유 용어와 한국어 표기를 제안받습니다. 결과를 확인·수정한 뒤 번역을 시작하세요. 요청 1회.')
         self.term_extract.clicked.connect(self._extract_terms)
         self.auto_terms=QCheckBox('번역 시작 시 먼저 자동 추출')
-        self.auto_terms.setToolTip('파일·붙여넣은 글을 처음 번역할 때(원문이 바뀌었을 때만) 인명·용어 자동 추출을 먼저 한 번 실행하고, 새 항목만 확정 용어집에 더한 뒤 번역을 시작합니다. 이미 있는 항목은 바꾸지 않습니다. 요청 1회 · 보통 몇 초. 폴더 작업에는 적용하지 않습니다.')
+        self.auto_terms.setToolTip('파일·붙여넣은 글을 처음 번역할 때(원문이 바뀌었을 때만) 인명·용어 자동 추출을 먼저 한 번 실행하고, 새 항목만 확정 용어집에 더한 뒤 번역을 시작합니다. 이미 있는 항목은 바꾸지 않습니다. 요청 1회 · 보통 몇 초.\n폴더 번역: 각 파일 독립 작품이면 파일마다 따로, 한 작품의 연속 파일이면 새 파일마다 새 이름만 더합니다. 번역하던 파일은 그때 쓴 용어집으로 이어 가며 다시 추출하지 않습니다.')
         try: self.auto_terms.setChecked(bool(load_json(CONFIG_DIR/'app.json').get('auto_extract_terms',True)))
         except Exception: self.auto_terms.setChecked(True)
         self.auto_terms.toggled.connect(self._auto_terms_toggled)
@@ -1061,6 +1061,8 @@ class MainWindow(QMainWindow):
         self._lang_chosen = False
         self._terms_declined_saved = False; self._speech_done_saved = False
         self._paste_lang_locked = False
+        self._batch_marks = {}; self._batch_scope = None; self._batch_job_terms = None
+        self._batch_auto_terms = set(); self._batch_auto_speech = set()
         if hasattr(self,'view_result_btn'): self._set_result('')
 
     def open_txt(self):
@@ -1609,6 +1611,11 @@ class MainWindow(QMainWindow):
 
     def _save_workspace(self):
         if not hasattr(self,'workspace_store'): return
+        if getattr(self,'_batch_scope',None):
+            # Folder run, 각 파일 독립 작품: the tables hold this file's glossary and speech
+            # table; they belong to the file (the place it uses when opened on its own),
+            # never to the folder.
+            self._save_file_scope(); return
         key=self._workspace_key()
         if not key:return
         try:
@@ -1630,6 +1637,14 @@ class MainWindow(QMainWindow):
                 # book: a restarted program does not ask or build again mid-book.
                 'auto_terms_declined': bool(getattr(self,'_terms_declined_saved',False)),
                 'speech_attempted': bool(getattr(self,'_speech_done_saved',False)),
+                # 한 작품의 연속 파일: the files whose names / speech pairs were already added
+                # to the folder's tables (by text), so a resumed run never analyses them again.
+                **({'batch_analysis': self._trimmed_batch_marks(),
+                    # glossary entries / speech pairs a 연속 run added by itself: not the user's
+                    # own folder entries, so a later 독립 run does not give them to every book
+                    'batch_auto_terms': sorted(getattr(self,'_batch_auto_terms',set()) or ()),
+                    'batch_auto_speech': sorted(f'{a}\t{b}' for a,b in (getattr(self,'_batch_auto_speech',set()) or ()))}
+                   if self.input_mode=='folder' else {}),
             })
         except Exception:
             pass
@@ -1641,6 +1656,10 @@ class MainWindow(QMainWindow):
         self._lang_chosen=bool(state.get('language_chosen')) if state else False
         self._terms_declined_saved=bool(state.get('auto_terms_declined')) if state else False
         self._speech_done_saved=bool(state.get('speech_attempted')) if state else False
+        marks=state.get('batch_analysis') if state else None
+        self._batch_marks={str(k):dict(v) for k,v in marks.items() if isinstance(v,dict)} if isinstance(marks,dict) else {}
+        self._batch_auto_terms={str(x) for x in (state.get('batch_auto_terms') or [])} if state else set()
+        self._batch_auto_speech={tuple(str(x).split('\t',1)) for x in (state.get('batch_auto_speech') or []) if '\t' in str(x)} if state else set()
         if not state:return
         if hasattr(self,'book_memory'): self.book_memory.setPlainText(str(state.get('book_memory') or ''))
         self._auto_terms_sha=str(state.get('auto_terms_sha') or '')
@@ -1808,7 +1827,7 @@ class MainWindow(QMainWindow):
             return
         source=self.preview.toPlainText() if self._preview_edited() else (self.source_text if self.input_mode=='single' else '')
         if not source.strip():
-            QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요. (폴더 작업은 첫 파일을 따로 열어 추출하면 같은 작품 전체에 활용할 수 있습니다)'); return
+            QMessageBox.information(self,'원문 필요','TXT·PDF·EPUB 한 파일을 선택하거나 원문 창에 글을 붙여넣은 뒤 실행하세요. (폴더 번역은 [번역 시작 시 먼저 자동 추출]이 켜져 있으면 파일마다 자동으로 추출합니다)'); return
         self._begin_term_extraction(source, auto=False)
 
     def _busy_call(self, fn, label: str):
@@ -1942,17 +1961,28 @@ class MainWindow(QMainWindow):
         self._lock_inputs(False)
         self.term_extract.setText('인명·용어 자동 추출'); self.term_extract.setEnabled(not (self.worker and self.worker.isRunning()))
         self._set_analysis_busy(False)
+        if getattr(self,'_close_after_extract',False):
+            # Closing the window cancels the extraction (its answer is '사용자 취소'): close
+            # now, as asked, instead of stopping at the cancelled state.
+            self.close(); return
+        batch=getattr(self,'_batch_analysis',None)
+        if self._stale_batch_result(thread,batch): return
         if not ok and res=='사용자 취소':
             if not auto: self.on_worker_issue(f'인명·용어 추출 취소됨 · 걸린 시간 {took}')
             self._term_replace=False
             self._auto_terms_sha=''
+            if batch is not None:
+                # Folder run: [번역 중지] stops the run; [용어 추출 취소] only skips this file's extraction.
+                batch['notes']+=lines+([] if self._stop_batch else [f'인명·용어 자동 추출 · 취소됨 (사용자) · 이 파일은 추출 없이 진행 · 걸린 시간 {took}'])
+                if not self._stop_batch and self._batch_speech_step(): return
+                self._batch_continue(); return
             self._update_ready_state()
             self.status.setText('인명·용어 추출 취소됨 · 결과를 적용하지 않았으며 번역도 시작하지 않았습니다')
             return
-        if getattr(self,'_close_after_extract',False):
-            self.close(); return
         if ok and getattr(self,'_term_source_sha','')!=self._source_sha():
             # The source changed meanwhile: these names belong to the previous text.
+            if batch is not None:
+                batch['notes']+=lines; self._batch_continue(); return
             self.status.setText('원문이 바뀌어 인명·용어 추출 결과를 쓰지 않았습니다'); self._update_ready_state(); return
         if ok:
             # Light-red rows an earlier extraction (or an older version) put in — ordinary
@@ -1988,6 +2018,16 @@ class MainWindow(QMainWindow):
                         self._forget_speech_attempt(); self._speech_force_once=True
             else:
                 note=f'인명·용어 자동 추출 실패 · 용어집 없이 번역을 계속합니다 · {str(res)[:200]}'
+            if batch is not None:
+                # Folder run: the next step is this file's speech table, then the file itself.
+                if not ok: note=f'인명·용어 자동 추출 실패 · 이 파일은 지금 용어집({len(self._terms())}개)으로 번역을 계속합니다 · {str(res)[:200]}'
+                note+=f' · 걸린 시간 {took}' if took else ''
+                batch['notes']+=lines+[note]; batch['added']=len(added)
+                self._auto_terms_dialog_force=False; self._speech_force_once=False
+                if ok and batch['continuous']:
+                    self._batch_auto_terms.update(a for a,_ in added); self._batch_mark(batch['text_sha'],'terms')
+                if not self._stop_batch and self._batch_speech_step(): return
+                self._batch_continue(); return
             force=self._auto_terms_force
             if getattr(self,'_auto_terms_dialog_force',False) and not added:
                 # "추출 후 처음부터" was chosen only to use new terms: with none, resume instead
@@ -2210,7 +2250,7 @@ class MainWindow(QMainWindow):
         self.speech_generate=QPushButton('말투표 자동 생성'); self.speech_generate.clicked.connect(self._generate_speech)
         self.speech_generate.setToolTip('확정 용어집의 인물 이름과 원문 대사 일부(책 전체에서 고르게 약 6천 자)를 엔진에 보내, 누가 누구에게 어떤 말투를 쓰는지 표로 받습니다. 요청 1회.')
         self.auto_speech=QCheckBox('번역 시작 시 자동 생성')
-        self.auto_speech.setToolTip('말투표가 비어 있으면 번역을 시작할 때 한 번 자동으로 만듭니다(파일·붙여넣은 글). 실패해도 번역은 그대로 시작합니다.')
+        self.auto_speech.setToolTip('말투표가 비어 있으면 번역을 시작할 때 한 번 자동으로 만듭니다(파일·붙여넣은 글). 실패해도 번역은 그대로 시작합니다.\n폴더 번역: 각 파일 독립 작품이면 파일마다 따로, 한 작품의 연속 파일이면 새 인물이 나온 파일에서 새 짝만 더합니다(이미 있는 줄은 그대로).')
         try: self.auto_speech.setChecked(bool(load_json(CONFIG_DIR/'app.json').get('auto_speech_table',True)))
         except Exception: self.auto_speech.setChecked(True)
         for w in (self.speech_add,self.speech_delete,self.speech_generate,self.auto_speech): row.addWidget(w)
@@ -2343,6 +2383,8 @@ class MainWindow(QMainWindow):
         return len(names)+len(role_entries(self._speech_source(),self.pm.active.source_language,taken=names.keys()))
 
     def _speech_source(self) -> str:
+        if getattr(self,'_batch_analysis',None) is not None:
+            return self.source_text or ''      # the folder file being prepared
         return self.preview.toPlainText() if self._preview_edited() else (self.source_text if self.input_mode=='single' else '')
 
     def _speech_auto_due(self) -> bool:
@@ -2439,8 +2481,15 @@ class MainWindow(QMainWindow):
         if getattr(self,'_close_after_extract',False):
             self.close(); return
         self.speech_generate.setEnabled(True)
+        batch=getattr(self,'_batch_analysis',None)
+        if self._stale_batch_result(thread,batch): return
         if not (not ok and res=='사용자 취소' and not skipped):
             self._speech_done_saved=True; self._save_workspace()   # an attempt (or a skip) that finished
+        if batch is not None and not ok and res=='사용자 취소':
+            # Folder run: [번역 중지] stops the run; [말투표 생성 취소] only skips this file's table.
+            self._speech_tried.discard(getattr(self,'_speech_key',''))
+            batch['notes']+=lines+([] if self._stop_batch else [f'인물 말투표 · 취소됨 (사용자) · 이 파일은 말투표 없이 진행 · {took} 경과'])
+            self._batch_continue(); return
         if not ok and res=='사용자 취소' and auto and skipped:
             # [말투표 건너뛰고 번역 시작]: this book's automatic attempt is over (it is not
             # asked again on resume); the button on the 인물 말투 tab can still build it later.
@@ -2458,7 +2507,9 @@ class MainWindow(QMainWindow):
         stale=ok and getattr(self,'_term_source_sha','')!=self._source_sha()
         info=res if ok and isinstance(res,dict) else {'rows':list(res) if ok else []}
         rows=list(info.get('rows') or []) if ok and not stale else []
-        if rows: self._set_speech_rows(rows); self._save_workspace()
+        if rows:
+            # folder file: the rows it already had stay as they are, only new pairs are added
+            self._set_speech_rows(self._batch_merge_rows(rows) if batch is not None else rows); self._save_workspace()
         if ok and not stale:
             parts=info.get('parts',1); failed=info.get('failed',0); used=info.get('used') or []
             requests=info.get('requests',0); conflicts=info.get('conflicts',0)
@@ -2470,6 +2521,16 @@ class MainWindow(QMainWindow):
                   if any(k in str(res) for k in ('POLICY','SAFETY','REFUSAL')) else '')
             note=('인물 말투표 만들기 실패 · 말투표 없이 번역합니다 · '+str(res)[:160]+hint) if not stale else '원문이 바뀌어 말투표 결과를 쓰지 않았습니다'
         note+=f' · 걸린 시간 {took}' if took else ''
+        if batch is not None:
+            kept=batch.get('speech_kept',0); new=batch.get('speech_added')
+            if rows and kept and new is not None:
+                note+=f' · 이미 있던 {kept}줄은 그대로 두고 새 짝 {new}줄만 더함 (지금 {len(self._speech_rows())}줄)'
+            batch['notes']+=lines+[note]
+            if batch['continuous']:
+                before={(r['speaker'],r['listener']) for r in batch.get('pre_rows') or []}
+                self._batch_auto_speech.update((r['speaker'],r['listener']) for r in self._speech_rows() if (r['speaker'],r['listener']) not in before)
+                self._batch_mark(batch['text_sha'],'speech')
+            self._batch_continue(); return
         address=self._address_note() if rows else ''
         if address and not auto:
             note+='\n'+address      # an automatic start logs it once when the translation starts
@@ -2493,7 +2554,7 @@ class MainWindow(QMainWindow):
         if not (hasattr(self,'auto_terms') and self.auto_terms.isChecked()):
             return 'skip',''
         if self.input_mode!='single':
-            return 'skip','인명·용어 자동 추출 · 폴더 번역에서는 하지 않습니다 (첫 파일을 따로 열어 추출하면 같은 작품 전체에 쓸 수 있음)'
+            return 'skip',''   # a folder run decides file by file (_batch_prepare_file)
         if not self.source_text.strip():
             return 'skip',''
         have=len(self._terms())
@@ -2913,6 +2974,12 @@ class MainWindow(QMainWindow):
         terms=self._terms()
         groups=korean_collisions(terms,focus)
         if not groups: return '',False
+        if getattr(self,'_batch_analysis',None) is not None:
+            # Folder run: nobody may be there to answer. Kept as they are and written to the log.
+            shown=', '.join(f"{'·'.join(s)} → {k}" for k,s in groups[:6])+(' …' if len(groups)>6 else '')
+            where=('폴더의 확정 용어집' if self._batch_analysis.get('continuous') else '그 파일을 따로 열어 확정 용어집')
+            self._name_suggestions={}
+            return f'한글 이름 겹침 {len(groups)}건 · 폴더 번역이라 묻지 않고 그대로 둠: {shown} (확인 필요 · {where}에서 고칠 수 있음)',False
         text=self.source_text or self._speech_source() or ''
         counts={s:text.count(s) for _,srcs in groups for s in srcs} if text else {}
         held={r[k] for r in self._speech_rows() for k in ('speaker','listener')} if hasattr(self,'speech_table') else set()
@@ -3104,10 +3171,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'first_use_panel'):
             self.first_use_panel.setVisible(not has_provider)
         extracting=self._extracting()
+        # A folder file's glossary / speech table is being made: the run is on ([번역 중지]).
+        batch_busy=getattr(self,'_batch_analysis',None) is not None
         # The separate Korean TXT picker is available even without a translation source.
-        self.refinement_run_btn.setEnabled(not running and not extracting)
-        self.start.setEnabled(((running or (has_input and has_provider)) and not extracting) or self._speech_skippable())
-        self.restart_btn.setEnabled((not running) and has_input and not extracting)
+        self.refinement_run_btn.setEnabled(not running and not extracting and not batch_busy)
+        self.start.setEnabled(batch_busy or ((running or (has_input and has_provider)) and not extracting) or self._speech_skippable())
+        self.restart_btn.setEnabled((not running) and has_input and not extracting and not batch_busy)
         checks=[]
         checks.append(('✓' if has_input else '○')+' 원문')
         checks.append(('✓' if has_keys else '○')+f' Gemini 키 {len(self._enabled_keys())}개')
@@ -3379,6 +3448,8 @@ class MainWindow(QMainWindow):
         return bool(self._term_thread and self._term_thread.isRunning())
 
     def _set_running_ui(self, running: bool):
+        if not running and (getattr(self,'_batch_folder',None) is not None or getattr(self,'_batch_scope',None)):
+            self._end_batch_scope()   # a folder run ended: the tables show the folder's own again
         if hasattr(self,'_clock'):
             self._job_clock_start() if running else self._job_clock_stop()
         self._lock_inputs(bool(running))
@@ -3499,9 +3570,25 @@ class MainWindow(QMainWindow):
         self.start_translation(True)
 
     def start_translation(self, force_restart: bool=False):
+        if (self.input_mode=='folder' and getattr(self,'_batch_folder',None) is not None
+                and not (self.worker and self.worker.isRunning()) and not self._resume_timer.isActive()):
+            # A folder run is on while no file is being translated: a file's glossary / speech
+            # table is being made, or the run is between two files. The button is [번역 중지]
+            # here too (never a second run on top of this one).
+            self._stop_batch=True
+            self.start.setEnabled(False); self.status.setText('중지 처리 중 · 분석 요청 정리…')
+            if self._term_thread is not None:
+                # Its own end (even one already queued) finishes the stop: never end the run
+                # under a thread whose result is still on its way.
+                if self._term_thread.isRunning(): self._term_thread.requestInterruption()
+            elif getattr(self,'_batch_analysis',None) is not None: self._batch_continue()
+            else: QTimer.singleShot(0,self._start_next_batch_file)   # ends the stopped run
+            return
         if self._extracting():   # started automatically when the extraction ends
             if self._speech_skippable(): self._skip_auto_speech()
             return
+        if self._term_thread is not None:
+            return   # an analysis just ended; its result (already on its way) is handled first
         if getattr(self,'_guide_timer',None) and self._guide_timer.isActive():
             self._guide_timer.stop(); self._save_user_guide()
         if self._resume_timer.isActive():
@@ -3583,7 +3670,8 @@ class MainWindow(QMainWindow):
         if self.input_mode=='single':
             self._stop_batch=False; self.batch_index=0; self._start_one_worker(self.source_path,self.source_bytes,self.source_text,self.chunks,keys,model)
         elif self.input_mode=='folder':
-            self._stop_batch=False; self.batch_index=0; self.batch_results={}; self.batch_context=''; self._batch_usage={}; self._refresh_job_table(); self._start_next_batch_file(keys,model)
+            self._stop_batch=False; self.batch_index=0; self.batch_results={}; self.batch_context=''; self._batch_usage={}; self._refresh_job_table()
+            self._begin_batch_scope(); self._start_next_batch_file(keys,model)
 
     def _skip_batch_file(self,p:Path,reason:str,keys=None,model=None):
         """Record one folder file as skipped and move on; the queue never stops here."""
@@ -3596,7 +3684,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0,lambda:self._start_next_batch_file(keys or self._enabled_keys(),model or self._selected_model_id()))
 
     def _start_next_batch_file(self,keys=None,model=None):
-        if self._stop_batch:return
+        if self._stop_batch:
+            if (getattr(self,'_batch_folder',None) is not None and not (self.worker and self.worker.isRunning())
+                    and self._term_thread is None and getattr(self,'_batch_analysis',None) is None):
+                # Stopped between two files: the run ends here (the next file was not started).
+                self.on_worker_issue('사용자 중지 · 다음 파일을 시작하기 전에 멈춤 (다시 시작하면 이어서 진행)')
+                self.start.setText('번역 시작 / 계속'); self._set_running_ui(False); self._force_restart=False; self._update_ready_state()
+                self.status.setText('중지 완료 · 다시 시작하면 이어서 진행')
+            return
         if self.batch_index>=len(self.batch_files):
             self._finish_batch_summary(); return
         p=self.batch_files[self.batch_index]
@@ -3610,15 +3705,315 @@ class MainWindow(QMainWindow):
         try:
             self.source_path=p; self.source_bytes=raw; self.source_text=text; self.paragraphs=paras; self.chunks=chunks
             self.batch_results[str(p)]=(f'번역 중 · {enc}','',0); self._refresh_job_table(); self.status.setText(f'파일 {self.batch_index+1:,}/{len(self.batch_files):,} · {p.name} · {self._size_text(len(raw))} · {len(chunks):,} 청크')
+            if self._batch_prepare_file(p,raw,text,chunks,keys,model):
+                return    # this file's glossary / speech table is being made; the file starts after it
             self._start_one_worker(p,raw,text,chunks,keys or self._enabled_keys(),model or self._selected_model_id())
         except Exception as e:
             if self.worker and self.worker.isRunning():
                 raise
+            self._batch_analysis=None
             self._skip_batch_file(p,f'작업을 시작하지 못함 · {type(e).__name__}: {e}',keys,model)
+
+    # ------------------------------------------------------------ 폴더 번역 · 파일마다 용어집·말투표 (v2.5.8)
+    # Each file of a folder run gets its glossary and speech table the way a single file does,
+    # decided again every time the file's turn comes (so any mix of new, half-done, finished,
+    # replaced, renamed or copied files is handled by one rule):
+    #   * the translation record holds saved translation of this exact content (by its bytes):
+    #     the job goes on with the glossary that job was translated with (from the record),
+    #     never extracted again — a different glossary would make it a new job and translate
+    #     the whole file again;
+    #   * otherwise the file is new: names are extracted and a speech table is made first,
+    #     unless that was already done for this text (a run stopped before the first chunk).
+    # 각 파일 독립 작품: every file has its own glossary/table, kept where the file keeps them
+    #   when opened on its own; nothing of one book reaches another (the shared glossary keeps
+    #   its usual rule: only entries the extraction confirms as names of THIS book).
+    # 한 작품의 연속 파일: the folder's tables are shared; a new file adds only names and
+    #   speaker pairs not there yet; existing entries never change.
+    # Nothing here asks a question: a folder run must finish unattended.
+
+    def _begin_batch_scope(self):
+        """Folder run start: the folder's own tables, put back when the run ends."""
+        self._end_batch_scope()
+        self._batch_folder={'terms':self._terms(),'locks':dict(getattr(self,'_term_locks',{}) or {}),'speech':self._speech_rows(),
+                            'auto_sha':getattr(self,'_auto_terms_sha',''),'speech_done':bool(getattr(self,'_speech_done_saved',False)),
+                            'declined':bool(getattr(self,'_terms_declined_saved',False))}
+        self._batch_scope=None; self._batch_job_terms=None; self._batch_analysis=None; self._batch_notes={}
+        if not isinstance(getattr(self,'_batch_marks',None),dict): self._batch_marks={}
+        if not isinstance(getattr(self,'_batch_auto_terms',None),set): self._batch_auto_terms=set()
+        if not isinstance(getattr(self,'_batch_auto_speech',None),set): self._batch_auto_speech=set()
+        if self.batch_relation.currentData()!='continuous':
+            # 각 파일 독립 작품: the folder's entries the user put in apply to every book; entries
+            # a 한 작품의 연속 파일 run added by itself belong to that book, not to these.
+            auto=self._batch_auto_terms; locks=self._batch_folder['locks']
+            terms=self._batch_folder['terms']
+            own={a:b for a,b in terms.items() if a not in auto or locks.get(a)==b}
+            rows=[r for r in self._batch_folder['speech'] if (r['speaker'],r['listener']) not in self._batch_auto_speech]
+            left=len(terms)-len(own); left_rows=len(self._batch_folder['speech'])-len(rows)
+            self._batch_folder['base_terms']=own; self._batch_folder['base_speech']=rows
+            if own or rows:
+                self._log_line('각 파일 독립 작품 · 폴더에 직접 넣어 둔 '+' · '.join(x for x in ((f'확정 용어 {len(own)}개' if own else ''),(f'말투표 {len(rows)}줄' if rows else '')) if x)
+                               +'는 모든 파일에 함께 씁니다 · 자동 추출·말투표는 파일마다 따로 만들어 그 파일에만 씁니다')
+            if left or left_rows:
+                self._log_line('각 파일 독립 작품 · 한 작품의 연속 파일로 번역할 때 자동으로 더해진 폴더의 '
+                               +' · '.join(x for x in ((f'확정 용어 {left}개' if left else ''),(f'말투표 {left_rows}줄' if left_rows else '')) if x)
+                               +'는 다른 작품에 섞이지 않게 쓰지 않습니다 (폴더 용어집에는 그대로 있음)')
+
+    def _log_line(self, message: str):
+        """A job-log line that belongs to no single file."""
+        self.error_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • '+str(message))
+
+    def _end_batch_scope(self):
+        """Folder run end (finished, stopped, closed): the tables show the folder's again."""
+        st=getattr(self,'_batch_folder',None)
+        self._batch_job_terms=None; self._batch_analysis=None
+        if st is None:
+            self._batch_scope=None; return
+        self._batch_folder=None
+        if getattr(self,'_batch_scope',None):
+            self._batch_scope=None
+            self._fill_term_table(st['terms'],st['locks'])
+            self._set_speech_rows(st['speech'])
+            self._auto_terms_sha=st['auto_sha']; self._speech_done_saved=st['speech_done']; self._terms_declined_saved=st['declined']
+        self._save_workspace()
+
+    def _fill_term_table(self, terms: dict, locks: dict):
+        self._term_internal_edit=True     # a program fill: never taken as the user's edit (no lock, no save)
+        try:
+            self.term_table.setRowCount(0)
+            for a,b in terms.items():
+                r=self.term_table.rowCount(); self.term_table.insertRow(r)
+                self.term_table.setItem(r,0,QTableWidgetItem(a)); self.term_table.setItem(r,1,QTableWidgetItem(b))
+            self._term_locks={a:b for a,b in (locks or {}).items() if terms.get(a)==b}
+            try: self._mark_suspicious_terms(); self._update_terms_tab_title()
+            except Exception: pass
+        finally:
+            self._term_internal_edit=False
+
+    def _file_scope_key(self, p: Path, raw: bytes) -> str:
+        return self.workspace_store.key('single',p,self.pm.active.id,hashlib.sha256(raw).hexdigest())
+
+    def _save_file_scope(self):
+        """각 파일 독립 작품: this file's glossary and speech table go where the file keeps
+        them when opened on its own (the rest of that entry is left as it is)."""
+        key=getattr(self,'_batch_scope',None)
+        if not key: return
+        try:
+            state=self.workspace_store.get(key)
+            base=(getattr(self,'_batch_folder',None) or {}).get('base_speech') or []
+            shared={(r['speaker'],r['listener'],r['level'],r['note']) for r in base}
+            terms=self._terms()
+            state.update({'terms':terms,
+                          'term_locks':{a:b for a,b in (getattr(self,'_term_locks',{}) or {}).items() if terms.get(a)==b},
+                          # rows the folder gives every file are not this file's own table
+                          'speech':[r for r in self._speech_rows() if (r['speaker'],r['listener'],r['level'],r['note']) not in shared],
+                          'auto_terms_sha':getattr(self,'_auto_terms_sha',''),
+                          'speech_attempted':bool(getattr(self,'_speech_done_saved',False)),
+                          'auto_terms_declined':bool(getattr(self,'_terms_declined_saved',False))})
+            self.workspace_store.put(key,state)
+        except Exception:
+            pass
+
+    def _trimmed_batch_marks(self) -> dict:
+        marks=dict(getattr(self,'_batch_marks',{}) or {})
+        if len(marks)>2000:
+            marks=dict(list(marks.items())[-2000:])
+        return marks
+
+    def _batch_mark(self, text_sha: str, what: str):
+        if not text_sha: return
+        marks=getattr(self,'_batch_marks',None)
+        if not isinstance(marks,dict): marks=self._batch_marks={}
+        entry=dict(marks.pop(text_sha,{}) or {}); entry[what]=True; marks[text_sha]=entry
+        self._save_workspace()
+
+    def _enter_file_scope(self, p: Path, raw: bytes, prior):
+        """각 파일 독립 작품: show and use this file's own glossary / speech table."""
+        from ..speech_levels import merge_rows
+        key=self._file_scope_key(p,raw)
+        try: state=self.workspace_store.get(key)
+        except Exception: state={}
+        folder=getattr(self,'_batch_folder',None) or {}
+        base={'terms':folder.get('base_terms',{}) or {},'locks':folder.get('locks',{}) or {},'speech':folder.get('base_speech',[]) or []}
+        saved_locks={str(a):str(b) for a,b in (state.get('term_locks') or {}).items()} if isinstance(state.get('term_locks'),dict) else {}
+        if prior is not None:
+            # A job of this file is in the record: exactly the glossary it was translated with.
+            terms=dict(prior); locks=saved_locks
+        else:
+            if isinstance(state.get('terms'),dict):
+                terms={str(a):str(b) for a,b in state['terms'].items() if str(a).strip() and str(b).strip()}
+            else:
+                terms=dict(getattr(self.pm.active,'default_terms',{}) or {})
+                try: terms.update(Database(DATA_DIR/'translations.db').latest_terms_for_source(hashlib.sha256(raw).hexdigest(),self.pm.active.id))
+                except Exception: pass
+            terms.update(base['terms'])                   # entries put in the folder by the user apply to every file
+            locks={**saved_locks,**base['locks']}
+        own=state.get('speech') if isinstance(state.get('speech'),list) else []
+        rows,_=merge_rows(base['speech'],own)
+        self._batch_scope=key                              # every save from here on goes to this file
+        self._fill_term_table(terms,locks)
+        self._set_speech_rows(rows)
+        self._auto_terms_sha=str(state.get('auto_terms_sha') or '')
+        self._speech_done_saved=bool(state.get('speech_attempted'))
+        self._terms_declined_saved=bool(state.get('auto_terms_declined'))
+        return bool(own)
+
+    def _batch_note(self, p: Path, text: str):
+        self._batch_notes[str(p)]=text
+
+    def _batch_prepare_file(self, p: Path, raw: bytes, text: str, chunks, keys, model) -> bool:
+        """Before one folder file is translated. True: an extraction / speech table runs and
+        the file starts when it ends (_batch_continue); False: start the file now."""
+        if getattr(self,'_batch_folder',None) is None:
+            self._begin_batch_scope()     # a run started some other way still keeps the folder's tables
+        self._batch_analysis=None; self._batch_job_terms=None
+        continuous=self.batch_relation.currentData()=='continuous'
+        prior=None; done=total=0
+        if not self._force_restart:
+            try:
+                db=Database(DATA_DIR/'translations.db')
+                row=db.best_project_for_source(hashlib.sha256(raw).hexdigest(),self.pm.active.source_language,self.pm.active.id)
+                if row is not None:
+                    prior=db.project_terms(int(row['id'])); done,total=db.progress_counts(int(row['id']))
+            except Exception:
+                prior=None
+        own_rows=False if continuous else self._enter_file_scope(p,raw,prior)
+        if prior is not None:
+            self._batch_job_terms=dict(prior)
+            rows=len(self._speech_rows())
+            what=('완료된 파일 · 저장된 번역으로 결과를 다시 만듦' if total and done>=total
+                  else f'번역하던 파일 · 저장된 청크 {done:,}/{total:,}개에서 이어 번역')
+            if prior:
+                used=f'그때 쓴 확정 용어집 {len(prior)}개'+(f'·말투표 {rows}줄을' if rows else '를')+' 그대로 씀 (다시 추출하지 않음)'
+                # The folder's glossary (shared, or the user's entries for every file) now says
+                # something else for this file: say so, it applies from the next new file.
+                folder=self._terms() if continuous else ((getattr(self,'_batch_folder',None) or {}).get('base_terms') or {})
+                edited=[k for k,v in prior.items() if k in folder and folder[k]!=v]
+                added=[k for k in folder if k not in prior and k in (self.source_text or '')]
+                if edited or added:
+                    shown=', '.join([f'{k} {prior[k]}→{folder[k]}' for k in edited[:4]]+[f'{k}→{folder[k]} (새 항목)' for k in added[:4]])
+                    used+=(f' · 그 뒤 바뀐 폴더 용어집({shown})은 이 파일에 쓰지 않고 새로 시작하는 파일부터 적용 — 이미 번역된 이름은 '
+                           '그 파일을 따로 열어 확정 용어집에서 고친 뒤 [번역 시작 / 계속]을 누르면 다시 번역하지 않고 바뀜')
+            else:
+                used='용어집 없이 번역하던 파일이라 그대로 이어 감 (지금 용어집을 넣으면 처음부터 다시 번역하게 되므로 넣지 않음)'+(f' · 말투표 {rows}줄' if rows else '')
+            self.on_worker_issue(f'용어·말투 · {what} · {used}')
+            self._batch_note(p,('완료' if total and done>=total else '이어 번역')+f' · 저장된 용어집 {len(prior)}개 사용')
+            return False
+        text_sha=self._source_sha()
+        mark=self._batch_marks.get(text_sha,{}) if continuous else {}
+        st={'path':p,'raw':raw,'text':text,'chunks':chunks,'keys':keys,'model':model,'notes':[],'added':0,
+            'continuous':continuous,'text_sha':text_sha,'own_rows':own_rows,'before':len(self._terms()),
+            'speech_done':bool(mark.get('speech')) if continuous else bool(self._speech_done_saved),'pre_rows':[]}
+        self._batch_analysis=st
+        if self.auto_terms.isChecked():
+            already=bool(mark.get('terms')) if continuous else (bool(text_sha) and self._auto_terms_sha==text_sha)
+            if already:
+                st['notes'].append(f'인명·용어 자동 추출 · 이 파일은 이미 추출함 · 확정 용어집 {len(self._terms())}개로 번역')
+            else:
+                if self._begin_term_extraction(text,auto=True):
+                    self._term_thread._batch=st; self._batch_busy_ui(); return True
+                st['notes'].append(getattr(self,'_auto_terms_fail','') or '인명·용어 자동 추출 · 시작하지 못해 용어집만으로 번역합니다')
+        if self._batch_speech_step():
+            return True
+        return self._batch_continue(launch=False)   # True only when the run was stopped meanwhile
+
+    def _batch_speech_step(self) -> bool:
+        """The speech table of the folder file whose names were just settled. True: it runs."""
+        st=self._batch_analysis
+        if st is None or not self.auto_speech.isChecked(): return False
+        if self.pm.active.source_language not in ('zh','en','ja'): return False
+        if st['speech_done']:
+            return False
+        if st['continuous']:
+            if self._speech_rows() and not st['added']:
+                st['notes'].append(f'인물 말투표 · 새 인물이 없어 폴더 말투표 {len(self._speech_rows())}줄을 그대로 씀')
+                return False
+        elif st['own_rows']:
+            return False
+        key=st['text_sha'] or self._source_sha()
+        if key in self._speech_tried or self._speech_people()<2:
+            return False
+        st['pre_rows']=self._speech_rows()
+        if self._begin_speech_extraction(auto=True):
+            self._term_thread._batch=st; self._batch_busy_ui(); return True
+        if getattr(self,'_speech_fail',''): st['notes'].append(self._speech_fail)
+        return False
+
+    def _stale_batch_result(self, thread, batch) -> bool:
+        """An analysis made for a folder file whose run has ended (or moved on): its result
+        belongs to no table any more and must not start anything."""
+        tagged=getattr(thread,'_batch',None) if thread is not None else None
+        if tagged is None or tagged is batch:
+            return False
+        self._update_ready_state()
+        return True
+
+    def _batch_busy_ui(self):
+        """While a folder file's analysis runs, the main button stops the whole run."""
+        self.start.setText('번역 중지'); self.start.setEnabled(True)
+        if hasattr(self,'pause_btn'): self.pause_btn.setEnabled(False)
+
+    def _batch_keep_previous(self, worker, raw: bytes):
+        """A folder file with saved translation whose job differs from the saved one ONLY in
+        the text carried over from the previous file (the folder's 파일 관계 was switched, or
+        the previous file came out differently): keep the saved translation and translate only
+        the rest, as a single file does when the user chooses to keep it. Any other change
+        keeps the earlier behaviour."""
+        if not callable(getattr(worker,'identity_change',None)): return
+        try:
+            db=Database(DATA_DIR/'translations.db')
+            info=worker.identity_change(db,hashlib.sha256(raw).hexdigest())
+            if info and list(info.get('labels') or [])==['앞 파일에서 이어지는 문맥'] and not info.get('unknown_other'):
+                worker.adopt_previous(db,info)
+                self.on_worker_issue(f'이전 번역 이어 쓰기 · 앞 파일에서 이어지는 문맥만 달라져(파일 관계 변경 등) '
+                                     f'이미 번역한 {info["done"]:,}청크는 그대로 두고 남은 부분만 번역합니다')
+        except Exception as e:
+            self.on_worker_issue(f'이전 번역 기록 확인 생략 · {type(e).__name__}: {e}')
+
+    def _batch_merge_rows(self, rows):
+        """Generated rows for a folder file: the rows it already had stay as they are."""
+        from ..speech_levels import merge_rows
+        st=getattr(self,'_batch_analysis',None)
+        pre=list((st or {}).get('pre_rows') or [])
+        merged,added=merge_rows(pre,rows)
+        if st is not None: st['speech_added']=added; st['speech_kept']=len(pre)
+        return merged
+
+    def _batch_continue(self, launch: bool=True) -> bool:
+        """The folder file's analysis is over: log it and start the file (launch=True), or end
+        a run stopped meanwhile. Returns True when the run was stopped."""
+        st=getattr(self,'_batch_analysis',None); self._batch_analysis=None
+        if st is None: return bool(self._stop_batch)
+        if self._stop_batch:
+            for n in st['notes']:
+                if n: self.on_worker_issue(n)
+            p=st['path']
+            self.on_worker_issue('사용자 중지 · 용어·말투 분석 중에 멈춤 · 이 파일은 아직 번역하지 않았습니다 (다시 시작하면 이 파일부터 진행)')
+            self.batch_results[str(p)]=('사용자 중지 · 번역 전','',0)
+            try: self._refresh_job_table()
+            except Exception: pass
+            self.start.setText('번역 시작 / 계속'); self._set_running_ui(False); self._force_restart=False; self._update_ready_state()
+            self.status.setText('중지 완료 · 다시 시작하면 이어서 진행')
+            return True
+        self._lock_inputs(True)
+        for n in st['notes']:
+            if n: self.on_worker_issue(n)
+        added=len(self._terms())-st['before']
+        rows=len(self._speech_rows())
+        self._batch_note(st['path'],'새 파일 · 확정 용어집 '+(f'{len(self._terms())}개 (이번에 {added}개 추가)' if added>0 else f'{len(self._terms())}개')
+                         +(f' · 말투표 {rows}줄' if rows else ' · 말투표 없음'))
+        if launch:
+            p=st['path']
+            try:
+                self._start_one_worker(p,st['raw'],st['text'],st['chunks'],st['keys'] or self._enabled_keys(),st['model'] or self._selected_model_id())
+            except Exception as e:
+                if self.worker and self.worker.isRunning(): raise
+                self._skip_batch_file(p,f'작업을 시작하지 못함 · {type(e).__name__}: {e}',st['keys'],st['model'])
+        return False
 
     def _make_worker(self,p,raw,chunks,key_records,model):
         seed_context=self.batch_context if self.input_mode=='folder' and self.batch_relation.currentData()=='continuous' else ''
-        return TranslationWorker(p,raw,self.pm.active,chunks,model,[r.to_dict() for r in key_records],self._terms(),self.mode.currentData() or 'balanced',self._output_dir_for(p),self._effective_book_memory(),self._language_options(),seed_context,restart_existing=self._force_restart,openai_settings=self._openai_worker_settings(),all_paragraphs=self.paragraphs,parent=self,local_settings=self._local_worker_settings(),engine_order=self._engine_order(),speech_table=self._speech_rows(),common_terms=self._common_terms_for_job(),sentence_style=self._sentence_style_value())
+        terms=self._batch_job_terms if (self.input_mode=='folder' and getattr(self,'_batch_job_terms',None) is not None) else self._terms()
+        return TranslationWorker(p,raw,self.pm.active,chunks,model,[r.to_dict() for r in key_records],dict(terms),self.mode.currentData() or 'balanced',self._output_dir_for(p),self._effective_book_memory(),self._language_options(),seed_context,restart_existing=self._force_restart,openai_settings=self._openai_worker_settings(),all_paragraphs=self.paragraphs,parent=self,local_settings=self._local_worker_settings(),engine_order=self._engine_order(),speech_table=self._speech_rows(),common_terms=self._common_terms_for_job(),sentence_style=self._sentence_style_value())
 
     def _confirm_identity_change(self, keys, model) -> bool:
         """Single file, user present: an earlier job on this source holds translation that the
@@ -3687,6 +4082,8 @@ class MainWindow(QMainWindow):
         self.start.setText('번역 중지'); self.start.setEnabled(True)
         self._save_workspace()
         self.worker=self._make_worker(p,raw,chunks,key_records,model)
+        if self.input_mode=='folder' and getattr(self,'_batch_job_terms',None) is not None and not self._force_restart:
+            self._batch_keep_previous(self.worker,raw)
         self.worker.progress.connect(self.on_progress); self.worker.failed.connect(self.on_failed); self.worker.paused.connect(self.on_paused); self.worker.finished_ok.connect(self.on_finished)
         self.worker.result_ready.connect(self.on_result_ready); self.worker.finished.connect(self._worker_thread_finished); self.worker.key_disabled.connect(self.on_key_disabled); self.worker.issue.connect(self.on_worker_issue); self.worker.api_state.connect(self.on_api_state)
         if hasattr(self.worker,'chunk_translated'): self.worker.chunk_translated.connect(self.on_chunk_translated)
@@ -4053,6 +4450,14 @@ class MainWindow(QMainWindow):
         lines += [f'걸린 시간: {took} (일시정지 시간 제외)']
         usage=self._batch_usage_lines()
         if usage: lines += ['']+usage
+        notes=getattr(self,'_batch_notes',{}) or {}
+        if notes:
+            lines += ['','파일별 확정 용어집·인물 말투표 (새 파일은 추출·생성, 번역하던 파일은 그때 쓴 용어집 그대로)']
+            for p in self.batch_files:
+                if str(p) not in notes: continue
+                try: rel=p.relative_to(self.batch_root)
+                except Exception: rel=p.name
+                lines.append(f'{rel}\t{notes[str(p)]}')
         if left_files:
             lines += ['','남은 미번역 상세 (청크 번호 · 원문으로 남은 문단 번호 P······)']
             for p in left_files:
@@ -4099,6 +4504,8 @@ class MainWindow(QMainWindow):
             self._term_thread.requestInterruption()
             self.status.setText('자동 분석 취소 요청 · 현재 API 요청 정리 후 종료합니다…')
             event.ignore(); return
+        if getattr(self,'_batch_folder',None) is not None and not (self.worker and self.worker.isRunning()):
+            self._end_batch_scope()
         self._save_workspace()
         if self._resume_timer.isActive(): self._resume_timer.stop()
         if self.worker and self.worker.isRunning():
