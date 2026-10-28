@@ -344,6 +344,27 @@ class ElidedLabel(QLabel):
     def resizeEvent(self,event):
         super().resizeEvent(event);self.setText(self._full_text)
 
+class FitComboBox(QComboBox):
+    """A combo box that is always wide enough for its longest item. With the window's
+    style sheet (QComboBox padding) Qt leaves the drop-down arrow out of the size it asks for,
+    so on Windows the end of an item was cut off ("각 파일 독립 작품 (기"). The width is
+    measured with the font the box really uses, plus the arrow and padding."""
+    def _fit_width(self) -> int:
+        fm=self.fontMetrics()
+        text=max((fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())),default=0)
+        arrow=18
+        try:
+            from PySide6.QtWidgets import QStyleOptionComboBox, QStyle
+            opt=QStyleOptionComboBox(); self.initStyleOption(opt)
+            arrow=max(arrow,self.style().subControlRect(QStyle.CC_ComboBox,opt,QStyle.SC_ComboBoxArrow,self).width())
+        except Exception:
+            pass
+        return text+arrow+30   # padding, frame and a little room
+    def sizeHint(self):
+        s=super().sizeHint(); s.setWidth(max(s.width(),self._fit_width())); return s
+    def minimumSizeHint(self):
+        s=super().minimumSizeHint(); s.setWidth(max(s.width(),self._fit_width())); return s
+
 class NoChainTextEdit(QPlainTextEdit):
     """A text box inside a scrolling tab: the mouse wheel scrolls only the box, never the
     whole tab when the box reaches its end (which hid the options above it)."""
@@ -491,7 +512,7 @@ class MainWindow(QMainWindow):
         # Row 2: folder options (only shown for a folder job)
         self.folder_opts_widget=QWidget(); folder_opts=QHBoxLayout(self.folder_opts_widget); folder_opts.setContentsMargins(0,0,0,0)
         self.include_sub=QCheckBox('하위 폴더 포함'); self.include_sub.stateChanged.connect(self._rescan_folder_if_needed); self.include_sub.setEnabled(False); folder_opts.addWidget(self.include_sub)
-        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=QComboBox(); self.batch_relation.setSizeAdjustPolicy(QComboBox.AdjustToContents); self.batch_relation.addItem('각 파일 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
+        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=FitComboBox(); self.batch_relation.setSizeAdjustPolicy(QComboBox.AdjustToContents); self.batch_relation.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed); self.batch_relation.addItem('각 파일 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
         self.folder_opts_caption=_cap('폴더 옵션')
         ib.addWidget(self.folder_opts_caption,2,0); ib.addWidget(self.folder_opts_widget,2,1)
         # Row 3: where results go
@@ -577,7 +598,7 @@ class MainWindow(QMainWindow):
         self.view_result_btn.clicked.connect(lambda:self._show_preview('result'))
         self.result_copy_btn=QPushButton('결과 복사'); self.result_copy_btn.clicked.connect(self._copy_result); self.result_copy_btn.setEnabled(False)
         self.result_save_btn=QPushButton('결과 저장'); self.result_save_btn.clicked.connect(self._save_result); self.result_save_btn.setEnabled(False)
-        self.preview_hint=QLabel('TXT·PDF·EPUB 파일을 열거나, 이 창에 글을 직접 붙여넣거나 고친 뒤 [번역 시작 / 계속]을 누르면 창의 내용 그대로 번역합니다.')
+        self.preview_hint=QLabel(self.PREVIEW_HINT)
         self.preview_hint.setStyleSheet('color:#6b7280;')
         for w_ in (self.view_source_btn,self.view_result_btn,self.result_copy_btn,self.result_save_btn): vrow.addWidget(w_)
         vrow.addWidget(self.preview_hint,1); pv.addLayout(vrow)
@@ -2597,6 +2618,8 @@ class MainWindow(QMainWindow):
         return 'extract' if clicked is extract else 'resume' if clicked is resume else 'cancel'
 
     # ---------------------------------------------------------------- 원문 창
+    PREVIEW_HINT='TXT·PDF·EPUB 파일을 열거나, 이 창에 글을 직접 붙여넣거나 고친 뒤 [번역 시작 / 계속]을 누르면 창의 내용 그대로 번역합니다.'
+
     def _set_preview_source(self, text: str):
         """Fill the 원문 window programmatically (not an edit by the user)."""
         self._preview_loading=True
@@ -2604,9 +2627,41 @@ class MainWindow(QMainWindow):
             self._preview_mode='source'; self.view_source_btn.setChecked(True); self.view_result_btn.setChecked(False)
             self.preview.setReadOnly(self.input_mode=='folder')
             self.preview.setPlainText(text or '')
-            self._preview_baseline=self.preview.toPlainText()
+            self._preview_baseline=self.preview.toPlainText(); self._source_draft=self._preview_baseline
         finally:
             self._preview_loading=False
+        self._batch_view=None; self._update_preview_hint()
+
+    def _show_batch_source(self, p: Path, text: str):
+        """Folder run: the 원문 window shows the file being translated now, the way a single
+        file is shown (v2.5.8). Display only — the window is read-only in folder mode and the
+        run reads every file itself, so nothing shown here is ever translated or changes a job.
+        A file is put into the window only while 원문 is on screen; otherwise it waits until
+        [원문] is pressed (a big file costs no time while the live translation is watched)."""
+        self._source_draft=text or ''; self._preview_baseline=self._source_draft
+        self._batch_view=(self.batch_index+1,len(self.batch_files),p.name)
+        if getattr(self,'_preview_mode','source')=='source':
+            self._preview_loading=True
+            try:
+                self.preview.setReadOnly(True); self.preview.setPlainText(self._source_draft)
+            finally:
+                self._preview_loading=False
+        self._update_preview_hint()
+
+    def _update_preview_hint(self):
+        view=getattr(self,'_batch_view',None) if self.input_mode=='folder' else None
+        if not hasattr(self,'preview_hint'):
+            return
+        if view:
+            running=bool(self.worker and self.worker.isRunning()) or getattr(self,'_batch_folder',None) is not None
+            what='번역 중인 파일' if running else '마지막으로 번역한 파일'
+            self.preview_hint.setText(f'폴더 번역 {view[0]:,}/{view[1]:,} · [원문]은 {what}의 원문 (읽기 전용)')
+            self.preview_hint.setToolTip(view[2])
+        elif self.input_mode=='folder':
+            self.preview_hint.setText('폴더 번역 · 번역을 시작하면 번역 중인 파일의 원문이 [원문]에 표시됩니다 (읽기 전용)')
+            self.preview_hint.setToolTip('')
+        else:
+            self.preview_hint.setText(self.PREVIEW_HINT); self.preview_hint.setToolTip('')
 
     def _preview_edited(self) -> bool:
         """True when the 원문 window holds pasted/edited text that differs from the loaded file."""
@@ -2692,7 +2747,8 @@ class MainWindow(QMainWindow):
         self.batch_relation.setEnabled(False); self.include_sub.setEnabled(False); self._update_batch_memory_mode()
         self.source_path=path; self.source_bytes=raw; self.source_text=text; self._paste_active=True
         self._terms_declined_saved=False; self._speech_done_saved=False   # a new text: nothing settled for it yet
-        self._preview_baseline=self.preview.toPlainText()
+        self._preview_baseline=self.preview.toPlainText(); self._source_draft=self._preview_baseline
+        self._batch_view=None; self._update_preview_hint()
         self._rechunk(); self._refresh_job_table(); self._update_output_label()
         self.file_label.setText(f'원문 창의 글 · {len(text):,}자 · 임시 원문 {path.name} (이미 번역한 부분은 번역 기억으로 재사용)')
         if not self.paragraphs:
@@ -2714,7 +2770,8 @@ class MainWindow(QMainWindow):
         self._preview_loading=True
         try:
             if mode=='result':
-                self._source_draft=self.preview.toPlainText()   # keep unsaved edits/pastes
+                if self.input_mode!='folder':
+                    self._source_draft=self.preview.toPlainText()   # keep unsaved edits/pastes (folder: read-only, set per file)
                 self.preview.setPlainText(self._result_text); self.preview.setReadOnly(True)
             else:
                 self.preview.setPlainText(getattr(self,'_source_draft',self._preview_baseline))
@@ -3455,6 +3512,7 @@ class MainWindow(QMainWindow):
     def _set_running_ui(self, running: bool):
         if not running and (getattr(self,'_batch_folder',None) is not None or getattr(self,'_batch_scope',None)):
             self._end_batch_scope()   # a folder run ended: the tables show the folder's own again
+        if not running: QTimer.singleShot(0,self._update_preview_hint)
         if hasattr(self,'_clock'):
             self._job_clock_start() if running else self._job_clock_stop()
         self._lock_inputs(bool(running))
@@ -3676,6 +3734,7 @@ class MainWindow(QMainWindow):
             self._stop_batch=False; self.batch_index=0; self._start_one_worker(self.source_path,self.source_bytes,self.source_text,self.chunks,keys,model)
         elif self.input_mode=='folder':
             self._stop_batch=False; self.batch_index=0; self.batch_results={}; self.batch_context=''; self._batch_usage={}; self._refresh_job_table()
+            self._batch_live_shown=False
             self._begin_batch_scope(); self._start_next_batch_file(keys,model)
 
     def _skip_batch_file(self,p:Path,reason:str,keys=None,model=None):
@@ -3709,6 +3768,7 @@ class MainWindow(QMainWindow):
             self._skip_batch_file(p,f'파일을 읽지 못함 · {e}',keys,model); return
         try:
             self.source_path=p; self.source_bytes=raw; self.source_text=text; self.paragraphs=paras; self.chunks=chunks
+            self._show_batch_source(p,text)
             self.batch_results[str(p)]=(f'번역 중 · {enc}','',0); self._refresh_job_table(); self.status.setText(f'파일 {self.batch_index+1:,}/{len(self.batch_files):,} · {p.name} · {self._size_text(len(raw))} · {len(chunks):,} 청크')
             if self._batch_prepare_file(p,raw,text,chunks,keys,model):
                 return    # this file's glossary / speech table is being made; the file starts after it
@@ -4179,8 +4239,10 @@ class MainWindow(QMainWindow):
             sb=self.preview.verticalScrollBar(); follow=sb.value()>=sb.maximum()-4
             self._preview_loading=True; self.preview.appendPlainText('\n'+block); self._preview_loading=False
             if follow: sb.setValue(sb.maximum())
-        elif self.input_mode=='folder' and self.tabs.currentWidget() is self.preview_tab:
-            self._show_preview('result')   # the source pane is empty in folder mode: show the live translation
+        elif self.input_mode=='folder' and self.tabs.currentWidget() is self.preview_tab and not getattr(self,'_batch_live_shown',False):
+            # Once per run the live translation comes up by itself; after that [원문] / [번역 결과]
+            # stay where the user put them (원문 = the file being translated now).
+            self._batch_live_shown=True; self._show_preview('result')
 
     def _link_result_for_refinement(self, path):
         """Remember the speech table and glossary this result was translated with, so
