@@ -39,6 +39,7 @@ def test_folder_file_translated_alone_after_a_stop_goes_on_with_the_folder_job(q
     for n, names, tag in (('1.txt', ['林雨', '苏晴'], 'A'), ('2.txt', ['林雨', '赵敏'], 'B'), ('3.txt', ['周芸', '韩冬'], 'C')):
         (books / n).write_text(book(names, tag, n=60), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside file 2 even on a fast machine
     asks = []
     monkeypatch.setattr(w, '_ask_identity_change', lambda info: asks.append(info) or 'cancel')
     try:

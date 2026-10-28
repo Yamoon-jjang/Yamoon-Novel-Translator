@@ -70,6 +70,8 @@ class World:
         self.lock = threading.Lock()
         self.run = 0                     # folder runs started so far
         self.saved_before = {}           # run -> translation saved in the record when it started
+        self.delay = 0.01                # seconds per translation answer (tests that stop mid-file raise it,
+                                         # so a fast machine cannot finish the file before [번역 중지] lands)
 
     # -- name extraction / speech table (the window's analysis threads)
     def analysis(self, req):
@@ -108,7 +110,7 @@ class World:
                 self.translated.append((self.current, body.strip(), self.run))
             names = ' '.join(ko for src, ko in KO.items() if src in body)   # the names as the glossary had them
             out.append(f'<P{pid}>\n' + (names + ' ' if names else '') + '한국어로 옮긴 문장입니다' * max(1, len(body) // 10))
-        time.sleep(0.01)
+        time.sleep(self.delay)
         return TranslationResponse('\n\n'.join(out), 'STOP', {})
 
     def requests_for(self, name, run=None):
@@ -356,6 +358,7 @@ def test_independent_run_stopped_inside_a_file_resumes_without_extracting_or_tra
     for n, names, tag in (('1.txt', ['林雨', '苏晴'], 'A'), ('2.txt', ['赵敏', '陈屿'], 'B'), ('3.txt', ['周芸', '韩冬'], 'C')):
         (books / n).write_text(book(names, tag, n=60), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside the file even on a fast machine
     try:
         _open_folder(w, books)
         r = _run(qt_app, w, stop_when=lambda: _saved_chunks(world, '2.txt') >= 1)
@@ -482,6 +485,7 @@ def test_continuous_run_resumed_keeps_every_files_job_even_after_the_glossary_gr
     (books / '2.txt').write_text(book(['林雨', '苏晴', '王强'], 'B', n=50), encoding='utf-8')
     (books / '3.txt').write_text(book(['林雨', '王强', '周芸'], 'C', n=50), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside the file even on a fast machine
     try:
         _open_folder(w, books, 'continuous')
         assert _run(qt_app, w, stop_when=lambda: _saved_chunks(world, '3.txt') >= 1) == 'stopped'
@@ -574,6 +578,7 @@ def test_switching_the_mode_after_a_stop_keeps_the_started_files(qt_app, world, 
     (books / '2.txt').write_text(book(['林雨', '王强'], 'B', n=50), encoding='utf-8')
     (books / '3.txt').write_text(book(['林雨', '周芸'], 'C', n=50), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside the file even on a fast machine
     try:
         _open_folder(w, books, 'independent')
         assert _run(qt_app, w, stop_when=lambda: _saved_chunks(world, '2.txt') >= 1) == 'stopped'
@@ -597,6 +602,7 @@ def test_folder_translated_by_an_earlier_version_goes_on_with_its_glossary(qt_ap
     (books / '1.txt').write_text(book(['林雨', '苏晴'], 'A', n=50), encoding='utf-8')
     (books / '2.txt').write_text(book(['赵敏', '陈屿'], 'B', n=50), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside the file even on a fast machine
     try:
         _open_folder(w, books)
         w.auto_terms.setChecked(False); w.auto_speech.setChecked(False)   # what an older build did
@@ -859,6 +865,7 @@ def test_japanese_and_english_folders_follow_the_same_rules(qt_app, world, monke
     (books / '1.txt').write_text(lang_book(names[0:2], 'A', lang), encoding='utf-8')
     (books / '2.txt').write_text(lang_book(names[2:4], 'B', lang, n=50), encoding='utf-8')
     w = _new_window(world, monkeypatch)
+    world.delay = 0.05   # [번역 중지] must land inside the file even on a fast machine
     try:
         w._open_folder_path(str(books)); w._apply_profile(profile); w._scan_batch_files(); w._update_ready_state()
         assert w.pm.active.id == profile
