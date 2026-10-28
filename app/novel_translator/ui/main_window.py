@@ -327,14 +327,19 @@ class TermExtractThread(QThread):
 
 
 class ElidedLabel(QLabel):
-    def __init__(self,text='',parent=None):
+    """One line that never runs past its box: a long text gets '…' (the whole text in the
+    tooltip). The width left for the text excludes the box's padding and border (v2.5.8: the
+    end of a long path was cut off without '…' inside a padded card)."""
+    PAD = 26   # card padding + border on both sides, with a little room
+    def __init__(self,text='',parent=None,mode=Qt.ElideMiddle):
         super().__init__('',parent)
-        self._full_text=text
+        self._full_text=text; self._mode=mode
         self.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         self.setText(text)
     def setText(self,text):
         self._full_text=str(text);self.setToolTip(self._full_text)
-        super().setText(self.fontMetrics().elidedText(self._full_text,Qt.ElideMiddle,max(1,self.width())))
+        room=max(1,self.width()-(self.PAD if self.styleSheet() else 4))
+        super().setText(self.fontMetrics().elidedText(self._full_text,self._mode,room))
     def text(self):return self._full_text
     def resizeEvent(self,event):
         super().resizeEvent(event);self.setText(self._full_text)
@@ -472,12 +477,12 @@ class MainWindow(QMainWindow):
         row=QHBoxLayout(); row.setSpacing(6)
         self.single_btn=QPushButton('TXT·PDF·EPUB 파일 선택'); self.single_btn.clicked.connect(self.open_txt)
         self.folder_btn=QPushButton('폴더 선택'); self.folder_btn.setToolTip('폴더 안의 TXT·PDF·EPUB 파일을 한 파일씩 차례로 번역합니다.'); self.folder_btn.clicked.connect(self.open_folder)
-        self.paste_hint=QLabel('또는 TXT·PDF·EPUB 파일·폴더 끌어다 놓기 · 글 붙여넣기 (Ctrl+V)'); self.paste_hint.setStyleSheet('color:#6b7280;')
+        self.paste_hint=ElidedLabel('또는 TXT·PDF·EPUB 파일·폴더 끌어다 놓기 · 글 붙여넣기 (Ctrl+V)',mode=Qt.ElideRight); self.paste_hint.setStyleSheet('color:#6b7280;')
         # [파일 선택][▾]: the ▾ beside it lists the files opened before (최근 연 파일, as in 야문 클린리더).
         self.recent_btn=QPushButton('▾'); self.recent_btn.setToolTip('최근 연 파일 (최대 20개)'); self.recent_btn.setFixedWidth(26)
         self.recent_btn.clicked.connect(self._show_recent_menu)
         files_pair=QHBoxLayout(); files_pair.setSpacing(1); files_pair.addWidget(self.single_btn); files_pair.addWidget(self.recent_btn)
-        row.addLayout(files_pair); row.addWidget(self.folder_btn); row.addSpacing(6); row.addWidget(self.paste_hint); row.addStretch(1)
+        row.addLayout(files_pair); row.addWidget(self.folder_btn); row.addSpacing(6); row.addWidget(self.paste_hint,1)
         self.reset_settings_btn=QPushButton('설정 초기화'); self.reset_settings_btn.setToolTip('API 설정(엔진·키·모델)과 원문·번역 파일을 보존하고, 앱 옵션 및 현재 작업의 메모·확정 용어를 기본값으로 되돌립니다.'); self.reset_settings_btn.clicked.connect(self._reset_settings); row.addWidget(self.reset_settings_btn)
         ib.addWidget(_cap('번역할 원문'),0,0); ib.addLayout(row,0,1)
         # Row 1: what is selected now
@@ -486,7 +491,7 @@ class MainWindow(QMainWindow):
         # Row 2: folder options (only shown for a folder job)
         self.folder_opts_widget=QWidget(); folder_opts=QHBoxLayout(self.folder_opts_widget); folder_opts.setContentsMargins(0,0,0,0)
         self.include_sub=QCheckBox('하위 폴더 포함'); self.include_sub.stateChanged.connect(self._rescan_folder_if_needed); self.include_sub.setEnabled(False); folder_opts.addWidget(self.include_sub)
-        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=QComboBox(); self.batch_relation.addItem('각 파일 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
+        folder_opts.addSpacing(12); folder_opts.addWidget(QLabel('파일 관계')); self.batch_relation=QComboBox(); self.batch_relation.setSizeAdjustPolicy(QComboBox.AdjustToContents); self.batch_relation.addItem('각 파일 독립 작품 (기본)','independent'); self.batch_relation.addItem('한 작품의 연속 파일','continuous'); self.batch_relation.currentIndexChanged.connect(lambda _=None: (self._update_batch_memory_mode(), self._save_workspace())); self.batch_relation.setEnabled(False); folder_opts.addWidget(self.batch_relation); folder_opts.addStretch(1)
         self.folder_opts_caption=_cap('폴더 옵션')
         ib.addWidget(self.folder_opts_caption,2,0); ib.addWidget(self.folder_opts_widget,2,1)
         # Row 3: where results go
@@ -1061,7 +1066,7 @@ class MainWindow(QMainWindow):
         self._lang_chosen = False
         self._terms_declined_saved = False; self._speech_done_saved = False
         self._paste_lang_locked = False
-        self._batch_marks = {}; self._batch_scope = None; self._batch_job_terms = None
+        self._batch_marks = {}; self._batch_scope = None; self._batch_job_terms = None; self._batch_rename = None
         self._batch_auto_terms = set(); self._batch_auto_speech = set()
         if hasattr(self,'view_result_btn'): self._set_result('')
 
@@ -3877,8 +3882,19 @@ class MainWindow(QMainWindow):
             except Exception:
                 prior=None
         own_rows=False if continuous else self._enter_file_scope(p,raw,prior)
+        self._batch_rename=None
         if prior is not None:
             self._batch_job_terms=dict(prior)
+            if continuous and prior:
+                # 한 작품의 연속 파일: only the Korean spelling of names already in this file's
+                # glossary changed in the folder glossary -> the saved translation is renamed in
+                # place (no translation again), the way a single file does it. Anything else
+                # (added / removed entries) keeps the job's own glossary.
+                from ..name_rename import renames_between
+                folder=self._terms()
+                wanted={k:(folder[k] if k in folder and folder[k]!=v else v) for k,v in prior.items()}
+                if wanted!=prior and renames_between(prior,wanted):
+                    self._batch_rename=(dict(prior),wanted)
             rows=len(self._speech_rows())
             what=('완료된 파일 · 저장된 번역으로 결과를 다시 만듦' if total and done>=total
                   else f'번역하던 파일 · 저장된 청크 {done:,}/{total:,}개에서 이어 번역')
@@ -3887,7 +3903,7 @@ class MainWindow(QMainWindow):
                 # The folder's glossary (shared, or the user's entries for every file) now says
                 # something else for this file: say so, it applies from the next new file.
                 folder=self._terms() if continuous else ((getattr(self,'_batch_folder',None) or {}).get('base_terms') or {})
-                edited=[k for k,v in prior.items() if k in folder and folder[k]!=v]
+                edited=[k for k,v in prior.items() if k in folder and folder[k]!=v and not self._batch_rename]
                 added=[k for k in folder if k not in prior and k in (self.source_text or '')]
                 if edited or added:
                     shown=', '.join([f'{k} {prior[k]}→{folder[k]}' for k in edited[:4]]+[f'{k}→{folder[k]} (새 항목)' for k in added[:4]])
@@ -3962,12 +3978,47 @@ class MainWindow(QMainWindow):
         try:
             db=Database(DATA_DIR/'translations.db')
             info=worker.identity_change(db,hashlib.sha256(raw).hexdigest())
-            if info and list(info.get('labels') or [])==['앞 파일에서 이어지는 문맥'] and not info.get('unknown_other'):
+            if info and (list(info.get('labels') or [])==['앞 파일에서 이어지는 문맥'] or self._rename_only(info)) and not info.get('unknown_other'):
                 worker.adopt_previous(db,info)
                 self.on_worker_issue(f'이전 번역 이어 쓰기 · 앞 파일에서 이어지는 문맥만 달라져(파일 관계 변경 등) '
                                      f'이미 번역한 {info["done"]:,}청크는 그대로 두고 남은 부분만 번역합니다')
         except Exception as e:
             self.on_worker_issue(f'이전 번역 기록 확인 생략 · {type(e).__name__}: {e}')
+
+    @staticmethod
+    def _rename_only(info) -> bool:
+        """The saved job differs only by Korean spellings of its own names (renamed in place
+        by adopt_previous) and possibly the text carried over from the previous file."""
+        labels=set(info.get('labels') or [])
+        return (bool(info.get('renames')) and not info.get('added') and not info.get('removed')
+                and not info.get('unknown_other') and labels<= {'확정 용어집','앞 파일에서 이어지는 문맥'})
+
+    def _batch_try_rename(self, p, raw, chunks, key_records, model):
+        """Use the folder's new spelling for this saved file only when the job sees it as a
+        pure rename of its own saved translation (identity_change is None); otherwise the
+        file keeps its glossary, so nothing is ever translated again because of it."""
+        old,new=self._batch_rename
+        if not callable(getattr(TranslationWorker,'identity_change',None)):
+            return
+        probe=None
+        try:
+            self._batch_job_terms=dict(new)
+            probe=self._make_worker(p,raw,chunks,key_records,model)
+            info=probe.identity_change(Database(DATA_DIR/'translations.db'),hashlib.sha256(raw).hexdigest())
+            if info is None or self._rename_only(info):
+                from ..name_rename import renames_between
+                pairs=', '.join(f'{a}→{b}' for a,b in list(renames_between(old,new).items())[:6])
+                self.on_worker_issue(f'폴더 용어집의 바뀐 이름 표기를 이 파일의 저장된 번역에도 반영 (다시 번역하지 않음): {pairs}')
+                return
+            self._batch_job_terms=dict(old)
+            self.on_worker_issue('폴더 용어집의 바뀐 이름 표기는 이 파일에 반영하지 못함 (다른 설정도 달라 이름만 바꿀 수 없음) · 그때 용어집으로 이어 감')
+        except Exception as e:
+            self._batch_job_terms=dict(old)
+            self.on_worker_issue(f'이름 표기 반영 생략 · {type(e).__name__}: {e}')
+        finally:
+            try:
+                if probe is not None: probe.deleteLater()
+            except Exception: pass
 
     def _batch_merge_rows(self, rows):
         """Generated rows for a folder file: the rows it already had stay as they are."""
@@ -4081,6 +4132,9 @@ class MainWindow(QMainWindow):
         self._grow_common_terms()   # the glossary the user starts with counts as reviewed
         self.start.setText('번역 중지'); self.start.setEnabled(True)
         self._save_workspace()
+        if self.input_mode=='folder' and getattr(self,'_batch_rename',None) and not self._force_restart:
+            self._batch_try_rename(p,raw,chunks,key_records,model)
+        self._batch_rename=None
         self.worker=self._make_worker(p,raw,chunks,key_records,model)
         if self.input_mode=='folder' and getattr(self,'_batch_job_terms',None) is not None and not self._force_restart:
             self._batch_keep_previous(self.worker,raw)

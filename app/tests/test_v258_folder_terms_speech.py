@@ -106,7 +106,8 @@ class World:
         for pid, body in _BLOCK.findall(src):
             with self.lock:
                 self.translated.append((self.current, body.strip(), self.run))
-            out.append(f'<P{pid}>\n' + '한국어로 옮긴 문장입니다' * max(1, len(body) // 10))
+            names = ' '.join(ko for src, ko in KO.items() if src in body)   # the names as the glossary had them
+            out.append(f'<P{pid}>\n' + (names + ' ' if names else '') + '한국어로 옮긴 문장입니다' * max(1, len(body) // 10))
         time.sleep(0.01)
         return TranslationResponse('\n\n'.join(out), 'STOP', {})
 
@@ -490,12 +491,16 @@ def test_continuous_run_resumed_keeps_every_files_job_even_after_the_glossary_gr
         w.term_table.item(r, 1).setText('왕강')
         assert _run(qt_app, w) == 'done'
         after = {n: _jobs(world, books / n) for n in ('1.txt', '2.txt', '3.txt')}
-        assert after == before, 'every file went on with its own job (no new job, no new glossary)'
-        assert world.requests_for('1.txt', run=2) == [] and world.requests_for('2.txt', run=2) == []
+        assert {n: len(v) for n, v in after.items()} == {n: len(v) for n, v in before.items()}, 'no new job for any file'
+        assert after['1.txt'] == before['1.txt']
+        assert after['2.txt'][-1]['王强'] == '왕강' and after['3.txt'][-1]['王强'] == '왕강', 'the corrected spelling reached the saved files'
+        assert world.requests_for('1.txt', run=2) == [] and world.requests_for('2.txt', run=2) == [], 'renamed without translating again'
         assert world.requests_for('3.txt', run=2), 'the rest of file 3'
         assert [f for f, _ in world.term_calls] == ['1.txt', '2.txt', '3.txt']
         _no_double_translation(world)
-        assert '그 뒤 바뀐 폴더 용어집(王强 왕창→왕강)은 이 파일에 쓰지 않고 새로 시작하는 파일부터 적용' in _log(w), _log(w)
+        out2 = (books / '한국어_번역' / '2.ko.txt').read_text(encoding='utf-8-sig')
+        assert '왕강' in out2 and '왕창' not in out2
+        assert '폴더 용어집의 바뀐 이름 표기를 이 파일의 저장된 번역에도 반영 (다시 번역하지 않음): 왕창→왕강' in _log(w), _log(w)
         # A file added now starts with the corrected name.
         (books / '4.txt').write_text(book(['王强', '周芸'], 'D'), encoding='utf-8')
         w._scan_batch_files()
