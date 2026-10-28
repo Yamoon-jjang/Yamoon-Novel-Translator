@@ -98,6 +98,30 @@ def _score(text: str, lang: str | None) -> float:
         score += hangul * 4
     return score
 
+def _sniff_utf16_cjk(raw: bytes) -> str | None:
+    """BOM-less UTF-16 of Chinese / Japanese text (few NUL bytes, so the NUL test misses it):
+    the high byte of almost every character is a CJK ideograph (4E-9F), kana / CJK punctuation
+    (30), full-width (FF), “…” (20) or a line break (00), and the low bytes of the ideographs
+    run evenly above 0x80 too (English text: low bytes all below 0x80; GBK / Shift-JIS / UTF-8
+    bytes put other values in the high-byte place)."""
+    n = len(raw) // 2
+    if n < 32 or len(raw) % 2:
+        return None
+    n = min(n, 8192)
+    for codec, hi_at in (('utf-16-le', 1), ('utf-16-be', 0)):
+        cjk = low_big = other = 0
+        for i in range(n):
+            hi, lo = raw[2 * i + hi_at], raw[2 * i + 1 - hi_at]
+            if 0x4E <= hi <= 0x9F or hi == 0x30:
+                cjk += 1
+                if lo >= 0x80: low_big += 1
+            elif hi not in (0x00, 0x20, 0xFF):
+                other += 1
+        if cjk >= n / 2 and other <= n / 20 and low_big * 4 >= cjk:
+            return codec
+    return None
+
+
 def decode_txt_bytes(raw: bytes, source_language: str | None = None, forced_encoding: str | None = None) -> tuple[str, str]:
     if forced_encoding and forced_encoding.lower() not in {'auto','자동'}:
         enc=ENCODING_ALIASES.get(forced_encoding.lower(), forced_encoding)
@@ -131,6 +155,18 @@ def decode_txt_bytes(raw: bytes, source_language: str | None = None, forced_enco
     bad = loose.count('\ufffd'); good = sum(1 for ch in loose if ord(ch) > 0x7f and ch != '\ufffd')
     if bad <= max(2, len(loose) // 5000) and good >= 10 * bad:
         return loose, f'UTF-8 (깨진 바이트 {bad}개 대체)'
+    # A UTF-8 file damaged in many places, e.g. every line cut at a fixed byte count (old
+    # mobile files): a cut character leaves one broken place per line, yet the valid UTF-8
+    # characters still far outnumber them. Legacy CJK / Korean / Western files read as UTF-8
+    # give several broken places for every valid one, so they never get here.
+    if good >= 50 and bad * 4 <= good:
+        return loose, f'UTF-8 (깨진 바이트 {bad}개 대체)'
+    utf16 = _sniff_utf16_cjk(raw)
+    if utf16:
+        try:
+            return raw.decode(utf16), ('UTF-16 LE (추정)' if utf16.endswith('le') else 'UTF-16 BE (추정)')
+        except UnicodeDecodeError:
+            pass
 
     # BOM-less UTF-16 is considered only when NUL-byte structure strongly suggests it.
     candidates: list[tuple[str, str]] = []
@@ -143,6 +179,23 @@ def decode_txt_bytes(raw: bytes, source_language: str | None = None, forced_enco
     for enc, label in encs:
         try: candidates.append((raw.decode(enc, 'nt_cp1252_fallback' if enc == 'cp1252' else 'strict'), label))
         except (UnicodeDecodeError, LookupError): pass
+    if source_language in {'zh', 'ja'}:
+        # Chinese / Japanese files cut at fixed byte counts (or with a few lines of characters
+        # the code page lacks): the right code page fails strictly while a more permissive one
+        # (GB18030 accepts almost any bytes) "succeeds" with garbage. Offer the damaged
+        # reading of each code page too (only a few broken places), and let the language score
+        # decide (every broken place costs a lot, so a clean right reading still wins).
+        have = {label for _, label in candidates}
+        for enc, label in encs:
+            if label in have or enc == 'cp1252':
+                continue
+            try:
+                t = raw.decode(enc, 'replace')
+            except LookupError:
+                continue
+            bad = t.count('\ufffd'); wide = sum(1 for ch in t if ord(ch) > 0x7f)
+            if 0 < bad <= wide * 0.05:
+                candidates.append((t, f'{label} (깨진 바이트 {bad}개 대체)'))
     if not candidates and source_language in {'zh', 'ja', 'ko'}:
         # One stray or cut-off byte in an otherwise valid CJK file: keep that reading and
         # mark the bad bytes, rather than failing or switching to a Western encoding.

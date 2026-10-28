@@ -3878,6 +3878,33 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _seed_file_workspace(self, p: Path, raw: bytes):
+        """A folder file whose job starts now: if the user later stops the folder and opens this
+        file on its own, it shows the glossary, speech table and book memo this job is translated
+        with, so translating it alone goes on with the same job (nothing is asked, nothing is
+        translated again, the rest keeps the same names and speech levels).
+        각 파일 독립 작품 already keeps the file's own glossary / speech table there; 한 작품의
+        연속 파일 uses the folder's, so they are copied — only into a file entry that has no
+        tables of its own (what the user set for the file alone is never overwritten)."""
+        try:
+            key=self._file_scope_key(p,raw)
+            state=dict(self.workspace_store.get(key) or {})
+            changed=False
+            if self.batch_relation.currentData()=='continuous' and not state.get('terms') and not state.get('speech'):
+                terms={str(a):str(b) for a,b in (getattr(self.worker,'terms',None) or self._terms()).items()}
+                locks={a:b for a,b in (getattr(self,'_term_locks',{}) or {}).items() if terms.get(a)==b}
+                rows=self._speech_rows()
+                if terms or rows:
+                    state.update({'terms':terms,'term_locks':locks,'speech':rows,'speech_attempted':True})
+                    changed=True
+            memo=self._effective_book_memory()
+            if memo and not str(state.get('book_memory') or '').strip():
+                state['book_memory']=memo; changed=True
+            if changed:
+                self.workspace_store.put(key,state)
+        except Exception:
+            pass
+
     def _trimmed_batch_marks(self) -> dict:
         marks=dict(getattr(self,'_batch_marks',{}) or {})
         if len(marks)>2000:
@@ -4144,7 +4171,13 @@ class MainWindow(QMainWindow):
             except Exception: pass
         if not info:
             return True
-        answer=self._ask_identity_change(info)
+        if list(info.get('labels') or [])==['앞 파일에서 이어지는 문맥'] and not info.get('unknown_other') \
+                and not (info.get('added') or info.get('removed') or info.get('changed')):
+            # A file of a 한 작품의 연속 파일 folder run, now opened on its own: only the previous
+            # file's closing context is missing, and it only shaped the part already translated.
+            answer='continue'
+        else:
+            answer=self._ask_identity_change(info)
         if answer=='cancel':
             return False
         if answer=='continue':
@@ -4198,6 +4231,8 @@ class MainWindow(QMainWindow):
         self.worker=self._make_worker(p,raw,chunks,key_records,model)
         if self.input_mode=='folder' and getattr(self,'_batch_job_terms',None) is not None and not self._force_restart:
             self._batch_keep_previous(self.worker,raw)
+        if self.input_mode=='folder':
+            self._seed_file_workspace(p,raw)
         self.worker.progress.connect(self.on_progress); self.worker.failed.connect(self.on_failed); self.worker.paused.connect(self.on_paused); self.worker.finished_ok.connect(self.on_finished)
         self.worker.result_ready.connect(self.on_result_ready); self.worker.finished.connect(self._worker_thread_finished); self.worker.key_disabled.connect(self.on_key_disabled); self.worker.issue.connect(self.on_worker_issue); self.worker.api_state.connect(self.on_api_state)
         if hasattr(self.worker,'chunk_translated'): self.worker.chunk_translated.connect(self.on_chunk_translated)
