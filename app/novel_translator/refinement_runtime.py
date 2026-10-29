@@ -11,6 +11,7 @@ from .config import DATA_DIR, load_json, save_json
 from .textio import atomic_write_text
 from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
 from .refinement_links import find_reference, reference_guidance, reference_summary, GUIDANCE_MAX
+from .validation import dialogue_shift_run, SHIFT_RUN_MIN
 
 _ID = re.compile(r'(?m)^<P([0-9]{6})>[ \t]*\r?\n')
 
@@ -204,6 +205,65 @@ def verified_partial_reply(reply: str, paragraphs):
         else:
             accepted[pid]=body
     return accepted,rejected,refused
+
+
+class ShiftedReply(ValueError):
+    """Every paragraph ID came back, but the edited paragraphs sit one line off from some
+    paragraph on (a local model given many short dialogue lines). Handled like any other
+    formatting slip: the group is asked again in halves, so nothing is kept in the wrong place."""
+
+
+def _bigrams(text: str) -> set:
+    t = re.sub(r'[\s"“”‘’\'「」『』.,!?…·~\-—]+', '', text or '')
+    return {t[i:i+2] for i in range(len(t) - 1)}
+
+
+def _likeness(a: set, b: set) -> float:
+    return 2 * len(a & b) / (len(a) + len(b)) if a and b else 0.0
+
+
+# A line edited from its own paragraph keeps more of it (names, nouns, verbs) than of the
+# paragraph next to it. Counted as "under the neighbour's ID" only when it is clearly more
+# like the neighbour: at least this alike to it, and this much more alike than to its own.
+SHIFT_LIKE_MIN = 0.4
+SHIFT_LIKE_MARGIN = 0.2
+SHIFT_MIN_BIGRAMS = 4      # shorter lines ("네.", "……") say nothing and are skipped
+
+
+def content_shift_run(paragraphs, bodies) -> int:
+    """Korean to Korean only: the longest run of consecutive edited lines that are clearly
+    the neighbouring paragraph's text (one before or one after) rather than their own.
+    Short lines neither count nor break a run."""
+    have = [p for p in paragraphs if p.pid in bodies]
+    src = [_bigrams(p.text) for p in have]
+    out = [_bigrams(bodies[p.pid]) for p in have]
+    best = 0
+    for d in (1, -1):
+        run = 0
+        for i in range(len(have)):
+            j = i + d
+            if len(out[i]) < SHIFT_MIN_BIGRAMS or len(src[i]) < SHIFT_MIN_BIGRAMS:
+                continue
+            if 0 <= j < len(have) and len(src[j]) >= SHIFT_MIN_BIGRAMS:
+                near = _likeness(out[i], src[j]); own = _likeness(out[i], src[i])
+                if near >= SHIFT_LIKE_MIN and near >= own + SHIFT_LIKE_MARGIN:
+                    run += 1; best = max(best, run); continue
+            run = 0
+    return best
+
+
+def shift_run(paragraphs, bodies) -> int:
+    """How strongly edited paragraphs look shifted one line: SHIFT_RUN_MIN or more consecutive
+    paragraphs that open like their neighbour's original (dialogue quote or narration, the
+    translator's check, validation.dialogue_shift_run) or whose wording is clearly the
+    neighbour's (content_shift_run). `bodies` maps pid -> edited text. 0 for groups too
+    small to tell, so short groups are never checked."""
+    have=[p for p in paragraphs if p.pid in bodies]
+    if len(have) < SHIFT_RUN_MIN + 1:
+        return 0
+    src='\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(p.text)}' for p in have)
+    out='\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(bodies[p.pid])}' for p in have)
+    return max(dialogue_shift_run(src, out), content_shift_run(have, bodies))
 
 
 def refinement_prompt(paragraphs, previous: str = '', following: str = '', guidance: str = '',
@@ -636,6 +696,11 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                                                        purpose='edit',
                                                        paragraph_ids=tuple(f'P{p.pid:06d}' for p in ps)),key,stop)
             accepted,rejected,refused=verified_partial_reply(response.text,ps)
+            # A one-line shift keeps every ID, so the checks below would pass it: no edited
+            # paragraph of a shifted reply is kept, the group is asked again in halves.
+            shift=shift_run(ps,accepted)
+            if shift >= SHIFT_RUN_MIN:
+                raise ShiftedReply(f'대사 시작 따옴표가 {shift}문단 연속 이웃 문단과 맞음')
             if rejected and len(accepted)+len(rejected)==len(ps):
                 raise PartialRefinementRefused(accepted,rejected,refused)
             if not rejected and len(ps) >= 3 and len(accepted) == len(ps)-1:
@@ -705,7 +770,10 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 if not isinstance(exc, ValueError):
                     save()
                     raise
-                event(f'문단 형식 검증 실패 · {len(parts)}문단 묶음 재시도')
+                if isinstance(exc, ShiftedReply):
+                    event(f'문단 밀림 의심({exc}) · {len(parts)}문단 묶음을 나눠 다시 요청 · 밀린 윤문은 쓰지 않음')
+                else:
+                    event(f'문단 형식 검증 실패 · {len(parts)}문단 묶음 재시도')
                 # Only malformed paragraph formatting is split, not refusals or service errors.
                 if len(parts) > 1:
                     midpoint = len(parts) // 2

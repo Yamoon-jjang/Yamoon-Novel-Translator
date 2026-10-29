@@ -1,6 +1,11 @@
 """Shared test setup: the local model list cache of the API settings window goes to a
 temporary folder, so one test's list never pre-fills another test's dialog."""
+import os
 import pytest
+
+# No test may ever turn the PC (or a Windows build runner) off: the shutdown request of
+# v2.6 is a no-op while this is set, whatever a test does.
+os.environ['NOVEL_TRANSLATOR_NO_SHUTDOWN'] = '1'
 
 
 @pytest.fixture(autouse=True)

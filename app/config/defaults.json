@@ -49,6 +49,7 @@
     "successes_before_step_up": 5
   },
   "prevent_sleep_while_running": true,
+  "confirm_shutdown_after_finish": false,
   "mixed_language_passthrough": {
     "enabled": true,
     "target_language": "ko",

@@ -25,7 +25,8 @@ from ..batch import discover_txt_files, output_dir_for, should_continue_after_re
 from ..workspace import WorkspaceStore
 from ..language_options import option_spec
 from ..language_detection import detect_language, detect_language_bytes
-from ..power import set_translation_awake
+from ..power import set_translation_awake, request_system_shutdown
+from .shutdown_dialog import shutdown_offer_enabled, ask_shutdown
 from ..protected_literals import count_protectable_literals
 from ..term_extraction import candidates as term_candidates, build_prompts as term_prompts, parse_glossary
 from ..language_options import prompt_instructions
@@ -4467,10 +4468,12 @@ class MainWindow(QMainWindow):
                          else f'자동 재시도 {rounds}회 뒤에도 남았습니다. ' if rounds else '')
                     self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
                                          +' · '+why+'[번역 시작 / 계속]으로 다시 시도할 수 있고, API 설정에서 다른 엔진을 켜 두면 더 잘 됩니다')
-                    QMessageBox.information(self,'번역 완료 · 일부 남음',
-                        '번역 결과를 저장했지만 번역되지 않은 부분이 남아 있습니다.\n'+self._untranslated_summary()+'\n\n'+why
-                        +'[번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.\n\n'+msg)
+                    text=('번역 결과를 저장했지만 번역되지 않은 부분이 남아 있습니다.\n'+self._untranslated_summary()+'\n\n'+why
+                          +'[번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.\n\n'+msg)
+                    if self._offer_shutdown('번역 완료 · 일부 남음', text): return
+                    QMessageBox.information(self,'번역 완료 · 일부 남음',text)
                 else:
+                    if self._offer_shutdown('번역 완료', f'번역 결과를 저장했습니다.\n{msg}'): return
                     QMessageBox.information(self,'번역 완료',f'번역 결과를 저장했습니다.\n{msg}')
             return
         if self.input_mode=='folder':
@@ -4621,11 +4624,15 @@ class MainWindow(QMainWindow):
         if left_files:
             names='\n'.join(f'· {p.name} · {self._batch_left_note(p)}' for p in left_files[:8])+(f'\n· … 외 {len(left_files)-8}개' if len(left_files)>8 else '')
             self.error_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • 폴더 번역 끝 · 미번역 남음 · 자동 재시도 뒤에도 남은 파일 {len(left_files)}개 · 상세는 미완료 목록 탭과 번역_요약.txt')
-            QMessageBox.information(self,'폴더 번역 완료 · 일부 남음',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')
+            text=(f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')
                 +f'\n\n자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일:\n{names}\n\n남은 부분은 결과 파일에 원문 그대로 들어 있습니다. [번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.'
                 +f'\n\n요약: {summary}')
+            if self._offer_shutdown('폴더 번역 완료 · 일부 남음', text): return
+            QMessageBox.information(self,'폴더 번역 완료 · 일부 남음',text)
         else:
-            QMessageBox.information(self,'폴더 번역 완료',f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}')
+            text=f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}'
+            if self._offer_shutdown('폴더 번역 완료', text): return
+            QMessageBox.information(self,'폴더 번역 완료',text)
 
     def _batch_left_note(self, p) -> str:
         failed,leftover,rounds,stalled=self._batch_left.get(str(p),(0,0,0,False))
@@ -4646,6 +4653,27 @@ class MainWindow(QMainWindow):
             candidate=dict(self.secrets); section=dict(candidate.get(bucket) or {}); section['keys']=[r.to_dict() for r in records]; candidate[bucket]=section
             try:self.secret_store.save(candidate); self.secrets=candidate
             except Exception as e:self.status.setText(f'키 상태 저장 실패 · 번역은 계속됨 ({type(e).__name__})')
+
+    def _offer_shutdown(self, title: str, summary: str, parent=None, log: bool = True) -> bool:
+        """A job finished (never a stopped or failed one): when 고급 설정 asks for it, offer to
+        shut the PC down in 60 seconds. True when the PC is being shut down (the app closes
+        itself first, saving as usual); False shows the usual completion message."""
+        if not shutdown_offer_enabled():
+            return False
+        if log: self.on_worker_issue('PC 종료 확인 · 60초 뒤 종료 예정 (아니오를 누르면 취소)')
+        if not ask_shutdown(parent or self, title, summary):
+            if log: self.on_worker_issue('PC 종료 취소 · 사용자 선택')
+            return False
+        if log: self.on_worker_issue('PC 종료 진행 · 작업 상태를 저장하고 프로그램을 닫은 뒤 종료합니다')
+        if parent is None or parent is self:
+            QTimer.singleShot(0, self._shutdown_now)
+        return True
+
+    def _shutdown_now(self):
+        """Close the app the normal way (window state, workspace and record cleanup are
+        saved in closeEvent), then ask Windows to shut down."""
+        self._shutdown_on_close=True
+        self.close()
 
     def closeEvent(self,event):
         if self._extracting():
@@ -4675,6 +4703,9 @@ class MainWindow(QMainWindow):
             pass
         self._clean_translation_db()
         event.accept()
+        if getattr(self,'_shutdown_on_close',False):
+            self._shutdown_on_close=False
+            request_system_shutdown()
 
     DB_KEEP_DAYS = 90
 

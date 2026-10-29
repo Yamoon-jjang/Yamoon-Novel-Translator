@@ -57,6 +57,7 @@
   "db_keep_days": 90,
   "db_keep_days_note": "번역 기록(translations.db)에서 이 날수 넘게 손대지 않은 작업을 프로그램을 닫을 때 정리합니다. 0이면 정리하지 않음.",
   "prevent_sleep_while_running": true,
+  "confirm_shutdown_after_finish": false,
   "mixed_language_passthrough": {
     "enabled": true,
     "target_language": "ko",

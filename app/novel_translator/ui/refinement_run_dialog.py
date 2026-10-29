@@ -12,6 +12,16 @@ from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_d
 from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
+from ..config import CONFIG_DIR, load_json
+from ..power import set_translation_awake
+
+
+def _sleep_prevention_wanted() -> bool:
+    """The same 고급 설정 option as translation (번역·재정비 중 시스템 절전 방지)."""
+    try:
+        return bool(load_json(CONFIG_DIR/'app.json').get('prevent_sleep_while_running', True))
+    except Exception:
+        return True
 
 KOREAN_MIN_SHARE = 0.3
 
@@ -407,6 +417,9 @@ class RefinementRunDialog(QDialog):
         self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
         self.status.setToolTip('')
         self._show_done(False)
+        self._shutdown_summary=''
+        # A refinement runs as long as a translation: the PC must not go to sleep meanwhile.
+        set_translation_awake(_sleep_prevention_wanted())
         self.worker.start()
 
     def _activity(self,message):
@@ -466,6 +479,10 @@ class RefinementRunDialog(QDialog):
             self.progress.setValue(100)
             self._result_path=Path(str(result['output'])); self._retry_left=int(preserved or 0)
             self._show_done(True)
+            # Offered once the worker thread has ended (_thread_stopped), never for a stopped run.
+            self._shutdown_summary=(f'한국어 소설 재정비를 마쳤습니다. 총 소요 시간 {format_duration(result.get("seconds",0))}\n'
+                                    f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
+                                    f'결과: {out}')
         else:
             self.status.setText(f'안전 중지했습니다 · 지금까지 소요 시간 {format_duration(result.get("seconds",0))}\n'
                                 '동일 TXT와 엔진으로 다시 실행하면 완료한 문단부터 이어지고, 소요 시간도 합산됩니다.')
@@ -476,6 +493,7 @@ class RefinementRunDialog(QDialog):
         self.status.setToolTip(message)
 
     def _thread_stopped(self):
+        set_translation_awake(False)
         self._timer.stop()
         self.time_info.hide()      # the result line below says how long it took (its room is kept)
         self.worker=None
@@ -485,6 +503,19 @@ class RefinementRunDialog(QDialog):
         self._fill_engines()
         self.cancel.setText('닫기')
         self.start.setEnabled(self._routes_ready)
+        if getattr(self,'_shutdown_summary',''):
+            QTimer.singleShot(0,self._offer_shutdown)
+
+    def _offer_shutdown(self):
+        """Finished run (고급 설정 option on): 60-second PC shutdown question. On yes this window
+        closes and the main window closes the app the normal way, then shuts the PC down."""
+        summary=getattr(self,'_shutdown_summary',''); self._shutdown_summary=''
+        offer=getattr(self.host,'_offer_shutdown',None)
+        if not summary or offer is None or (self.worker and self.worker.isRunning()):
+            return
+        if offer('재정비 완료', summary, parent=self, log=False):
+            self.accept()
+            QTimer.singleShot(300,self.host._shutdown_now)
 
     def _close_or_stop(self):
         if self.worker and self.worker.isRunning():
