@@ -105,6 +105,18 @@ def main():
     if issues:
         QMessageBox.critical(None,'시작 점검 실패','필수 파일 또는 저장 환경에 문제가 있습니다.\n\n'+'\n'.join(issues))
         return 2
+    # One window at a time (v2.6): a second start — also from a renamed exe or a copied
+    # program folder — brings the running window forward instead of opening another one.
+    from .config import DATA_DIR
+    from . import single_instance
+    if not single_instance.acquire(DATA_DIR):
+        if not single_instance.bring_running_window_forward(DATA_DIR):
+            QMessageBox.information(None,'야문 Novel Translator',
+                '야문 Novel Translator가 이미 실행 중입니다.\n\n'
+                '두 창이 같은 번역 기록과 설정을 함께 쓰면 서로 덮어쓰게 되므로\n'
+                '한 번에 하나만 실행됩니다. 실행 중인 창을 사용해 주세요.')
+        return 0
     from .ui.main_window import MainWindow
     w=MainWindow(); w.restore_window_state(); w.show()
+    single_instance.remember_window(DATA_DIR, int(w.winId()))
     return app.exec()
