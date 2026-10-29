@@ -14,7 +14,7 @@ from ..chunking import split_chunk_for_retry, Chunk, Paragraph, estimate_tokens 
 from ..translation_settings import canonical_kind
 from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
-from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script
+from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, LOCAL_SAFE_PARAGRAPHS
 from ..rendering import render_snapshot, html_line_breaks
 from ..protected_literals import stale_bracket_prose
 
@@ -121,9 +121,13 @@ class TranslationWorker(QThread):
         except Exception:
             local_cfg={}
         try:
-            self.local_max_paragraphs=max(0,int(local_cfg.get('max_paragraphs_per_request',12)))
+            self.local_max_paragraphs=max(0,int(local_cfg.get('max_paragraphs_per_request',self.LOCAL_DEFAULT_PARAGRAPHS)))
         except (TypeError, ValueError):
-            self.local_max_paragraphs=12
+            self.local_max_paragraphs=self.LOCAL_DEFAULT_PARAGRAPHS
+        # Requests larger than the long-standing 12 paragraphs: counted per file, and
+        # if the model keeps misplacing paragraph IDs in them, the rest of the file goes back
+        # to 12 (see _note_wide_request).
+        self._wide_requests=0; self._wide_misfits=0; self._wide_stepped_down=False
         self.local_structured=bool(local_cfg.get('structured_output', True))
         self.local_sampling=str(local_cfg.get('sampling') or 'recommended')
         self.thinking_level=str(self._mode_cfg.get('thinking_level') or '').strip().lower() or None
@@ -461,20 +465,61 @@ class TranslationWorker(QThread):
     # many loops in one chunk the local engine is not asked again for that chunk: the
     # rest goes to the next engine, or stays as source (retried by a later 번역 계속).
     MAX_LOOPS_PER_CHUNK = 3
+    # Paragraph IDs per local request (config local_llm.max_paragraphs_per_request). 12 until
+    # v2.5.8; 20 sends short-line novels in about a third fewer requests. Groups are evenly
+    # sized, so a 27~40 paragraph chunk becomes two requests of 14~20 instead of three or four.
+    LOCAL_DEFAULT_PARAGRAPHS = 20
+    # Step back to LOCAL_SAFE_PARAGRAPHS for the rest of a file once requests above it have
+    # had at least this many ID/shift failures and they are at least this share of them.
+    WIDE_MISFIT_MIN = 3
+    WIDE_MISFIT_SHARE = 0.05
+
+    def _local_cap(self) -> int:
+        cap=self.local_max_paragraphs
+        if getattr(self,'_wide_stepped_down',False) and cap > LOCAL_SAFE_PARAGRAPHS:
+            return LOCAL_SAFE_PARAGRAPHS
+        return cap
+
+    def _note_wide_request(self, chunk, error=None) -> None:
+        """A first local request of more than LOCAL_SAFE_PARAGRAPHS paragraphs finished (error
+        None) or failed. Paragraph-ID failures (missing/extra/duplicated IDs, or translations
+        shifted one line) count against the larger size; once they are frequent, the rest of
+        this file is sent in groups of LOCAL_SAFE_PARAGRAPHS, as before."""
+        if getattr(self,'local_max_paragraphs',0) <= LOCAL_SAFE_PARAGRAPHS or len(chunk.paragraphs) <= LOCAL_SAFE_PARAGRAPHS:
+            return
+        if not hasattr(self,'_wide_requests'):
+            self._wide_requests=0; self._wide_misfits=0; self._wide_stepped_down=False
+        self._wide_requests+=1
+        if error is None or getattr(error,'kind',None)!=ErrorKind.FORMAT or \
+                not str(getattr(error,'message','') or '').startswith(('문단 ID 불일치','문단 밀림')):
+            return
+        self._wide_misfits+=1
+        if (not self._wide_stepped_down and self._wide_misfits >= self.WIDE_MISFIT_MIN
+                and self._wide_misfits >= self._wide_requests*self.WIDE_MISFIT_SHARE):
+            self._wide_stepped_down=True
+            self.issue.emit(f'로컬 LLM 문단 묶음 · {LOCAL_SAFE_PARAGRAPHS}문단 넘는 요청에서 문단 위치 오류 '
+                            f'{self._wide_misfits}회/{self._wide_requests}회 · 이 파일의 나머지는 '
+                            f'{LOCAL_SAFE_PARAGRAPHS}문단씩 나눠 요청 (번역 결과는 그대로 유지)')
 
     def _call_orch(self, orch, chunk, prev: str, recovery: bool, reason: str = 'format'):
         self._wait_if_paused()
         local=getattr(orch,'provider_id','')=='local'
         if local and self._chunk_loops >= self.MAX_LOOPS_PER_CHUNK:
             raise ProviderError(ErrorKind.FORMAT, f'로컬 LLM 반복 루프 {self._chunk_loops}회 · 이 청크에는 더 요청하지 않음')
+        wide=local and not recovery
         try:
-            return self._call_orch_once(orch, chunk, prev, recovery, reason)
+            result=self._call_orch_once(orch, chunk, prev, recovery, reason)
         except ProviderError as e:
+            if wide:
+                self._note_wide_request(chunk, e)
             if local and is_loop_error(e):
                 self._chunk_loops += 1
                 self.issue.emit(f'{self._chunk_label} · {self._part_label(chunk)} · 로컬 LLM이 같은 말을 반복해 끊음 '
                                 f'({self._chunk_loops}/{self.MAX_LOOPS_PER_CHUNK}회 · 넘으면 이 청크는 다음 엔진 또는 원문 유지)')
             raise
+        if wide:
+            self._note_wide_request(chunk)
+        return result
 
     def _call_orch_once(self, orch, chunk, prev: str, recovery: bool, reason: str = 'format'):
         if self._chunk_requests >= self.max_requests_per_chunk and getattr(orch,'provider_id','')!='local':
@@ -896,7 +941,7 @@ class TranslationWorker(QThread):
         # consecutive groups of at most N paragraphs from the start instead of finding
         # the limit by failing. Chunk boundaries (and so resume/memory) are unchanged, and the
         # groups are ordinary requests (same depth), not recovery retries.
-        cap=self.local_max_paragraphs
+        cap=self._local_cap()
         if getattr(orch,'provider_id','')=='local' and cap and len(chunk.paragraphs) > cap and depth < 4:
             parts=self._paragraph_groups(chunk, cap)
             self._announce('local', f'문단 {len(chunk.paragraphs)}개를 {len(parts)}묶음(묶음당 최대 {cap}문단)으로 나눠 요청')

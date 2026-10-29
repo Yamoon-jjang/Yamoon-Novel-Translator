@@ -42,10 +42,10 @@
     "gemini_probe_every_chunks": 10
   },
   "local_llm": {
-    "max_paragraphs_per_request": 12,
+    "max_paragraphs_per_request": 20,
     "structured_output": true,
     "sampling": "recommended",
-    "note": "max_paragraphs_per_request: 로컬 LLM 한 번 요청에 넣는 문단(ID) 수 상한(0이면 제한 없음, 청크 구성·이어 번역·번역 기억은 바뀌지 않음). structured_output: Ollama에 JSON 형식을 강제해 모든 문단 ID를 빠짐없이 받음(서버가 지원하지 않으면 자동으로 끔). sampling: recommended면 Gemma 모델에 Google 권장값(temperature 1.0, top_p 0.95, top_k 64), 그 외 모델은 기존 0.2 / fixed면 모든 모델 0.2."
+    "note": "max_paragraphs_per_request: 로컬 LLM 한 번 요청에 넣는 문단(ID) 수 상한(기본 20, 0이면 제한 없음, 청크 구성·이어 번역·번역 기억은 바뀌지 않음). 12문단이 넘는 요청에서 문단 위치 오류(ID 누락·중복·한 칸 밀림)가 3회 이상이고 5% 이상이면 그 파일의 나머지는 12문단씩 보냄. structured_output: Ollama에 JSON 형식을 강제해 모든 문단 ID를 빠짐없이 받음(서버가 지원하지 않으면 자동으로 끔). sampling: recommended면 Gemma 모델에 Google 권장값(temperature 1.0, top_p 0.95, top_k 64), 그 외 모델은 기존 0.2 / fixed면 모든 모델 0.2."
   },
   "rate_limiter": {
     "mode": "adaptive",

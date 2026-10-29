@@ -4,7 +4,7 @@ import re, time, threading
 from dataclasses import dataclass, replace
 from .providers.base import *
 from .prompting import build_system_prompt, build_user_prompt, REPAIR_SYSTEM, build_repair_prompt, SKIP_MARKER, relevant_terms
-from .validation import TAG_RE, validate_translation, normalize_translation_output, id_forms, skipped_paragraph_ids, parse_tagged_translation, leftover_script, _is_refusal, meta_leak
+from .validation import TAG_RE, validate_translation, normalize_translation_output, id_forms, skipped_paragraph_ids, parse_tagged_translation, leftover_script, _is_refusal, meta_leak, dialogue_shift_run, SHIFT_RUN_MIN, LOCAL_SAFE_PARAGRAPHS
 from .protected_literals import protect_literals, restore_literals, bracket_prose
 from .lexical_guidance import relevant_guidance
 
@@ -34,6 +34,7 @@ def format_failure_detail(message: str) -> str:
         if missing: parts.append('누락 ' + missing.group(1).strip())
         if extra: parts.append('추가 ' + extra.group(1).strip())
         return ' · '.join(parts)
+    if msg.startswith('문단 밀림'): return '문단 밀림 의심 · 번역이 이웃 문단 자리로 한 칸씩 어긋남'
     if '출력 잘림' in msg: return '로컬 출력 잘림 · 출력 한도 또는 반복 의심'
     if '반복' in msg and '로컬 LLM' in msg: return '로컬 응답 반복'
     if '너무 적습니다' in msg: return '한국어 비율 부족'
@@ -386,6 +387,19 @@ class TranslationOrchestrator:
                 except ProviderError:
                     self._record_usage(False)
                     raise
+                if (self.provider_id == 'local' and not recovery_mode
+                        and len(TAG_RE.findall(chunk_text)) > LOCAL_SAFE_PARAGRAPHS):
+                    # Local LLM, first request with more paragraphs than the long-standing 12:
+                    # translations shifted one line from some paragraph on (every ID present,
+                    # so the checks above pass). The worker sends it again in halves. Requests
+                    # of 12 or fewer paragraphs (long-paragraph books) and recovery requests are
+                    # never checked: this can cost a request but never leaves a paragraph
+                    # untranslated.
+                    shift = dialogue_shift_run(chunk_text, restored, skipped)
+                    if shift >= SHIFT_RUN_MIN:
+                        if not usage_done:
+                            self._record_usage(False)
+                        raise ProviderError(ErrorKind.FORMAT, f'문단 밀림 의심 · 대사 시작 따옴표가 {shift}문단 연속 이웃 문단과 맞음 · 나눠서 다시 요청')
                 if not usage_done:
                     self._record_usage(True)
                 if self.repair_script and profile.source_language in ('zh','ja'):
@@ -428,7 +442,7 @@ class TranslationOrchestrator:
                 # request fails the same way when asked again at the same size. Hand it back
                 # at once: the worker keeps the good paragraphs (one missing) or splits it.
                 if (e.kind == ErrorKind.FORMAT and self.provider_id == 'local'
-                        and e.message.startswith('문단 ID 불일치') and len(TAG_RE.findall(chunk_text)) > 1):
+                        and e.message.startswith(('문단 ID 불일치', '문단 밀림')) and len(TAG_RE.findall(chunk_text)) > 1):
                     raise
 
                 if e.retry_after is not None and e.retry_after > 0:

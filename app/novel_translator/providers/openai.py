@@ -62,7 +62,7 @@ class OpenAIProvider(TranslationProvider):
             r=requests.post(self.endpoint,headers={
                 'Authorization':f'Bearer {api_key}',
                 'Content-Type':'application/json',
-                'User-Agent':'NovelTranslator/2.5.8',
+                'User-Agent':'NovelTranslator/2.5.9',
             },json=payload,timeout=request.timeout)
         except requests.Timeout as e:
             raise ProviderError(ErrorKind.TRANSIENT,'OpenAI 요청 시간 초과') from e

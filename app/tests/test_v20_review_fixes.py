@@ -104,14 +104,17 @@ def _output(tmp: Path) -> str:
 
 # ---------------------------------------------------------------- local paragraph cap
 
+CAP = worker_mod.TranslationWorker.LOCAL_DEFAULT_PARAGRAPHS
+
+
 def test_local_requests_are_capped_and_are_not_marked_as_recovery(tmp_path):
     gem = Gemini(block=lambda p, s: 'BLOCKME' in s)
-    loc = Local(limit=15)
+    loc = Local(limit=CAP)
     w, chunks, _ = build(tmp_path, novel(blocked_at=40), gem, loc)
     assert len(chunks[0].paragraphs) > 40          # short-line novel: many IDs per chunk
     w.run()
-    assert loc.sizes and max(loc.sizes) <= 12
-    assert len(loc.sizes) == -(-len(chunks[0].paragraphs) // 12)   # every group succeeded first time
+    assert loc.sizes and max(loc.sizes) <= CAP
+    assert len(loc.sizes) == -(-len(chunks[0].paragraphs) // CAP)   # every group succeeded first time
     # capped groups are ordinary requests, not "the previous response was unusable"
     assert not any(RECOVERY_NOTE in p or CONTENT_RECOVERY_NOTE in p for p in loc.prompts)
     out = _output(tmp_path)
@@ -328,7 +331,7 @@ def test_local_inline_ids_finish_in_one_request_and_are_diagnosed(tmp_path):
     loc = InlineLocal()
     w, chunks, events = build(tmp_path, novel(60), gem, loc)
     w.run()
-    groups = sum(-(-len(c.paragraphs) // 12) for c in chunks)
+    groups = sum(-(-len(c.paragraphs) // CAP) for c in chunks)
     assert len(loc.sizes) == groups             # no split retries
     log = (tmp_path / 'data' / 'logs' / worker_mod.TranslationWorker.DIAGNOSTIC_FILE).read_text(encoding='utf-8')
     assert 'ID 형태 · ' in log and '줄 중간' in log
@@ -459,7 +462,7 @@ def test_one_missing_paragraph_keeps_the_rest_and_asks_only_two_paragraphs(tmp_p
     assert loc.sizes[hit + 1:hit + 3] == [1, 1]
     # ... and the group is never sent again whole or in halves
     assert [i for i, p in enumerate(loc.prompts) if 'MERGEME' in _source(p)] == [hit, hit + 2]
-    assert len(loc.sizes) == sum(-(-len(c.paragraphs) // 12) for c in chunks) + 2
+    assert len(loc.sizes) == sum(-(-len(c.paragraphs) // CAP) for c in chunks) + 2
     out = _output(tmp_path)
     assert out.count('합쳐진문단') == 1                 # translated once, not duplicated
     assert not re.search(r'[一-龥]', out)

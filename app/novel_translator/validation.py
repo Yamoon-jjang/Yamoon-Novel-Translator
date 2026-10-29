@@ -410,3 +410,51 @@ def leftover_script(body: str, allowed: str = '') -> list[str]:
     ok = set(allowed or '')
     body = re.sub(r'［＃[^］\r\n]{1,200}］', '', _ELONGATION_ONE.sub('', body))   # Aozora markup kept on purpose
     return [ch for ch in _LEFTOVER_RE.findall(body) if ch not in ok]
+
+
+# ---------------------------------------------------------------- 문단 밀림 감지
+# A local model given many short lines (one-line dialogue novels) can keep every paragraph
+# ID yet put each translation one ID too early or too late from some line on: nothing is
+# missing, so the ID and length checks pass while the text sits under the wrong lines. The
+# one sign that survives translation in every language is whether a paragraph opens with a
+# quotation mark (dialogue) or not (narration). In a shifted stretch every paragraph opens
+# like its NEIGHBOUR's source; where the neighbour opens differently from its own source,
+# the shift shows as a mismatch. A real translation that moves a speech tag
+# ("She said, 'Go.'" -> “가.” 그녀가 말했다.) changes single, scattered paragraphs, and the
+# correct paragraphs between them break any such stretch.
+OPEN_QUOTES = frozenset('"“„«‹「『‘\'＂〝')
+SHIFT_RUN_MIN = 3
+# Up to this many paragraphs per local request is the size used since v2.0 (no shift seen).
+# Larger requests are the ones checked, and the ones the worker steps back from.
+LOCAL_SAFE_PARAGRAPHS = 12
+
+
+def _opens_with_quote(text: str) -> bool:
+    t = str(text or '').lstrip(' \t\r\n\u3000\u00a0')
+    return bool(t) and t[0] in OPEN_QUOTES
+
+
+def dialogue_shift_run(source: str, output: str, ignore_pids=None) -> int:
+    """Evidence of a one-line shift: the most mismatches (paragraph opens unlike its own
+    source) inside one stretch of consecutive paragraphs that all open like the source
+    paragraph one before (or one after) them. 0 when the paragraphs line up;
+    SHIFT_RUN_MIN or more means the translations sit one line off."""
+    src = parse_tagged_translation(source)
+    out = parse_tagged_translation(output)
+    skip = set(ignore_pids or ())
+    pids = [p for p in src if p not in skip and str(out.get(p, '')).strip() and str(src[p]).strip()]
+    if len(pids) < SHIFT_RUN_MIN + 1:
+        return 0
+    s = [_opens_with_quote(src[p]) for p in pids]
+    o = [_opens_with_quote(out[p]) for p in pids]
+    best = 0
+    for d in (1, -1):
+        mism = 0
+        for i in range(len(pids)):
+            j = i + d
+            if 0 <= j < len(pids) and o[i] == s[j]:
+                if o[i] != s[i]:
+                    mism += 1; best = max(best, mism)
+            else:
+                mism = 0
+    return best
