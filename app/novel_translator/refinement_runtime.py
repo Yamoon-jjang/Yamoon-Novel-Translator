@@ -800,6 +800,15 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     # a result of this app; otherwise one bounded sample analysis.
     ref = find_reference(source, text, links_root)
     names = [str(n) for n in ((ref or {}).get('names') or [])]
+    if ref and state.get('guidance_done') and (state.get('guidance_source') != 'translation'
+                                               or state.get('guidance') != reference_guidance(ref)):
+        # The translation's own table wins over a table kept from an earlier run (v2.6.1): a run
+        # stopped while no translation record was found (a sample analysis), or one whose
+        # translation was redone since. The window shows this table; the run now uses it too.
+        # Finished paragraphs are kept (the table is not part of what makes them reusable).
+        state['guidance_done'] = False
+        if state.get('guidance_source') != 'translation':
+            event('번역 기록을 찾음 · 이전 실행의 샘플 분석 대신 번역 기준표를 씀 (다듬은 문단은 그대로 이어짐)')
     if not state.get('guidance_done'):
         if ref:
             state['guidance'] = reference_guidance(ref)

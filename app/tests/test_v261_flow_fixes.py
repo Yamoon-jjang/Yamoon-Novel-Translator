@@ -342,3 +342,49 @@ def test_start_over_defaults_to_no(qt_app, sandbox, monkeypatch):
         assert not started
     finally:
         w.close()
+
+
+# ---------------------------------------------------------------- reference table after a stopped run
+def test_a_translation_record_replaces_a_kept_sample_analysis(tmp_path):
+    src = write(tmp_path, 'novel.ko.txt', '\n\n'.join(f'어색한 은지의 문장 {i}입니다.' for i in range(30)))
+    ed = Editor()
+    run_refinement(src, tmp_path / 'r.txt', ed, 'm', 'k', checkpoint_dir=tmp_path / 'cp', links_root=tmp_path,
+                   max_items=5, stop=lambda: ed.calls.count('edit') >= 1)
+    assert 'analysis' in ed.calls                                         # no record then: sample analysis
+    record_translation(src, src.read_text(encoding='utf-8'),
+                       [{'speaker': '은지', 'listener': '민수', 'level': '해요체'}], {'恩智': '은지'}, root=tmp_path)
+    assert peek_guidance(src, checkpoint_dir=tmp_path / 'cp', links_root=tmp_path)[0] == 'translation'
+    ed2, events = Editor(), []
+    res = run_refinement(src, tmp_path / 'r.txt', ed2, 'm', 'k', checkpoint_dir=tmp_path / 'cp',
+                         links_root=tmp_path, max_items=5, event=events.append)
+    assert res['guidance_source'] == 'translation' and '은지 → 민수: 해요체' in ed2.last_user
+    assert 'analysis' not in ed2.calls and ed2.calls.count('edit') == 5    # finished group kept, no new analysis
+    assert any('샘플 분석 대신 번역 기준표' in e for e in events)
+
+
+def test_a_kept_translation_table_follows_a_redone_translation(tmp_path):
+    src = write(tmp_path, 'novel.ko.txt', '\n\n'.join(f'어색한 은지의 문장 {i}입니다.' for i in range(30)))
+    record_translation(src, src.read_text(encoding='utf-8'),
+                       [{'speaker': '은지', 'listener': '민수', 'level': '해요체'}], {'恩智': '은지'}, root=tmp_path)
+    ed = Editor()
+    run_refinement(src, tmp_path / 'r.txt', ed, 'm', 'k', checkpoint_dir=tmp_path / 'cp', links_root=tmp_path,
+                   max_items=5, stop=lambda: ed.calls.count('edit') >= 1)
+    record_translation(src, src.read_text(encoding='utf-8'),
+                       [{'speaker': '은지', 'listener': '민수', 'level': '반말'}], {'恩智': '은지'}, root=tmp_path)
+    ed2, events = Editor(), []
+    run_refinement(src, tmp_path / 'r.txt', ed2, 'm', 'k', checkpoint_dir=tmp_path / 'cp',
+                   links_root=tmp_path, max_items=5, event=events.append)
+    assert '은지 → 민수: 반말' in ed2.last_user and ed2.calls.count('edit') == 5
+
+
+def test_a_resume_with_the_same_translation_table_is_unchanged(tmp_path):
+    src = write(tmp_path, 'novel.ko.txt', '\n\n'.join(f'어색한 은지의 문장 {i}입니다.' for i in range(30)))
+    record_translation(src, src.read_text(encoding='utf-8'),
+                       [{'speaker': '은지', 'listener': '민수', 'level': '해요체'}], {'恩智': '은지'}, root=tmp_path)
+    ed = Editor()
+    run_refinement(src, tmp_path / 'r.txt', ed, 'm', 'k', checkpoint_dir=tmp_path / 'cp', links_root=tmp_path,
+                   max_items=5, stop=lambda: ed.calls.count('edit') >= 1)
+    ed2, events = Editor(), []
+    run_refinement(src, tmp_path / 'r.txt', ed2, 'm', 'k', checkpoint_dir=tmp_path / 'cp',
+                   links_root=tmp_path, max_items=5, event=events.append)
+    assert any('이전 실행에서 이어 씀' in e for e in events)                 # as before
