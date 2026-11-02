@@ -6,11 +6,12 @@ import re
 import threading
 import time
 from dataclasses import replace
+from difflib import SequenceMatcher
 from .chunking import split_paragraphs, escape_protocol_literals
 from .config import DATA_DIR, load_json, save_json
 from .textio import atomic_write_text
 from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
-from .refinement_links import find_reference, reference_guidance, reference_summary, GUIDANCE_MAX
+from .refinement_links import find_reference, reference_guidance, reference_summary, record_translation, GUIDANCE_MAX
 from .validation import dialogue_shift_run, SHIFT_RUN_MIN
 
 _ID = re.compile(r'(?m)^<P([0-9]{6})>[ \t]*\r?\n')
@@ -559,7 +560,136 @@ def peek_guidance(source: Path, *, checkpoint_dir: Path | None = None, links_roo
         state = {}
     if state.get('guidance_done') and str(state.get('guidance') or '').strip():
         return 'analysis', '지난 실행의 샘플 분석', str(state.get('guidance'))
+    if not state:
+        # The same TXT edited after an earlier run: that run's sample analysis is used again.
+        for _f, old in _carry_candidates(source, checkpoint_dir, cp):
+            if (old.get('guidance_done') and old.get('guidance_source') == 'analysis'
+                    and str(old.get('guidance') or '').strip()):
+                return 'analysis', '지난 실행의 샘플 분석', str(old.get('guidance'))
+            break
     return 'none', '', ''
+
+
+# --- resume after the TXT was edited (v2.6.1) ---------------------------------------
+# A resume file belongs to one exact text. When the same TXT (same path) was edited after
+# a stopped run — a typo fixed, a line added, saved again with other line endings — the
+# paragraphs that are still the same keep their finished edit; only changed ones are
+# edited again. Matching is by the order of unchanged paragraphs, never by text alone,
+# so a short line repeated elsewhere ("……") never takes another place's edit.
+CARRY_SCAN = 20
+
+
+def _para_keys(paragraphs) -> list[str]:
+    return [sha256(p.text.encode('utf-8', 'surrogatepass')).hexdigest()[:12] for p in paragraphs]
+
+
+def _path_key(path) -> str:
+    try:
+        return str(Path(path).resolve()).casefold()
+    except OSError:
+        return str(path).casefold()
+
+
+def _carry_candidates(source: Path, checkpoint_dir: Path | None, exclude: Path):
+    """Resume files of earlier runs on this TXT's path with another text, newest first."""
+    root = Path(checkpoint_dir or DATA_DIR / 'refinement_jobs')
+    try:
+        files = sorted(root.glob('text-*.json'), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    me = _path_key(source)
+    for f in files[:CARRY_SCAN]:
+        if f == exclude:
+            continue
+        try:
+            old = load_json(f)
+        except Exception:
+            continue
+        if old.get('schema') != 1 or not isinstance(old.get('para'), list):
+            continue    # files of builds before v2.6.1 do not list their paragraphs
+        if _path_key(old.get('source') or '') != me:
+            continue
+        yield f, old
+
+
+def _matching_runs(old_keys, new_keys):
+    """(old index, new index, length) of the runs of unchanged paragraphs, in order. The
+    same beginning and end are taken first, so a typical edit (a few lines changed, line
+    endings changed) is compared in an instant even for a long book."""
+    a, b = list(old_keys), list(new_keys)
+    head = 0
+    while head < len(a) and head < len(b) and a[head] == b[head]:
+        head += 1
+    tail = 0
+    while tail < len(a) - head and tail < len(b) - head and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    runs = [(0, 0, head)] if head else []
+    mid_a, mid_b = a[head:len(a) - tail], b[head:len(b) - tail]
+    if mid_a and mid_b:
+        for i, j, n in SequenceMatcher(None, mid_a, mid_b, autojunk=False).get_matching_blocks():
+            if n:
+                runs.append((head + i, head + j, n))
+    if tail:
+        runs.append((len(a) - tail, len(b) - tail, tail))
+    return runs
+
+
+def _carry_from_edited(source, paragraphs, state, provider_name, model, layout,
+                       checkpoint_dir, cp) -> int:
+    """Take the finished edits of unchanged paragraphs from an earlier run on this path
+    (same editing engine and grouping only). Returns how many paragraphs were taken."""
+    for f, old in _carry_candidates(source, checkpoint_dir, cp):
+        engine = old.get('engine') or {}
+        if (engine.get('provider') != provider_name or str(engine.get('model')) != str(model)
+                or list(old.get('layout') or []) != list(layout)):
+            continue
+        done = old.get('completed') or {}
+        carried = {}
+        for i, j, n in _matching_runs(old['para'], state['para']):
+            if n == 1 and len(paragraphs[j].text.strip()) <= 10:
+                continue    # a lone short line ("……", "응.") is edited again rather than guessed
+            for k in range(n):
+                body = done.get(str(i + k + 1))
+                p = paragraphs[j + k]
+                if isinstance(body, str) and body.strip() and not is_refusal_notice(body, p.text):
+                    carried[str(p.pid)] = body
+        if not carried:
+            continue
+        state['completed'] = carried
+        for key in ('guidance', 'guidance_done', 'guidance_source'):
+            if key in old:
+                state[key] = old[key]
+        state['guidance'] = _clip_lines(str(state.get('guidance') or ''), GUIDANCE_MAX)
+        state['elapsed'] = float(old.get('elapsed') or 0.0)
+        save_json(cp, state)
+        try:
+            f.unlink()     # its text no longer exists at this path; the new file replaces it
+        except OSError:
+            pass
+        return len(carried)
+    return 0
+
+
+def prune_refinement_jobs(keep_days: int, root: Path | None = None) -> int:
+    """Remove resume files nobody has continued for `keep_days` days (v2.6.1). A running
+    or recently continued refinement rewrites its file after every group, so it is never
+    this old. Losing one only means editing that book again; no TXT is touched."""
+    if int(keep_days or 0) <= 0:
+        return 0
+    folder = Path(root or DATA_DIR / 'refinement_jobs')
+    cutoff = time.time() - int(keep_days) * 86400
+    removed = 0
+    try:
+        files = list(folder.glob('*.json')) + list(folder.glob('*.json.tmp'))
+    except OSError:
+        return 0
+    for f in files:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(); removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _residue_paragraphs(paragraphs, texts=None) -> int:
@@ -636,11 +766,20 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 state['output_sha']=str(old.get('output_sha') or '')
         else:
             old = {}
+    state['para'] = _para_keys(paragraphs)
+    state['layout'] = [max_chars, max_items]
     # Never overwrite an earlier result, except this run's own untouched result.
     if output.exists() and output.read_bytes():
         if not (update_existing and old.get('finished') and state.get('output_sha')
                 and state['output_sha'] == _file_sha(output)):
             raise FileExistsError('이미 같은 이름의 결과가 있습니다. 다른 출력 파일명을 선택하세요.')
+    carried = 0
+    if not old:
+        try:
+            carried = _carry_from_edited(source, paragraphs, state, provider_name, model,
+                                         (max_chars, max_items), checkpoint_dir, cp)
+        except Exception:
+            carried = 0      # never stops a run; it simply starts from the beginning
     earlier = float(state.get('elapsed') or 0.0)
 
     def elapsed() -> float:
@@ -651,7 +790,9 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         save_json(cp, state)
     valid_ids = {str(p.pid) for p in paragraphs}
     state['completed']={k:v for k,v in state['completed'].items() if k in valid_ids}
-    if state['completed'] and not old.get('finished'):
+    if carried:
+        event(f'TXT가 바뀌었지만 그대로인 {len(state["completed"]):,}문단은 이전 실행에서 다듬은 것을 이어서 사용 · 바뀐 문단만 다시 다듬음')
+    elif state['completed'] and not old.get('finished'):
         event(f'이전 실행에서 다듬은 {len(state["completed"]):,}문단은 건너뛰고 이어서 진행')
     residue_before = _residue_paragraphs(paragraphs)
 
@@ -829,6 +970,14 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     if not result:
         raise ValueError('교정 결과가 비어 있습니다.')
     atomic_write_text(output,result,backup_existing=False)
+    if state.get('guidance_source')=='translation' and ref:
+        # The refined TXT keeps the translation's reference table (v2.6.1): refining it again,
+        # or a copy of it, uses the confirmed speech table and names, not a sample guess.
+        try:
+            record_translation(output, result, ref.get('speech'), {n: n for n in names},
+                               str(ref.get('source') or ''), links_root)
+        except Exception:
+            pass
     report=output.with_name(output.name+'.review.txt')
     changed=sum(1 for p in paragraphs if str(p.pid) in state['completed'] and state['completed'][str(p.pid)].strip()!=p.text.strip())
     identical=len(state['completed'])-changed

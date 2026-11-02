@@ -42,6 +42,73 @@ def _row_value(row, key: str, default=''):
 
 
 
+# --- which book wrote which result file (v2.6.1) ------------------------------------
+# With one output folder for every result, two different books of the same file name
+# (A\\1.txt and B\\1.txt) render to the same 1.ko.txt. A result is replaced or retired
+# only by the book that wrote it; another book's result is first kept as a dated .bak.
+OWNERS_FILE = 'output_owners.json'
+OWNERS_MAX = 3000
+SAME_BOOK_PREFIX = 8000   # characters compared when the writer is unknown or another path
+
+
+def _path_key(path) -> str:
+    try:
+        return str(Path(path).resolve()).casefold()
+    except OSError:
+        return str(path).casefold()
+
+
+def _owners_path(root=None) -> Path:
+    if root is None:
+        from .config import DATA_DIR
+        root = DATA_DIR
+    return Path(root) / OWNERS_FILE
+
+
+def _load_owners(root=None) -> dict:
+    try:
+        from .config import load_json
+        data = load_json(_owners_path(root)).get('owners')
+        return dict(data) if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_owners(owners: dict, root=None) -> None:
+    try:
+        from .config import save_json
+        items = list(owners.items())[-OWNERS_MAX:]
+        save_json(_owners_path(root), {'schema': 1, 'owners': dict(items)})
+    except Exception:
+        pass   # never stops a result from being saved
+
+
+def _normalized(text: str) -> str:
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def _same_book(existing: Path, new_text: str) -> bool:
+    """The file already there starts like the result being written now (the same book:
+    a resumed, moved or renamed job). A different book of the same name does not."""
+    try:
+        with existing.open('rb') as f:
+            raw = f.read(SAME_BOOK_PREFIX * 4 + 16)
+        old = _normalized(raw.decode('utf-8-sig', 'ignore'))[:SAME_BOOK_PREFIX]
+    except OSError:
+        return True    # unreadable: leave it to the atomic replace as before
+    new = _normalized(new_text)[:SAME_BOOK_PREFIX]
+    if not old.strip():
+        return True    # an empty file holds nothing to keep
+    return old == new or new.startswith(old) or old.startswith(new)
+
+
+def _keep_aside(path: Path) -> Path:
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    backup = path.with_name(path.name + f'.before_{stamp}.bak')
+    path.replace(backup)
+    return backup
+
+
 def has_name_twin(source_path: Path) -> bool:
     """A PDF/EPUB with another book file of the same name beside it (book.pdf + book.txt / book.epub)."""
     source_path=Path(source_path)
@@ -90,7 +157,7 @@ def not_started(row) -> bool:
     return row['status'] == 'PENDING' and not (row['error_type'] or '') and not _row_value(row, 'translation', '')
 
 
-def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallback_dir: Path, all_paragraphs=None, korean_punct: bool = True, quote_style: str = 'straight'):
+def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallback_dir: Path, all_paragraphs=None, korean_punct: bool = True, quote_style: str = 'straight', owners_root=None):
     """Render complete/partial TXT without ever dropping source text.
 
     Failed translatable paragraphs are written as their original source text, with no
@@ -147,26 +214,49 @@ def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallba
             # than a missing scene and enables DB-less mixed-language retry later.
             body=html_line_breaks(paragraph.text)
         rendered.append(paragraph.prefix_before+body+paragraph.separator_after)
+    text=''.join(rendered)
+    owners=_load_owners(owners_root); me=_path_key(source_path); owners_changed=False
+
+    def other_book(path: Path) -> bool:
+        """`path` holds the result of a different book (never true for this book's own)."""
+        writer=owners.get(_path_key(path))
+        return writer is not None and writer!=me
+
+    # Another book's result of the same name is kept as a dated .bak, never silently
+    # replaced (v2.6.1). This book's own result (resumed, moved or renamed) is replaced as before.
+    try:
+        if out.exists() and out.resolve()!=source_path.resolve() and owners.get(_path_key(out))!=me:
+            if not _same_book(out,text):
+                _keep_aside(out)
+    except OSError:
+        pass
     # Atomic replacement leaves an existing file untouched if the write fails.
     # Avoid creating a dated backup beside the source on every snapshot.
-    atomic_write_text(out,''.join(rendered))
+    atomic_write_text(out,text)
+    if owners.get(_path_key(out))!=me:
+        owners.pop(_path_key(out),None); owners[_path_key(out)]=me; owners_changed=True
     # The unfinished list is no longer written as a .ko.failed.txt beside the result (resume
     # reads the database; the list is shown in the app). One left by an earlier build goes.
     # Only after a complete result is durable is the stale partial retired as well.
-    # Never remove the selected source (which may itself be a prior partial).
+    # Never remove the selected source (which may itself be a prior partial), nor another
+    # book's partial of the same name.
     for obsolete in ((failed_path,) if failed else (partial_path, failed_path)):
-        if obsolete == out or not obsolete.exists():
+        if obsolete == out or not obsolete.exists() or other_book(obsolete):
             continue
         try:
             if obsolete.resolve() != source_path.resolve():
                 obsolete.unlink()
+                if owners.pop(_path_key(obsolete),None) is not None: owners_changed=True
         except OSError:
             pass
     # Preserve the old completed result only when a new partial result supersedes it.
-    # Regular snapshots do not generate dated backups.
-    if failed and full_path.exists() and full_path.resolve() != source_path.resolve():
-        stamp=datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        full_path.replace(full_path.with_name(full_path.name+f'.before_{stamp}.bak'))
+    # Regular snapshots do not generate dated backups. Another book's result stays put.
+    if (failed and full_path.exists() and full_path.resolve() != source_path.resolve()
+            and not other_book(full_path)):
+        _keep_aside(full_path)
+        if owners.pop(_path_key(full_path),None) is not None: owners_changed=True
+    if owners_changed:
+        _save_owners(owners,owners_root)
     report=None
     if failed:
         # Text for the app's 미완료 목록 tab (no file is written).
