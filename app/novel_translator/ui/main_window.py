@@ -426,6 +426,9 @@ class MainWindow(QMainWindow):
         self.worker=None; self._close_after_worker=False; self._stop_batch=False; self._completion_message=''; self._last_worker_status=''; self._force_restart=False
         # Unattended run: temporary pauses are resumed automatically, hopeless files are skipped.
         self._pending_pause=''; self._auto_resumes={}; self._resume_left=0; self._resume_reason=''
+        # True from a job's start to its real end (auto-resume countdowns, untranslated retries
+        # and the files of a folder run included); read by _job_busy (v2.6.1).
+        self._job_active=False
         self._batch_retry_pending=False; self._last_leftover=0; self._last_failed=0; self._retry_rounds=0
         self._reset_batch_retry_state()
         self._resume_timer=QTimer(self); self._resume_timer.setInterval(1000); self._resume_timer.timeout.connect(self._resume_tick)
@@ -608,7 +611,7 @@ class MainWindow(QMainWindow):
         self.preview.textChanged.connect(self._preview_changed)
         pv.addWidget(self.preview); self.tabs.addTab(preview,'원문')
         self._preview_mode='source'; self._preview_baseline=''; self._preview_loading=False
-        self._result_text=''; self._paste_active=False
+        self._result_text=''; self._paste_active=False; self._paste_origin_dir=None
 
         jobs=QWidget(); jv=QVBoxLayout(jobs)
         help_lbl=QLabel('폴더 작업은 여러 파일을 동시에 번역하지 않습니다. 목록 순서대로 한 파일을 완전히 처리한 뒤 다음 파일로 넘어갑니다.')
@@ -995,8 +998,11 @@ class MainWindow(QMainWindow):
             self._update_ready_state()
 
     def open_refinement_run(self):
-        if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, '번역 중', '기존 번역 작업이 완료된 뒤 한국어 재정비를 시작하세요.')
+        if self._job_busy():
+            QMessageBox.information(self, '번역 작업 중',
+                '번역 작업이 끝난 뒤 한국어 재정비를 시작하세요.\n'
+                '자동 재개를 기다리거나 용어·말투를 분석하는 동안도 번역 작업 중입니다.\n'
+                '두 작업이 같은 로컬 LLM을 함께 쓰면 둘 다 느려지고, 절전 방지·PC 종료도 엉킬 수 있습니다.')
             return
         from .refinement_run_dialog import RefinementRunDialog
         RefinementRunDialog(self).exec()
@@ -1083,6 +1089,7 @@ class MainWindow(QMainWindow):
         self._completion_message = ''
         self._last_worker_status = ''
         self._paste_active = False
+        self._paste_origin_dir = None
         self._origin_kind = ''
         self._auto_terms_sha = ''
         self._lang_chosen = False
@@ -1487,7 +1494,11 @@ class MainWindow(QMainWindow):
     def _output_dir_for(self,p:Path)->Path|None:
         if getattr(self,'_paste_active',False) and self.source_path and Path(p)==self.source_path:
             # Pasted text: the output folder if chosen, otherwise Documents (the temp source's
-            # own folder is hidden in AppData and hard to find).
+            # own folder is hidden in AppData and hard to find). An edited opened file goes
+            # beside that file when it can be written there (v2.6.1).
+            origin=getattr(self,'_paste_origin_dir',None)
+            if not (self._output_fallback or self.custom_output_dir) and origin and directory_writable(Path(origin)):
+                return Path(origin)
             return self._output_fallback or self.custom_output_dir or self._documents_output_dir()
         base=self._default_output_dir()
         if not base:return None
@@ -2736,6 +2747,11 @@ class MainWindow(QMainWindow):
         folder=DATA_DIR/'paste'; folder.mkdir(parents=True,exist_ok=True)
         from_file=self.input_mode=='single' and self.source_path and not self._paste_active
         stem=(self.source_path.stem+'_수정') if from_file else '붙여넣기'
+        if from_file and Path(self.source_path).parent!=folder:
+            # An edit of an opened file is saved beside that file, like its own result (v2.6.1).
+            self._paste_origin_dir=self.source_path.parent
+        elif not self._paste_active:
+            self._paste_origin_dir=None   # new pasted text (an edit of an edit keeps the folder)
         if not from_file:
             self._origin_kind=''   # new text, not an edit of an opened PDF/EPUB
         path=folder/f'{stem}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
@@ -3465,6 +3481,9 @@ class MainWindow(QMainWindow):
         if not (w and w.isRunning()):
             return
         self._user_paused=not self._user_paused
+        # A job the user paused by hand may be left for hours: the PC may sleep meanwhile;
+        # [다시 진행] keeps it awake again (v2.6.1).
+        self._apply_sleep_prevention(not self._user_paused)
         if self._user_paused:
             self._job_paused_at=time.monotonic()
         elif self._job_paused_at:
@@ -3523,12 +3542,26 @@ class MainWindow(QMainWindow):
             self.pause_btn.setEnabled(bool(running))
             if not running:
                 self._user_paused=False; self.pause_btn.setText('일시정지')
+        self._job_active=bool(running)
+        self._apply_sleep_prevention(bool(running))
+
+    @staticmethod
+    def _apply_sleep_prevention(awake: bool):
         try:
             cfg=load_json(CONFIG_DIR/'app.json')
             prevent=bool(cfg.get('prevent_sleep_while_running',True))
         except Exception:
             prevent=True
-        set_translation_awake(bool(running and prevent))
+        set_translation_awake(bool(awake and prevent))
+
+    def _job_busy(self) -> bool:
+        """A translation job is still alive, even between its steps: running, analysing
+        names/speech, waiting to resume after a pause, about to retry untranslated parts,
+        or between the files of a folder run. Korean refinement must not start then: both
+        would use the same local LLM, and the PC's one sleep/shutdown setting would follow
+        whichever finished first (v2.6.1)."""
+        return bool((self.worker and self.worker.isRunning()) or self._extracting()
+                    or getattr(self,'_job_active',False) or self._resume_timer.isActive())
 
     def _preflight_output(self) -> bool:
         out=self._default_output_dir()
@@ -3629,7 +3662,8 @@ class MainWindow(QMainWindow):
         label=('원문 창의 글 전체' if self._paste_active else f'선택한 {self._source_doc_kind() or "TXT"} 전체') if self.input_mode=='single' else f'폴더의 {self._count_kinds(self.batch_files)} 전체'
         msg=(f'{label}를 현재 설정으로 처음부터 다시 번역할까요?\n\n'
              '같은 작업의 저장된 완료 청크는 재사용하지 않습니다. 기존 결과 파일이 달라질 경우 자동 백업 후 새 결과를 저장합니다.')
-        if QMessageBox.question(self,'처음부터 다시 번역',msg)!=QMessageBox.Yes:
+        # [아니오] is the default (v2.6.1): Enter alone never throws away the finished part.
+        if QMessageBox.question(self,'처음부터 다시 번역',msg,QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:
             return
         self.start_translation(True)
 
@@ -4718,6 +4752,7 @@ class MainWindow(QMainWindow):
             days=int((load_json(CONFIG_DIR/'app.json').get('db_keep_days', self.DB_KEEP_DAYS)))
         except Exception:
             days=self.DB_KEEP_DAYS
+        self._clean_side_records(days)
         path=DATA_DIR/'translations.db'
         if days<=0 or not path.exists():
             return
@@ -4735,6 +4770,40 @@ class MainWindow(QMainWindow):
                             +(f' · DB {before/1e6:,.1f}MB → {after/1e6:,.1f}MB' if shrunk else '')+'\n')
         except Exception:
             pass
+
+    def _clean_side_records(self, days: int):
+        """Same rule as the translation database (v2.6.1): Korean refinement resume files
+        and the copies of pasted / edited 원문 text nobody has used for `days` days go.
+        Results and the user's own files are never touched. Never stops closing."""
+        if days<=0:
+            return
+        notes=[]
+        try:
+            from ..refinement_runtime import prune_refinement_jobs
+            n=prune_refinement_jobs(days)
+            if n: notes.append(f'재정비 이어하기 기록 {n}개')
+        except Exception:
+            pass
+        try:
+            folder=DATA_DIR/'paste'; cutoff=time.time()-days*86400; n=0
+            current=Path(self.source_path).resolve() if self.source_path else None
+            for f in (folder.glob('*.txt') if folder.is_dir() else []):
+                try:
+                    if f.stat().st_mtime<cutoff and f.resolve()!=current:
+                        f.unlink(); n+=1
+                except OSError:
+                    pass
+            if n: notes.append(f'원문 창 임시 사본 {n}개')
+        except Exception:
+            pass
+        if notes:
+            try:
+                from ..config import LOG_DIR
+                LOG_DIR.mkdir(parents=True,exist_ok=True)
+                with open(LOG_DIR/'db_cleanup.log','a',encoding='utf-8') as f:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} · {days}일 넘게 쓰지 않은 "+' · '.join(notes)+' 정리\n')
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 최근 연 파일 (v2.5.3)
     # Newest first, at most 20, the same file once; each with how far its translation got.

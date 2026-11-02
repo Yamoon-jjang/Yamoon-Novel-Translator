@@ -39,6 +39,27 @@ def korean_share(path) -> float:
     return len(re.findall(r'[가-힣]', text))/letters if letters else 0.0
 
 
+def _size(path) -> int:
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
+def is_unfinished_translation(path) -> bool:
+    return Path(path).name.lower().endswith('.ko.partial.txt')
+
+
+def refined_output_path(source, out_dir=None) -> Path:
+    """book.txt → book.ko.refined.txt; this app's results (book.ko.txt, book.ko.partial.txt,
+    book.ko.refined.txt) only get '.refined' added, never a second '.ko'."""
+    source=Path(source); stem=source.stem
+    low=stem.lower()
+    suffix='.refined.txt' if low.endswith(('.ko','.ko.partial','.ko.refined')) or '.ko.refined' in low else '.ko.refined.txt'
+    # The app-wide output folder holds every result, refinement included.
+    return Path(out_dir or source.parent)/(stem+suffix)
+
+
 def wrap_path(text) -> str:
     """Text that can wrap inside a long path or file name (after folder separators and
     within long unbroken runs), so it never widens the window. Display only."""
@@ -121,6 +142,7 @@ class RefinementRunDialog(QDialog):
         self._timer.timeout.connect(self._tick)
         self.source=None
         self.output=None
+        self._too_big=False      # the selected TXT is 10 MB or more (v2.6.1: shown at once)
         layout=QVBoxLayout(self)
         intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서와 존댓말·반말은 그대로 두고 원본은 바꾸지 않습니다. '
                      '이 앱으로 번역한 TXT는 번역 때 확정한 말투·이름을, 그 밖의 TXT는 샘플 분석으로 만든 기준표를 씁니다.')
@@ -191,7 +213,7 @@ class RefinementRunDialog(QDialog):
         bar=QHBoxLayout()
         self.start=QPushButton('재정비 시작')
         self.start.clicked.connect(self._start)
-        self.start.setEnabled(self._routes_ready)
+        self.start.setEnabled(self._can_start())
         # After a finished run the start button gives way to opening the result in 야문 클린리더
         # (it stays beside it while preserved paragraphs can still be retried).
         self.reader=QPushButton('클린리더로 열기')
@@ -215,14 +237,19 @@ class RefinementRunDialog(QDialog):
 
     @staticmethod
     def _prefill_candidates(host):
+        """Never an unfinished translation (.ko.partial.txt: finishing it changes the text, so
+        a refinement of it would be done again) nor a TXT too large to refine (v2.6.1)."""
         out=[]
         result=getattr(host,'last_result_path',None)
-        if result and Path(result).is_file() and Path(result).name.lower().endswith(('.ko.txt','.ko.partial.txt')):
+        if result and Path(result).is_file() and Path(result).name.lower().endswith('.ko.txt'):
             out.append(Path(result))
         existing=getattr(host,'source_path',None)
-        if existing and Path(existing).is_file():
+        if existing and Path(existing).is_file() and not Path(existing).name.lower().endswith('.ko.partial.txt'):
             out.append(Path(existing))
-        return out
+        return [p for p in out if _size(p) < MAX_REFINEMENT_BYTES]
+
+    def _can_start(self) -> bool:
+        return bool(getattr(self,'_routes_ready',False)) and not self._too_big
 
     def _fit_height(self):
         """Grow (never shrink) so every wrapped line is fully visible at the current width."""
@@ -261,7 +288,7 @@ class RefinementRunDialog(QDialog):
             except ValueError as exc:
                 self._route_error=str(exc)
         if hasattr(self,'start') and self.worker is None:
-            self.start.setEnabled(self._routes_ready)
+            self.start.setEnabled(self._can_start())
 
     def showEvent(self,event):
         super().showEvent(event)
@@ -282,15 +309,26 @@ class RefinementRunDialog(QDialog):
 
     def _set_source(self,path):
         self.source=Path(path)
-        stem = self.source.stem
-        suffix = '.refined.txt' if stem.lower().endswith('.ko') else '.ko.refined.txt'
-        # The app-wide output folder holds every result, refinement included.
-        out_dir = getattr(self.host,'custom_output_dir',None) or self.source.parent
-        self.output=Path(out_dir)/(stem+suffix)
+        self.output=refined_output_path(self.source, getattr(self.host,'custom_output_dir',None))
         self.source_label.setText(self.source.name)
         self.source_label.setToolTip(str(self.source))
         self._show_done(False)
-        self.status.setText(f'결과는 별도 파일에 저장됩니다: {wrap_path(self.output)}')
+        size=_size(self.source)
+        self._too_big=size >= MAX_REFINEMENT_BYTES
+        if self.worker is None:
+            self.start.setEnabled(self._can_start())
+        if self._too_big:
+            # Said at once, not after [재정비 시작]; the whole file is not read for nothing.
+            self.status.setText(f'이 TXT는 {size/1e6:,.1f}MB라 재정비할 수 없습니다. 재정비는 10MB 미만 TXT만 지원합니다.\n'
+                                '장별로 나눈 TXT를 선택하세요.')
+            self.status.setToolTip(str(self.source))
+            self._guidance_text=''
+            self.guidance_info.setText('기준표: 10MB 미만 TXT를 선택하면 표시됩니다')
+            self.guidance_view.setEnabled(False)
+            return
+        note=('\n미완료 번역 결과(.ko.partial.txt)입니다. 번역을 끝내면 내용이 바뀌므로 번역을 마친 .ko.txt를 다듬는 것이 좋습니다.'
+              if is_unfinished_translation(self.source) else '')
+        self.status.setText(f'결과는 별도 파일에 저장됩니다: {wrap_path(self.output)}'+note)
         self.status.setToolTip(str(self.output))
         self._refresh_guidance()
 
@@ -356,6 +394,14 @@ class RefinementRunDialog(QDialog):
                 '한국어 재정비는 10MB 미만의 TXT 파일만 지원합니다.\n'
                 '장별로 나눈 파일을 선택하세요. 기존 중·일·영 번역에는 적용되지 않습니다.')
             return
+        if is_unfinished_translation(self.source):
+            box=QMessageBox(QMessageBox.Question,'미완료 번역 결과',
+                '선택한 TXT는 아직 끝나지 않은 번역 결과(.ko.partial.txt)입니다.\n'
+                '번역을 마저 끝내면 내용이 바뀌어, 지금 다듬은 결과를 이어 쓰지 못하고 재정비를 다시 해야 합니다.\n\n'
+                '그래도 이 파일로 시작할까요?',QMessageBox.Yes|QMessageBox.No,self)
+            box.setDefaultButton(QMessageBox.No)
+            if box.exec()!=QMessageBox.Yes:
+                return
         if korean_share(self.source) < KOREAN_MIN_SHARE:
             answer=QMessageBox.question(self,'한국어 TXT 확인',
                 '선택한 파일은 한국어 문장이 적어 번역 전 원문으로 보입니다.\n'
@@ -502,7 +548,7 @@ class RefinementRunDialog(QDialog):
             self._refresh_guidance()      # a stopped run keeps its sample analysis
         self._fill_engines()
         self.cancel.setText('닫기')
-        self.start.setEnabled(self._routes_ready)
+        self.start.setEnabled(self._can_start())
         if getattr(self,'_shutdown_summary',''):
             QTimer.singleShot(0,self._offer_shutdown)
 
