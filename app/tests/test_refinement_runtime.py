@@ -106,12 +106,13 @@ def test_scene_chunks_group_dialogue_without_four_paragraph_cap():
 
 
 def test_large_source_is_rejected_before_model_or_input_read(tmp_path):
-    from novel_translator.refinement_runtime import MAX_REFINEMENT_BYTES
+    from novel_translator.refinement_runtime import MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL
+    assert MAX_REFINEMENT_LABEL == '30MB'      # v2.6.2: 10MB -> 30MB
     src=tmp_path/'too_large.txt'
     with src.open('wb') as out:
         out.truncate(MAX_REFINEMENT_BYTES)
     provider=Dummy()
-    with pytest.raises(ValueError,match='10MB'):
+    with pytest.raises(ValueError,match=MAX_REFINEMENT_LABEL):
         run_refinement(src,tmp_path/'out.txt',provider,'model','test')
     assert provider.calls==0
 

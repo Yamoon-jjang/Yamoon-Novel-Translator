@@ -261,10 +261,10 @@ def test_a_too_large_txt_is_said_at_once(qt_app, sandbox, monkeypatch):
     assert d.source is None                                               # not pre-filled
     d._routes_ready = True
     d._set_source(big)
-    assert '10MB 미만' in d.status.text() and not d.start.isEnabled()
+    assert rd.MAX_REFINEMENT_LABEL + ' 미만' in d.status.text() and not d.start.isEnabled()
     small = root / 's.ko.txt'; small.write_text('그는 웃었다.', encoding='utf-8')
     d._set_source(small)
-    assert '10MB' not in d.status.text() and d.start.isEnabled()          # nothing added for a small TXT
+    assert rd.MAX_REFINEMENT_LABEL not in d.status.text() and d.start.isEnabled()          # nothing added for a small TXT
 
 
 @pytest.mark.parametrize('name,out', [
