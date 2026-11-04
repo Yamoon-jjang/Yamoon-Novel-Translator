@@ -141,7 +141,9 @@ def test_running_refinement_shows_elapsed_and_an_estimate(monkeypatch):
         assert '교정 40/400 문단' in d._time_text() and '남은 예상' not in d._time_text()
         clock[0]+=100; d._progress(60,400,2)        # 20 paragraphs in 100 s
         text=d._time_text()
-        assert '경과 0:01:40' in text and '원문 보존 2' in text
+        assert '경과 0:01:40' in text and '원문 보존' not in text      # v2.6.2: on the 결과 line
+        d._stats_changed({'groups': 20, 'group': 3})
+        assert '원문 보존 2문단' in d.stats_info.text()
         assert '남은 예상 약 0:28:20' in text         # 340 left at 5 s each
     finally:
         d.close()

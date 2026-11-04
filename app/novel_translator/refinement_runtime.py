@@ -13,6 +13,7 @@ from .textio import atomic_write_text
 from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
 from .refinement_links import find_reference, reference_guidance, reference_summary, record_translation, GUIDANCE_MAX
 from .validation import dialogue_shift_run, SHIFT_RUN_MIN
+from .punctuation import korean_punctuation
 
 _ID = re.compile(r'(?m)^<P([0-9]{6})>[ \t]*\r?\n')
 
@@ -318,7 +319,99 @@ def format_duration(seconds: float) -> str:
     return f'{sec}초'
 
 
-MAX_REFINEMENT_BYTES = 10_000_000  # 10 MB decimal; applies to refinement only.
+# Refinement only. Up to v2.6.1 this was 10 MB. Full runs were verified on books of 16 MB
+# (about 250 MB of memory) and 49 MB (about 690 MB); v2.6.2 accepts books under 30 MB, a
+# limit set by what is sensible to edit with a local LLM (a 30 MB book is about 7,700
+# requests, days of work), not by memory. The window states the requests before a long run.
+MAX_REFINEMENT_BYTES = 30_000_000  # 30 MB decimal
+MAX_REFINEMENT_LABEL = f'{MAX_REFINEMENT_BYTES // 1_000_000}MB'
+
+
+def _save_state(path: Path, data: dict) -> None:
+    """The resume file, written as save_json does (temporary file, flush, replace), but encoded
+    in one piece and without indentation. It is rewritten after every group: json.dump streams
+    through Python's slow encoder, and on a 16 MB book that alone took about nine minutes over
+    a run (v2.6.2: under five, against days of model time). Read back with load_json as before."""
+    import json, os
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    payload = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+    with tmp.open('w', encoding='utf-8', newline='\n') as f:
+        f.write(payload)
+        f.flush(); os.fsync(f.fileno())
+    tmp.replace(path)
+
+
+def _stop_line(state, paragraphs, seconds) -> str:
+    return (f'===== 안전 중지 · 다듬은 {len(state["completed"]):,}/{len(paragraphs):,}문단 저장'
+            f' · 누적 소요 {format_duration(seconds)} · 다시 시작하면 이어서 진행')
+
+
+def run_log_path(output: Path) -> Path:
+    """The run's full progress log beside the result (v2.6.2): book.ko.refined.txt.log.txt."""
+    output = Path(output)
+    return output.with_name(output.name + '.log.txt')
+
+
+def append_run_log(path, line: str) -> None:
+    """One timestamped line appended to the run log. Appending never rewrites the file, so a
+    run of days keeps it cheap (one line about 100 bytes; a 30 MB book about 1 MB). Never
+    raises: a log that cannot be written never stops a run."""
+    if not path:
+        return
+    try:
+        path = Path(path)
+        new = not path.exists() or path.stat().st_size == 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8', newline='\r\n') as f:
+            if new:
+                f.write('\ufeff')        # UTF-8 with BOM, as the result TXT (Windows Notepad)
+            f.write(time.strftime('[%Y-%m-%d %H:%M:%S] ') + str(line).replace('\n', ' / ') + '\n')
+    except OSError:
+        pass
+
+
+def _start_run_log(path, resuming: bool) -> None:
+    """A new run (not a resume) keeps the previous run's log as .log.이전.txt (one only) and
+    starts a fresh file; a resume or a retry of preserved paragraphs goes on in the same file."""
+    if not path or resuming:
+        return
+    path = Path(path)
+    try:
+        if path.exists() and path.stat().st_size:
+            path.replace(path.with_name(path.name[:-len('.txt')] + '.이전.txt'))
+    except OSError:
+        pass
+
+
+def estimate_run(source: Path, provider_name: str = 'local', model: str = '', max_items: int = 36,
+                 checkpoint_dir: Path | None = None) -> dict:
+    """What a run on this TXT will ask (v2.6.2, for the notice before a long run): paragraphs,
+    editing requests for the whole book, and paragraphs already edited by an unfinished
+    earlier run of the same text (skipped when it resumes). Continuity reviews and retries
+    add requests only where a reply needs them, so the count is the usual minimum."""
+    from .textio import read_txt
+    text, _ = read_txt(Path(source), 'ko')
+    paragraphs = split_paragraphs(text)
+    max_chars = default_max_chars(provider_name)
+    groups = group_paragraphs(paragraphs, max_chars, max_items)
+    done = 0
+    try:
+        digest = sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()
+        cp = content_checkpoint_path(digest, checkpoint_dir)
+        if cp.is_file():
+            old = load_json(cp)
+            # Only a run this editing model continues (the same rule as run_refinement).
+            if (old.get('schema') == 1 and not old.get('finished')
+                    and old.get('identity') == job_identity(digest, provider_name, model, max_chars, max_items)):
+                done = sum(1 for v in (old.get('completed') or {}).values() if isinstance(v, str) and v.strip())
+    except Exception:
+        done = 0
+    left = len(groups)
+    if done and paragraphs:
+        left = max(1, round(len(groups) * max(0, len(paragraphs) - done) / len(paragraphs)))
+    return {'paragraphs': len(paragraphs), 'requests': len(groups), 'done': min(done, len(paragraphs)),
+            'requests_left': left, 'chars': len(text)}
 
 
 def group_paragraphs(paragraphs, max_chars=4500, max_items=36):
@@ -697,8 +790,31 @@ def _residue_paragraphs(paragraphs, texts=None) -> int:
     return sum(1 for p in paragraphs if _FOREIGN.search(texts.get(str(p.pid), p.text)))
 
 
-def assemble(paragraphs, completed):
-    return ''.join(p.prefix_before + completed.get(str(p.pid), p.text) + p.separator_after for p in paragraphs)
+_LEAD_SPACE = re.compile(r'^[ \t\u3000]*')
+
+
+def finalize_body(original: str, body: str, punct: bool = False, quote_style: str = 'straight') -> str:
+    """The paragraph as the result file holds it (v2.6.2). Applied only when the file is
+    written: what was edited and kept for resuming stays exactly as the model wrote it.
+
+    - The original's leading indentation (a full-width space, spaces) is kept: a model often
+      drops it, and the layout of the book must not change with the editing.
+    - With 문장부호 정리 on, the same Korean punctuation and quotation-mark style as a
+      translation result (설정 [따옴표]), so a refined book never comes back in the
+      model's own quote marks."""
+    indent = _LEAD_SPACE.match(original or '').group(0)
+    text = indent + _LEAD_SPACE.sub('', body or '', count=1)
+    if punct:
+        text = korean_punctuation(text, quote_style)
+    return text
+
+
+def assemble(paragraphs, completed, punct=None, quote_style='straight'):
+    """punct=None: the bodies exactly as stored (the raw edit, as before v2.6.2)."""
+    if punct is None:
+        return ''.join(p.prefix_before + completed.get(str(p.pid), p.text) + p.separator_after for p in paragraphs)
+    return ''.join(p.prefix_before + finalize_body(p.text, completed.get(str(p.pid), p.text), punct, quote_style)
+                   + p.separator_after for p in paragraphs)
 
 
 _SOURCE_LABEL = {'translation': '번역 기록', 'analysis': '샘플 분석', 'none': '없음'}
@@ -708,12 +824,21 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                    *, stop=lambda: False, progress=lambda done, total, issues: None,
                    checkpoint_dir: Path | None = None, max_chars=None, max_items=36,
                    analysis_engine=None, event=lambda message: None,
-                   links_root: Path | None = None, update_existing: bool = False):
+                   links_root: Path | None = None, update_existing: bool = False,
+                   punct: bool | None = None, quote_style: str = 'straight',
+                   on_edited=None, on_stats=None, log_path=None, on_log=None):
     """Save each accepted group durably; invalid answers preserve original text.
 
     Source and any pre-existing output remain untouched until a complete pass.
     `update_existing` lets a finished run retry its failed paragraphs into its own
     result file, only while that file is exactly what the run wrote.
+    `punct` (v2.6.2): None writes the bodies as stored; True/False writes them through
+    finalize_body (indentation kept, Korean punctuation and `quote_style` when True), as the
+    window does with the 문장부호·따옴표 settings. `on_edited(rows)` receives each newly kept
+    group as (pid, original, result text) for the window's live view. `on_stats(dict)` gets the
+    running counts the window shows (request i of n, replies, retries, reviews, changed and
+    identical paragraphs) and `log_path` receives every event worth keeping, timestamped
+    (run_log_path(output) from the window; None keeps no log file).
     """
     started = time.monotonic()
     source, output = Path(source), Path(output)
@@ -721,7 +846,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         raise ValueError('원본과 결과 파일 경로가 같습니다.')
     # Reject oversized books *before* loading or contacting a paid model.
     if source.stat().st_size >= MAX_REFINEMENT_BYTES:
-        raise ValueError('한국어 소설 재정비는 10MB 미만 TXT만 지원합니다. 큰 소설은 장별로 분리해 주세요.')
+        raise ValueError(f'한국어 소설 재정비는 {MAX_REFINEMENT_LABEL} 미만 TXT만 지원합니다. 더 큰 소설은 나눠 주세요.')
     from .textio import read_txt
     text, _encoding = read_txt(source, 'ko')
     if not text.strip():
@@ -782,14 +907,57 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             carried = 0      # never stops a run; it simply starts from the beginning
     earlier = float(state.get('elapsed') or 0.0)
 
+    # Run log and counts for the window (v2.6.2). Each event also goes to the log file, except
+    # the per-request "윤문 요청 중" status (each kept group gets its own ✓ line instead).
+    report_event = event
+    resuming = bool(state['completed']) or bool(update_existing)
+    _start_run_log(log_path, resuming)
+
+    def log(line):
+        """A line for the run log file and the window's 작업 기록 (which shows it timestamped)."""
+        append_run_log(log_path, line)
+        if on_log is not None:
+            try:
+                on_log(str(line))
+            except Exception:
+                pass
+
+    def event(message):
+        report_event(message)
+        if not str(message).startswith('윤문 요청 중'):
+            log(message)
+
+    stats = {'groups': len(groups), 'group': 0, 'paragraphs': len(paragraphs), 'requests': 0,
+             'retries': 0, 'reviews': 0, 'reply_last': 0.0, 'reply_total': 0.0, 'replies': 0,
+             'changed': 0, 'identical': 0}
+
+    def publish():
+        if on_stats is not None:
+            try:
+                on_stats(dict(stats))
+            except Exception:
+                pass      # the window's counts never stop a run
+
     def elapsed() -> float:
         return earlier + (time.monotonic() - started)
 
     def save():
         state['elapsed'] = round(elapsed(), 1)
-        save_json(cp, state)
+        _save_state(cp, state)
     valid_ids = {str(p.pid) for p in paragraphs}
     state['completed']={k:v for k,v in state['completed'].items() if k in valid_ids}
+    by_text = {str(p.pid): p.text.strip() for p in paragraphs}
+    for k, v in state['completed'].items():          # paragraphs kept from an earlier run
+        stats['identical' if v.strip() == by_text.get(k, '') else 'changed'] += 1
+    try:
+        size_mb = source.stat().st_size / 1e6
+    except OSError:
+        size_mb = 0.0
+    log(('===== 이어서 시작 · ' if resuming else '===== 재정비 시작 · ')
+                   + f'{source.name} · {size_mb:,.1f}MB · {len(paragraphs):,}문단 · 윤문 요청 {len(groups):,}묶음'
+                   + f' · {provider_name} {model}'
+                   + (f' · 이미 다듬은 {len(state["completed"]):,}문단' if state['completed'] else ''))
+    publish()
     if carried:
         event(f'TXT가 바뀌었지만 그대로인 {len(state["completed"]):,}문단은 이전 실행에서 다듬은 것을 이어서 사용 · 바뀐 문단만 다시 다듬음')
     elif state['completed'] and not old.get('finished'):
@@ -819,6 +987,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             state['guidance_source'] = 'analysis' if state['guidance'] else 'none'
             if stop():
                 save()
+                log(_stop_line(state, paragraphs, elapsed()))
                 return {'status':'stopped','done':len(state['completed']),'total':len(paragraphs),
                         'issues':len(state['issues']),'seconds':elapsed()}
         state['guidance_done']=True
@@ -830,21 +999,36 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     for index, group in enumerate(groups):
         if stop():
             save()
+            log(_stop_line(state, paragraphs, elapsed()))
             return {'status':'stopped', 'done':len(state['completed']), 'total':len(paragraphs),
                     'issues':len(state['issues']), 'seconds':elapsed()}
         if all(str(p.pid) in state['completed'] for p in group):
             progress(len(state['completed']),len(paragraphs),len(state['issues']))
             continue
-        previous = ''.join(p.text + p.separator_after for p in paragraphs[max(0,group[0].pid-7):group[0].pid-1])
+        stats['group'] = index + 1
+        first_ask = [True]       # later asks for this group (halves, single paragraphs) are retries
+        publish()
+        # The context before the group is the text as already edited (v2.6.2), so a group goes
+        # on in the voice of the edited lines before it; the original where none was kept.
+        previous = ''.join(state['completed'].get(str(p.pid), p.text) + p.separator_after
+                           for p in paragraphs[max(0,group[0].pid-7):group[0].pid-1])
         next_index = group[-1].pid
         following = ''.join(p.text + p.separator_after for p in paragraphs[next_index:next_index+5])
         def request(ps):
             system,user = refinement_prompt(ps,previous,following,guidance,confirmed)
             event(f'윤문 요청 중 · {ps[0].pid}~{ps[-1].pid}문단 · {getattr(provider,"name","AI")}')
             # 'edit' + the paragraph IDs: a local LLM is held to every ID (structured output).
+            if not first_ask[0]:
+                stats['retries'] += 1
+            first_ask[0] = False
+            stats['requests'] += 1
+            asked_at = time.monotonic()
             response = _ask(provider,TranslationRequest(model,system,user,temperature=.2,timeout=300,
                                                        purpose='edit',
                                                        paragraph_ids=tuple(f'P{p.pid:06d}' for p in ps)),key,stop)
+            took = time.monotonic() - asked_at
+            stats['reply_last'] = took; stats['reply_total'] += took; stats['replies'] += 1
+            publish()
             accepted,rejected,refused=verified_partial_reply(response.text,ps)
             # A one-line shift keeps every ID, so the checks below would pass it: no edited
             # paragraph of a shifted reply is kept, the group is asked again in halves.
@@ -943,6 +1127,8 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 # A suspect edit is never kept unreviewed: left unfinished, it is edited
                 # again when the same TXT is resumed.
                 return
+            if reason:
+                stats['reviews'] += 1
             try:
                 consistent=continuity_check(original,rewritten,provider,model,key,stop=stop,event=event,reason=reason)
             except TranslationCancelled:
@@ -963,9 +1149,24 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                 else:
                     state['issues'][str(parts[0].pid)]='연속성 검토 불확실('+reason+') · 원문 보존'
                 return
+            if reason:
+                log(f'연속성 확인({reason}) → 이상 없음 · {parts[0].pid}~{parts[-1].pid}문단 유지')
+            changed_now = 0
             for p, body in zip(parts, bodies):
                 state['completed'][str(p.pid)] = body
                 state['issues'].pop(str(p.pid), None)
+                changed_now += body.strip() != p.text.strip()
+            stats['changed'] += changed_now; stats['identical'] += len(parts) - changed_now
+            log(f'✓ 요청 {stats["group"]:,}/{stats["groups"]:,} · {parts[0].pid:,}~{parts[-1].pid:,}문단'
+                                     f' · 변경 {changed_now} · 동일 {len(parts) - changed_now}'
+                                     f' · 응답 {stats["reply_last"]:.0f}초')
+            publish()
+            if on_edited is not None:
+                try:
+                    on_edited([(p.pid, p.text, body if punct is None else finalize_body(p.text, body, punct, quote_style))
+                               for p, body in zip(parts, bodies)])
+                except Exception:
+                    pass      # the live view never stops a run
 
         remaining = [p for p in group if str(p.pid) not in state['completed']]
         if remaining:
@@ -973,9 +1174,10 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         save()
         progress(len(state['completed']),len(paragraphs),len(state['issues']))
     if stop():
+        log(_stop_line(state, paragraphs, elapsed()))
         return {'status':'stopped','done':len(state['completed']),'total':len(paragraphs),
                 'issues':len(state['issues']),'seconds':elapsed()}
-    result=assemble(paragraphs,state['completed'])
+    result=assemble(paragraphs,state['completed'],punct,quote_style)
     if not result:
         raise ValueError('교정 결과가 비어 있습니다.')
     atomic_write_text(output,result,backup_existing=False)
@@ -1008,6 +1210,8 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     if guidance:
         lines += ['', '--- 윤문에 쓴 기준표 ---', guidance]
     atomic_write_text(report,'\n'.join(lines))
+    log('===== 정비 완료 · ' + lines[0].replace('한국어 재정비 결과 · ', '') + ' · ' + lines[1]
+                   + f' · 결과 {output.name}')
     if preserved:
         # Keep what was finished so only the preserved paragraphs are tried again later.
         state['finished']=True

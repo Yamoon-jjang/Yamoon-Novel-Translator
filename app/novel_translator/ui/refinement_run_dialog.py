@@ -3,16 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import time
+from collections import deque
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel,
                                QPushButton, QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit,
-                               QSizePolicy)
-from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, format_duration,
-                                  retry_status, peek_guidance, resume_conflict)
+                               QSizePolicy, QCheckBox, QApplication, QTabWidget)
+from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL, format_duration,
+                                  retry_status, peek_guidance, resume_conflict, estimate_run,
+                                  run_log_path, append_run_log)
 from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
-from ..config import CONFIG_DIR, load_json
+from ..config import CONFIG_DIR, DATA_DIR, load_json, save_json
 from ..power import set_translation_awake
 
 
@@ -22,6 +24,40 @@ def _sleep_prevention_wanted() -> bool:
         return bool(load_json(CONFIG_DIR/'app.json').get('prevent_sleep_while_running', True))
     except Exception:
         return True
+
+def _result_style() -> tuple[bool, str]:
+    """The translation result's 문장부호 and 따옴표 settings, which the refined TXT follows too (v2.6.2)."""
+    try:
+        cfg = load_json(CONFIG_DIR/'app.json')
+        return bool(cfg.get('korean_punctuation', True)), str(cfg.get('quote_style') or 'straight')
+    except Exception:
+        return True, 'straight'
+
+
+# A run of this many editing requests or more is announced before it starts (v2.6.2).
+LONG_RUN_REQUESTS = 300
+# The live view and the 작업 기록 keep the latest 500 entries, as the translation window's
+# 작업 기록 does; the whole result is in the result TXT and the whole log in its .log.txt.
+LIVE_ROWS = 500
+LOG_ROWS = 500
+TABS_MIN_HEIGHT = 170
+WINDOW_STATE_FILE = 'refine_window_state.json'
+_WEEKDAYS = '월화수목금토일'
+
+
+def finish_time_text(seconds_left: float, now: float | None = None) -> str:
+    """When a run ends at the current pace: 오늘 오후 3:20 / 내일 오전 3:40 / 11월 6일(금) 오전 10:40."""
+    import datetime as _dt
+    now_dt = _dt.datetime.fromtimestamp(now if now is not None else time.time())
+    end = now_dt + _dt.timedelta(seconds=max(0.0, float(seconds_left)))
+    ampm = '오전' if end.hour < 12 else '오후'
+    clock = f'{ampm} {end.hour % 12 or 12}:{end.minute:02d}'
+    days = (end.date() - now_dt.date()).days
+    if days == 0:
+        return '오늘 ' + clock
+    if days == 1:
+        return '내일 ' + clock
+    return f'{end.month}월 {end.day}일({_WEEKDAYS[end.weekday()]}) ' + clock
 
 KOREAN_MIN_SHARE = 0.3
 
@@ -97,6 +133,9 @@ class RefinementWorker(QThread):
     outcome = Signal(object)
     failed = Signal(str)
     activity = Signal(str)
+    edited = Signal(object)    # [(pid, original, result text)] of each newly kept group (live view)
+    stats = Signal(object)     # running counts: requests, replies, retries, reviews, changed, identical
+    logged = Signal(str)       # a line of the run log (작업 기록)
 
     def __init__(self, source: Path, output: Path, provider_name: str, model: str,
                  api_key: str, options: dict, parent=None, analysis=None, update_existing=False):
@@ -118,9 +157,15 @@ class RefinementWorker(QThread):
             if self.analysis:
                 name,model,key,opts=self.analysis
                 analysis=(_make_provider(name,opts.get('endpoint',''),opts),model,key)
+            punct,quotes=_result_style()
             result=run_refinement(self.source,self.output,provider,self.model,self.api_key,
                                   stop=lambda: self._stop, analysis_engine=analysis,
                                   update_existing=self.update_existing,
+                                  punct=punct, quote_style=quotes,
+                                  on_edited=lambda rows: self.edited.emit(rows),
+                                  on_stats=lambda d: self.stats.emit(d),
+                                  on_log=lambda line: self.logged.emit(line),
+                                  log_path=run_log_path(self.output),
                                   event=lambda message:self.activity.emit(message),
                                   progress=lambda a,b,c: self.progressed.emit(a,b,c))
             self.outcome.emit(result)
@@ -133,7 +178,7 @@ class RefinementRunDialog(QDialog):
         super().__init__(host)
         self.host=host
         self.setWindowTitle('한국어 소설 재정비 · 문학적 윤문')
-        self.resize(620,335)
+        self.resize(700,690)
         self.worker=None
         self._stage_text='대기 중'
         self._stage_started=0.0
@@ -142,7 +187,7 @@ class RefinementRunDialog(QDialog):
         self._timer.timeout.connect(self._tick)
         self.source=None
         self.output=None
-        self._too_big=False      # the selected TXT is 10 MB or more (v2.6.1: shown at once)
+        self._too_big=False      # the selected TXT is over the size limit (v2.6.1: shown at once)
         layout=QVBoxLayout(self)
         intro=QLabel('한국어 TXT를 자연스러운 소설 문장으로 다듬습니다. 이름·사건·행동 순서와 존댓말·반말은 그대로 두고 원본은 바꾸지 않습니다. '
                      '이 앱으로 번역한 TXT는 번역 때 확정한 말투·이름을, 그 밖의 TXT는 샘플 분석으로 만든 기준표를 씁니다.')
@@ -195,6 +240,18 @@ class RefinementRunDialog(QDialog):
             sp=w.sizePolicy(); sp.setRetainSizeWhenHidden(True); w.setSizePolicy(sp)
             cell.addWidget(w,0,0,Qt.AlignVCenter)
         layout.addWidget(swap)
+        # Running counts (v2.6.2): requests, results and pace, three lines whose room is kept
+        # from opening to finishing so the window never changes size.
+        self.stats_info=QLabel('')
+        self.stats_info.setStyleSheet('color:#334155;')
+        self.stats_info.setTextFormat(Qt.PlainText)
+        probe3=QLabel('가\n가\n가'); probe3.setFont(self.stats_info.font())
+        self.stats_info.setMinimumHeight(probe3.sizeHint().height())
+        self.stats_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        sp=self.stats_info.sizePolicy(); sp.setRetainSizeWhenHidden(True); self.stats_info.setSizePolicy(sp)
+        self.stats_info.hide()
+        layout.addWidget(self.stats_info)
+        self._stats={}
         # Elapsed time and an estimate of what is left, as the translation window shows them.
         self.time_info=_StatusLabel('')
         self.time_info.setWordWrap(True)
@@ -210,6 +267,40 @@ class RefinementRunDialog(QDialog):
         probe=QLabel('\n'.join(['가']*STATUS_LINES)); probe.setFont(self.status.font())
         self.status.setMinimumHeight(probe.sizeHint().height()+2)
         layout.addWidget(self.status)
+        # Live view (v2.6.2): each group's edited paragraphs as soon as they are kept, with the
+        # text before editing beside them on request. Only the latest LIVE_ROWS paragraphs stay
+        # here; the result TXT holds the whole book.
+        self.tabs=QTabWidget()
+        live_page=QWidget(); lv=QVBoxLayout(live_page); lv.setContentsMargins(4,4,4,4)
+        lrow=QHBoxLayout()
+        self.compare=QCheckBox('다듬기 전 문장도 함께 보기')
+        self.compare.setToolTip('켜면 문단마다 다듬기 전 문장(전)과 다듬은 문장(후)을 함께 보여 줍니다.\n'
+                                '보기만 바뀌며 재정비 결과에는 영향이 없습니다.')
+        try: self.compare.setChecked(bool(load_json(CONFIG_DIR/'app.json').get('refine_live_compare',False)))
+        except Exception: pass
+        self.compare.toggled.connect(self._compare_toggled)
+        lrow.addStretch(1); lrow.addWidget(self.compare)
+        lv.addLayout(lrow)
+        self.live=QPlainTextEdit(); self.live.setReadOnly(True)
+        self.live.setPlaceholderText('재정비를 시작하면 다듬은 문장이 여기에 차례로 나옵니다.\n'
+                                     '이전 실행에서 이미 다듬은 문단은 건너뛰므로 여기에 다시 나오지 않습니다.')
+        self.live.setMinimumHeight(120)
+        lv.addWidget(self.live,1)
+        self._live_rows=deque(maxlen=LIVE_ROWS)
+        # 작업 기록 (v2.6.2): every event of the run, timestamped as in the translation window; the
+        # latest LOG_ROWS lines here, the whole log in the result's .log.txt.
+        self.log_view=QPlainTextEdit(); self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(LOG_ROWS)
+        self.log_view.setPlaceholderText('아직 작업 기록이 없습니다.\n'
+                                         '재정비를 시작하면 묶음마다 결과(변경·동일·응답 시간)와 재요청·연속성 확인·원문 보존이 시간과 함께 남습니다.\n'
+                                         '최근 500줄만 보이며, 전체 기록은 결과 파일 옆 .log.txt에 저장됩니다.')
+        self.tabs.addTab(live_page,'실시간 결과')
+        self.tabs.addTab(self.log_view,'작업 기록')
+        # The tabs take whatever height is left (never less than TABS_MIN_HEIGHT): their own
+        # preferred height would make the window too tall for a 768-pixel laptop screen.
+        self.tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
+        self.tabs.setMinimumHeight(TABS_MIN_HEIGHT)
+        layout.addWidget(self.tabs,1)
         bar=QHBoxLayout()
         self.start=QPushButton('재정비 시작')
         self.start.clicked.connect(self._start)
@@ -226,6 +317,7 @@ class RefinementRunDialog(QDialog):
         self.cancel.clicked.connect(self._close_or_stop)
         bar.addStretch(1);bar.addWidget(self.start);bar.addWidget(self.reader);bar.addWidget(self.cancel)
         layout.addLayout(bar)
+        self._restore_window_state()
         self._fit_height()
         # Pre-fill only a Korean text: the last translation result if there is one,
         # otherwise the open file when it is itself Korean. The foreign-language
@@ -319,11 +411,11 @@ class RefinementRunDialog(QDialog):
             self.start.setEnabled(self._can_start())
         if self._too_big:
             # Said at once, not after [재정비 시작]; the whole file is not read for nothing.
-            self.status.setText(f'이 TXT는 {size/1e6:,.1f}MB라 재정비할 수 없습니다. 재정비는 10MB 미만 TXT만 지원합니다.\n'
-                                '장별로 나눈 TXT를 선택하세요.')
+            self.status.setText(f'이 TXT는 {size/1e6:,.1f}MB라 재정비할 수 없습니다. 재정비는 {MAX_REFINEMENT_LABEL} 미만 TXT만 지원합니다.\n'
+                                '나눈 TXT를 선택하세요.')
             self.status.setToolTip(str(self.source))
             self._guidance_text=''
-            self.guidance_info.setText('기준표: 10MB 미만 TXT를 선택하면 표시됩니다')
+            self.guidance_info.setText(f'기준표: {MAX_REFINEMENT_LABEL} 미만 TXT를 선택하면 표시됩니다')
             self.guidance_view.setEnabled(False)
             return
         note=('\n미완료 번역 결과(.ko.partial.txt)입니다. 번역을 끝내면 내용이 바뀌므로 번역을 마친 .ko.txt를 다듬는 것이 좋습니다.'
@@ -391,8 +483,8 @@ class RefinementRunDialog(QDialog):
             QMessageBox.information(self,'TXT 파일 필요','먼저 한국어 TXT 파일을 선택하세요.');return
         if self.source.stat().st_size >= MAX_REFINEMENT_BYTES:
             QMessageBox.warning(self,'파일 크기 초과',
-                '한국어 재정비는 10MB 미만의 TXT 파일만 지원합니다.\n'
-                '장별로 나눈 파일을 선택하세요. 기존 중·일·영 번역에는 적용되지 않습니다.')
+                f'한국어 재정비는 {MAX_REFINEMENT_LABEL} 미만의 TXT 파일만 지원합니다.\n'
+                '나눈 파일을 선택하세요. 중·일·영 번역에는 이 제한이 없습니다.')
             return
         if is_unfinished_translation(self.source):
             box=QMessageBox(QMessageBox.Question,'미완료 번역 결과',
@@ -444,10 +536,17 @@ class RefinementRunDialog(QDialog):
                     QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
                 if answer!=QMessageBox.Yes:
                     return
+        if not update_existing and not self._confirm_long_run(edit[1]):
+            return
         # The worker receives the provider's options dict, not this dialog.
         self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis,
                                      update_existing=update_existing)
         self.worker.progressed.connect(self._progress)
+        # The live view, counts and log are optional for the run (a worker without them still runs).
+        for name,slot in (('edited',self._edited),('stats',self._stats_changed),('logged',self._log_line)):
+            sig=getattr(self.worker,name,None)
+            if sig is not None:
+                sig.connect(slot)
         self.worker.activity.connect(self._activity)
         self.worker.outcome.connect(self._finished)
         self.worker.failed.connect(self._failed)
@@ -459,14 +558,73 @@ class RefinementRunDialog(QDialog):
         self._run_started=time.monotonic()
         self._counts=(0,0,0); self._base=None
         self.time_info.setText('경과 0:00:00'); self.time_info.show()
+        self._stats={}; self.stats_info.setText(''); self.stats_info.show()
         self._timer.start()
         self.status.setText('교정 중 · 처리한 문단은 복구 정보에 저장됩니다.')
         self.status.setToolTip('')
         self._show_done(False)
+        self._live_rows.clear(); self.live.clear()
         self._shutdown_summary=''
         # A refinement runs as long as a translation: the PC must not go to sleep meanwhile.
         set_translation_awake(_sleep_prevention_wanted())
         self.worker.start()
+
+    def _confirm_long_run(self, model) -> bool:
+        """Before a long run (LONG_RUN_REQUESTS editing requests or more): how much it asks of
+        the local LLM, so a book of days is never started by surprise. Shorter runs start at once."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            est=estimate_run(self.source, 'local', model)
+        except Exception:
+            return True       # the run itself reports a file it cannot read
+        finally:
+            QApplication.restoreOverrideCursor()
+        left=int(est.get('requests_left') or 0)
+        if left < LONG_RUN_REQUESTS:
+            return True
+        lo,hi=left*20,left*60
+        def hours(sec): return f'{sec/3600:,.0f}시간' if sec>=3600*2 else f'{sec/60:,.0f}분'
+        resumed=(f'\n이전 실행에서 다듬은 {est["done"]:,}문단은 건너뛰고 이어서 합니다.' if est.get('done') else '')
+        box=QMessageBox(QMessageBox.Question,'오래 걸리는 재정비',
+            f'{self.source.name}\n'
+            f'{est["paragraphs"]:,}문단 · 로컬 LLM 윤문 요청 약 {left:,}회{resumed}\n\n'
+            f'요청 1회에 20초~1분이 걸린다면 약 {hours(lo)}~{hours(hi)}가 걸립니다.\n'
+            f'실제 시간은 PC와 모델({model})에 따라 크게 달라지며, 시작하면 경과 시간과 남은 예상 시간을 보여 줍니다.\n'
+            '중간에 [안전 중지]해도 다듬은 문단은 저장되고, 다시 시작하면 이어서 합니다.\n\n'
+            '시작할까요?', QMessageBox.Yes|QMessageBox.No, self)
+        box.setDefaultButton(QMessageBox.Yes)
+        return box.exec()==QMessageBox.Yes
+
+    def _live_text(self, row) -> str:
+        pid,before,after=row
+        if self.compare.isChecked():
+            return f'[{pid:,}] 전: {before.strip()}\n[{pid:,}] 후: {after.strip()}\n'
+        return after.rstrip()
+
+    def _edited(self, rows):
+        bar=self.live.verticalScrollBar(); follow=bar.value()>=bar.maximum()-4
+        for row in rows:
+            self._live_rows.append(row)
+        if len(self._live_rows) == self._live_rows.maxlen:
+            self._render_live(follow)       # keep only the latest paragraphs in view
+            return
+        for row in rows:
+            self.live.appendPlainText(self._live_text(row))
+        if follow:
+            bar.setValue(bar.maximum())
+
+    def _render_live(self, follow=True):
+        bar=self.live.verticalScrollBar(); keep=bar.value()
+        self.live.setPlainText('\n'.join(self._live_text(r) for r in self._live_rows))
+        bar.setValue(bar.maximum() if follow else min(keep, bar.maximum()))
+
+    def _compare_toggled(self, on):
+        try:
+            cfg=load_json(CONFIG_DIR/'app.json'); cfg['refine_live_compare']=bool(on); save_json(CONFIG_DIR/'app.json',cfg)
+        except Exception:
+            pass
+        if self._live_rows:
+            self._render_live(True)
 
     def _activity(self,message):
         self._stage_text=message
@@ -486,7 +644,8 @@ class RefinementRunDialog(QDialog):
         done,total,issues=self._counts
         parts=[]
         if total:
-            parts.append(f'교정 {done:,}/{total:,} 문단'+(f' · 원문 보존 {issues:,}' if issues else ''))
+            # 원문 보존 is on the 결과 line above (v2.6.2), once.
+            parts.append(f'교정 {done:,}/{total:,} 문단')
         parts.append(f'경과 {self._clock(elapsed)}')
         if self._base and total:
             t0,d0=self._base; ran=now-t0; did=done-d0
@@ -494,16 +653,56 @@ class RefinementRunDialog(QDialog):
                 parts.append(f'남은 예상 약 {self._clock(ran/did*(total-done))}')
         return ' · '.join(parts)
 
+    def _log_line(self, line):
+        """작업 기록: the run's events timestamped as in the translation window (latest LOG_ROWS)."""
+        self.log_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • {line}')
+
+    def _pace(self):
+        """(paragraphs per minute, seconds left) at the current pace, or (None, None) too early."""
+        done,total,_=self._counts
+        if not (self._base and total):
+            return None, None
+        t0,d0=self._base; ran=time.monotonic()-t0; did=done-d0
+        if did>=max(1,total*0.02) and ran>=15 and done<total:
+            return did/ran*60, ran/did*(total-done)
+        return None, None
+
+    def _stats_text(self) -> str:
+        st=self._stats or {}
+        done,total,issues=self._counts
+        groups=int(st.get('groups') or 0)
+        line1=f'요청  {int(st.get("group") or 0):,}/{groups:,}묶음 · 보낸 요청 {int(st.get("requests") or 0):,}회'
+        line1+=f' · 재요청 {int(st.get("retries") or 0):,}회 · 연속성 확인 {int(st.get("reviews") or 0):,}회'
+        line2=(f'결과  실제 변경 {int(st.get("changed") or 0):,} · 원문과 동일 {int(st.get("identical") or 0):,}'
+               f' · 원문 보존 {int(issues or 0):,}문단')
+        replies=int(st.get('replies') or 0)
+        if replies:
+            line3=f'속도  최근 응답 {float(st.get("reply_last") or 0):.0f}초 · 평균 {float(st.get("reply_total") or 0)/replies:.0f}초'
+        else:
+            line3='속도  첫 응답을 기다리는 중'
+        per_min,left=self._pace()
+        if per_min:
+            line3+=f' · 분당 약 {per_min:,.0f}문단 · 예상 완료 {finish_time_text(left)}'
+        return '\n'.join((line1,line2,line3))
+
+    def _stats_changed(self, st):
+        self._stats=dict(st or {})
+        self.stats_info.setText(self._stats_text())
+
     def _tick(self):
         if self.worker and self.worker.isRunning():
             elapsed=int(time.monotonic()-self._stage_started)
             self.status.setText(f'{self._stage_text} · 응답 대기 {elapsed}초')
             self.time_info.setText(self._time_text())
+            if self._stats:
+                self.stats_info.setText(self._stats_text())
 
     def _progress(self,done,total,issues):
         self.progress.setValue(int(done*100/max(1,total)))
         self._counts=(done,total,issues)
         self.time_info.setText(self._time_text())
+        if self._stats:
+            self.stats_info.setText(self._stats_text())
 
     def _finished(self,result):
         if result['status']=='completed':
@@ -534,6 +733,10 @@ class RefinementRunDialog(QDialog):
                                 '동일 TXT와 엔진으로 다시 실행하면 완료한 문단부터 이어지고, 소요 시간도 합산됩니다.')
 
     def _failed(self,message):
+        line='===== 재정비 오류 · '+str(message)
+        self._log_line(line)
+        if self.output:
+            append_run_log(run_log_path(self.output), line)
         took=format_duration(time.monotonic()-getattr(self,'_run_started',time.monotonic()))
         self.status.setText(f'재정비 오류 · 이번 실행 {took} · 처리한 문단의 복구 정보는 유지됩니다.\n'+wrap_path(message))
         self.status.setToolTip(message)
@@ -575,3 +778,28 @@ class RefinementRunDialog(QDialog):
             self._close_or_stop()
             return
         super().reject()
+
+    def done(self, result):
+        self._save_window_state()
+        super().done(result)
+
+    # Window position and size come back the next time it opens (v2.6.2), as the translation
+    # window's do. Only a window that was on screen is remembered.
+    def _save_window_state(self):
+        if not self.isVisible():
+            return
+        try:
+            import base64
+            DATA_DIR.mkdir(parents=True,exist_ok=True)
+            save_json(DATA_DIR/WINDOW_STATE_FILE,{'geometry':base64.b64encode(bytes(self.saveGeometry())).decode('ascii')})
+        except Exception:
+            pass
+
+    def _restore_window_state(self) -> bool:
+        try:
+            import base64
+            from PySide6.QtCore import QByteArray
+            raw=str(load_json(DATA_DIR/WINDOW_STATE_FILE).get('geometry') or '')
+            return bool(raw) and bool(self.restoreGeometry(QByteArray(base64.b64decode(raw))))
+        except Exception:
+            return False
