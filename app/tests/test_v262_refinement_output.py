@@ -470,7 +470,8 @@ def test_window_size_and_place_are_remembered(qt_app, cfg_dir, monkeypatch, tmp_
     d.reject()
     assert (tmp_path / 'data' / rd.WINDOW_STATE_FILE).exists()
     d2 = rd.RefinementRunDialog(_host(root))
-    assert (d2.width(), d2.height()) == saved and d2.width() > 700
+    # Windows may adjust a restored window by a few pixels to keep its frame on a small screen.
+    assert abs(d2.width() - saved[0]) <= 8 and abs(d2.height() - saved[1]) <= 8 and d2.width() > 720
     hidden = rd.RefinementRunDialog(_host(root)); hidden.resize(300, 300)
     (tmp_path / 'data' / rd.WINDOW_STATE_FILE).unlink(); hidden.reject()
     assert not (tmp_path / 'data' / rd.WINDOW_STATE_FILE).exists()      # never shown: nothing saved
