@@ -1,5 +1,6 @@
 """Korean refinement: translation reference table, review safety nets, retry of
 preserved paragraphs, refusal detection and leftover kanji/kana."""
+import json
 import re
 import pytest
 from novel_translator.chunking import split_paragraphs
@@ -11,6 +12,9 @@ from novel_translator.refinement_links import (record_translation, find_referenc
                                                  text_digest)
 
 REVIEW = '두 한국어 장면을 비교'
+
+
+NAMES = ('은지', '민수')
 
 
 class Editor:
@@ -26,8 +30,14 @@ class Editor:
         if REVIEW in req.system_prompt:
             self.calls.append('review')
             return TranslationResponse(self.review)
-        if req.purpose == 'analysis':
+        if req.purpose in ('analysis', 'json'):
             self.calls.append('analysis')
+            if 'WORDS (word' in req.user_prompt:          # v2.6.2 보완 3: which counted words are names
+                found = [w for w in NAMES if f'\n{w}\t' in '\n' + req.user_prompt]
+                return TranslationResponse(json.dumps({'names': [{'name': w, 'kind': '인물'} for w in found]}, ensure_ascii=False))
+            if 'DIALOGUE EXCERPTS' in req.user_prompt:    # the speech table, as the translation asks
+                return TranslationResponse(json.dumps({'pairs': [{'speaker': '은지', 'listener': '민수', 'level': '반말',
+                                                                  'relation': '친구'}]}, ensure_ascii=False))
             return TranslationResponse('은지 → 민수: 반말')
         self.calls.append('edit')
         self.last_user = req.user_prompt
@@ -147,12 +157,14 @@ def test_translation_reference_replaces_the_sample_analysis(tmp_path):
 
 
 def test_without_a_record_the_sample_analysis_is_used_and_shown(tmp_path):
-    src = write(tmp_path, 'ext.txt', '어색한 은지의 문장입니다.\n어색한 민수의 문장입니다.')
+    # v2.6.2 보완 3: names counted over the whole book, then the speech table from its dialogue
+    src = write(tmp_path, 'ext.txt', '\n'.join(['어색한 은지의 문장입니다.', '어색한 민수의 문장입니다.',
+                                               '“민수야, 같이 가.” 은지가 말했다.'] * 3))
     assert peek_guidance(src, checkpoint_dir=tmp_path / 'cp', links_root=tmp_path)[0] == 'none'
     ed = Editor(); analysis = Editor()
     res = run_refinement(src, tmp_path / 'r.txt', ed, 'm', 'k', checkpoint_dir=tmp_path / 'cp',
                          analysis_engine=(analysis, 'a', 'k'), links_root=tmp_path)
-    assert analysis.calls == ['analysis'] and res['guidance_source'] == 'analysis'
+    assert analysis.calls == ['analysis', 'analysis'] and res['guidance_source'] == 'analysis'
     assert '자동 분석 참고용' in ed.last_user
     assert '은지 → 민수: 반말' in (tmp_path / 'r.txt.review.txt').read_text(encoding='utf-8-sig')
 

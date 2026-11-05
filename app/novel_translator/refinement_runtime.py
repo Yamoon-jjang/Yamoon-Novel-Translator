@@ -11,7 +11,7 @@ from .chunking import split_paragraphs, escape_protocol_literals
 from .config import DATA_DIR, load_json, save_json
 from .textio import atomic_write_text
 from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
-from .refinement_links import find_reference, reference_guidance, reference_summary, record_translation, GUIDANCE_MAX
+from .refinement_links import find_reference, reference_guidance, reference_summary, record_translation, GUIDANCE_MAX, guidance_counts
 from .validation import dialogue_shift_run, SHIFT_RUN_MIN
 from .punctuation import korean_punctuation
 
@@ -448,25 +448,6 @@ def group_paragraphs(paragraphs, max_chars=4500, max_items=36):
     return groups
 
 
-def analysis_sample(paragraphs, limit=11000):
-    """Bounded evidence from beginning, middle and end of a long novel."""
-    if not paragraphs:
-        return ''
-    indices=list(range(min(18,len(paragraphs))))
-    if len(paragraphs)>35:
-        mid=len(paragraphs)//2
-        indices+=list(range(max(0,mid-10),min(len(paragraphs),mid+10)))
-        indices+=list(range(max(0,len(paragraphs)-18),len(paragraphs)))
-    out=[]; chars=0
-    for i in dict.fromkeys(indices):
-        p=paragraphs[i]
-        text=f'문단 {p.pid}: {p.text[:300]}'
-        if chars+len(text)>limit:
-            break
-        out.append(text);chars+=len(text)
-    return '\n'.join(out)
-
-
 def _clip_lines(text: str, limit: int) -> str:
     """Cut a table at a line boundary so no row is left half-written."""
     text = (text or '').strip()
@@ -477,27 +458,34 @@ def _clip_lines(text: str, limit: int) -> str:
     return (cut[:nl] if nl > limit // 2 else cut).rstrip()
 
 
+ANALYSIS_TABLE_MARK = '[샘플 분석 기준표'
+
+
+def old_style_analysis(state: dict) -> bool:
+    """A kept sample analysis made before v2.6.2 보완 3 (one free-text answer from about 56
+    paragraphs): it is made again with the names and dialogue of the whole book."""
+    table = str(state.get('guidance') or '').strip()
+    return state.get('guidance_source') == 'analysis' and bool(table) and not table.startswith(ANALYSIS_TABLE_MARK)
+
+
 def prepare_guidance(paragraphs, provider, model, key, *, stop, event):
-    """One bounded model pass, never a full-book LLM scan."""
+    """The reference table of a Korean TXT with no translation record (v2.6.2 보완 3): names
+    counted over the whole book and the 인물 말투표, built the way the translation builds them
+    (refinement_analysis). A bounded number of requests, never a full-book LLM scan."""
     if stop(): return ''
-    sample=analysis_sample(paragraphs)
-    if not sample: return ''
-    event('번역 기록 없음 · 인물·용어·말투 샘플 분석 요청 중')
-    system=('한국어 소설 분석 편집자입니다. 이름·별명·호칭·인물 관계·말투를 표로 간결하게 정리하세요. '
-            '말투는 "화자 → 상대: 존댓말/반말" 형식으로 한 줄에 하나씩 쓰세요. '
-            '직접 확인되는 사실만 쓰고 불확실한 관계는 미확인이라고 표시하세요. 본문을 재작성하지 마세요. '
-            f'전체 {GUIDANCE_MAX}자 안으로 쓰세요.')
-    try:
-        reply=_ask(provider,TranslationRequest(model,system,sample,temperature=.1,timeout=180,purpose='analysis'),key,stop)
-    except TranslationCancelled:
-        return ''      # stopped: the caller saves and the analysis runs again on resume
-    except ProviderError as e:
-        if e.kind in (ErrorKind.AUTH,ErrorKind.KEY_BLOCKED,ErrorKind.QUOTA,ErrorKind.FATAL):
-            raise
-        event('인물 분석 응답 실패 · 문학적 윤문은 계속 진행')
-        return ''
+    text='\n'.join(p.text for p in paragraphs)
+    if not text.strip(): return ''
+    from .refinement_analysis import build_reference
+    started=time.monotonic()
+    table=build_reference(text, provider, model, key, ask=_ask, stop=stop, event=event, limit=GUIDANCE_MAX)
     if stop(): return ''
-    return _clip_lines(reply.text or '', GUIDANCE_MAX)
+    # What the analysis found, said once: the table itself opens with [기준표 보기].
+    took=format_duration(time.monotonic()-started)
+    if table:
+        event(f'기준표 준비 완료 · {guidance_counts(table)} · 분석 {took} · [기준표 보기]로 확인')
+    else:
+        event(f'기준표 없음 · 이름·말투를 찾지 못해 기준표 없이 윤문 진행 · 분석 {took}')
+    return table
 
 
 def _speech_levels(text: str) -> tuple[int, int]:
@@ -666,13 +654,14 @@ def peek_guidance(source: Path, *, checkpoint_dir: Path | None = None, links_roo
         state = load_json(cp) if cp.exists() else {}
     except Exception:
         state = {}
-    if state.get('guidance_done') and str(state.get('guidance') or '').strip():
+    if (state.get('guidance_done') and str(state.get('guidance') or '').strip()
+            and not old_style_analysis(state)):
         return 'analysis', '지난 실행의 샘플 분석', str(state.get('guidance'))
     if not state:
         # The same TXT edited after an earlier run: that run's sample analysis is used again.
         for _f, old in _carry_candidates(source, checkpoint_dir, cp):
             if (old.get('guidance_done') and old.get('guidance_source') == 'analysis'
-                    and str(old.get('guidance') or '').strip()):
+                    and str(old.get('guidance') or '').strip() and not old_style_analysis(old)):
                 return 'analysis', '지난 실행의 샘플 분석', str(old.get('guidance'))
             break
     return 'none', '', ''
@@ -1094,6 +1083,11 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         state['guidance_done'] = False
         if state.get('guidance_source') != 'translation':
             event('번역 기록을 찾음 · 이전 실행의 샘플 분석 대신 번역 기준표를 씀 (다듬은 문단은 그대로 이어짐)')
+    if not ref and state.get('guidance_done') and old_style_analysis(state):
+        # A run stopped before v2.6.2 보완 3 kept a free-text sample analysis: it is made again the
+        # way the translation makes its table. Finished paragraphs are kept as they are.
+        state['guidance_done'] = False
+        event('이전 실행의 샘플 분석은 예전 방식이라 책 전체의 이름·대사로 다시 만듦 (다듬은 문단은 그대로 이어짐)')
     if not state.get('guidance_done'):
         if ref:
             state['guidance'] = reference_guidance(ref)
@@ -1110,9 +1104,15 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         state['guidance_done']=True
         save()
     else:
-        event('기준표: ' + _SOURCE_LABEL.get(state.get('guidance_source',''), '없음') + ' (이전 실행에서 이어 씀)')
+        kept = str(state.get('guidance') or '')
+        event('기준표: ' + _SOURCE_LABEL.get(state.get('guidance_source',''), '없음') + ' (이전 실행에서 이어 씀)'
+              + (' · ' + guidance_counts(kept) if kept and state.get('guidance_source') == 'analysis' else ''))
     guidance = state.get('guidance','')
     confirmed = state.get('guidance_source') == 'translation'
+    # The window shows this table at once (v2.6.2 보완 3), not only after the run ends.
+    stats['guidance'] = guidance
+    stats['guidance_source'] = state.get('guidance_source', 'none')
+    publish()
     for index, group in enumerate(groups):
         if stop():
             save()

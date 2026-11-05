@@ -54,7 +54,7 @@ def test_bad_batch_fallback_to_single_requests(tmp_path):
     output=tmp_path/'a.ko.refined.txt'; mock=Dummy(bad_group=True)
     result=run_refinement(src,output,mock,'model','test',checkpoint_dir=tmp_path/'cache')
     assert result['done']==2 and result['issues']==0
-    assert mock.calls==4  # one work-wide analysis plus 3 editing attempts
+    assert mock.calls==3  # 3 editing attempts (v2.6.2 보완 3: no names in this text, so no analysis request)
 
 
 def test_cancel_resume_without_repeating_accepted_work(tmp_path):
@@ -67,7 +67,7 @@ def test_cancel_resume_without_repeating_accepted_work(tmp_path):
     n=p.calls
     resume=run_refinement(src,output,p,'model','test',checkpoint_dir=tmp_path/'cache',max_items=2)
     assert resume['status']=='completed'
-    assert p.calls==n+3
+    assert p.calls==n+2
     assert not list((tmp_path/'cache').glob('*.json'))
 
 
@@ -132,7 +132,7 @@ def test_long_group_format_fallback_bisects_not_one_request_per_line(tmp_path):
     provider=FailsLarge()
     result=run_refinement(src,tmp_path/'out.txt',provider,'model','test',checkpoint_dir=tmp_path/'jobs',max_chars=5000)
     assert result['done']==16 and result['issues']==0
-    assert provider.calls==8  # one work-wide analysis plus binary editing recovery
+    assert provider.calls==7  # binary editing recovery (no names here, so no analysis request)
 
 
 def test_checkpoint_rejects_prior_small_chunk_pipeline(tmp_path):
@@ -154,19 +154,22 @@ def test_dual_engine_guidance_is_forwarded_into_editing_prompt(tmp_path):
         def __init__(self):self.calls=0
         def translate(self,req,key):
             self.calls+=1
-            assert '인물' in req.system_prompt
-            return TranslationResponse('은지 → 민수: 반말. 이름은 은지, 민수.')
+            # v2.6.2 보완 3: names counted over the book, then the speech table (as in translation)
+            if 'WORDS (word' in req.user_prompt:
+                return TranslationResponse('{"names": [{"name": "은지", "kind": "인물"}, {"name": "민수", "kind": "인물"}]}')
+            assert 'DIALOGUE EXCERPTS' in req.user_prompt and '- 은지 = 은지' in req.user_prompt
+            return TranslationResponse('은지\t민수\t반말\t친구')
     class Editing(Dummy):
         name='editing'
         def translate(self,req,key):
             assert '은지 → 민수: 반말' in req.user_prompt
             return super().translate(req,key)
     src=tmp_path/'novel.txt'
-    src.write_text('어색한 은지의 문장입니다.\n어색한 민수의 문장입니다.',encoding='utf-8')
+    src.write_text('\n'.join(['어색한 은지의 문장입니다.','어색한 민수의 문장입니다.','“민수야, 같이 가.” 은지가 말했다.']*3),encoding='utf-8')
     a=Analysis();e=Editing()
     result=run_refinement(src,tmp_path/'result.txt',e,'editing-model','test',
                           analysis_engine=(a,'analysis-model','test'),checkpoint_dir=tmp_path/'cp')
-    assert result['done']==2 and a.calls==1
+    assert result['done']==9 and a.calls==2
     assert '자연스러운' in (tmp_path/'result.txt').read_text(encoding='utf-8-sig')
 
 def test_natural_language_refusal_is_not_saved_as_novel_content(tmp_path):
@@ -293,14 +296,14 @@ def test_stop_during_a_slow_request_ends_at_once_and_resumes(tmp_path):
     took=time.monotonic()-started
     p.release.set()
     assert stopped['status']=='stopped' and took < 5          # no waiting for the slow reply
-    assert stopped['done']==2                                   # the finished group is kept
+    assert stopped['done']==4                                   # the finished groups are kept
     assert all(c is not None for c in p.cancels)                # local LLM streams see the stop
     assert not output.exists()
     flag['stop']=False
     q=Dummy()
     resume=run_refinement(src,output,q,'model','test',checkpoint_dir=tmp_path/'cache',max_items=2)
     assert resume['status']=='completed' and resume['done']==8
-    assert q.calls==3                                           # only the 3 unfinished groups
+    assert q.calls==2                                           # only the 2 unfinished groups
 
 
 def test_another_editing_model_is_reported_before_starting_over(tmp_path):
@@ -310,11 +313,11 @@ def test_another_editing_model_is_reported_before_starting_over(tmp_path):
     run_refinement(src,output,p,'model-a','test',checkpoint_dir=tmp_path/'cache',max_items=2,stop=lambda:p.calls>=2)
     assert resume_conflict(src,'local','model-a',checkpoint_dir=tmp_path/'cache',max_items=2)==(0,'')
     done,engine=resume_conflict(src,'local','model-b',checkpoint_dir=tmp_path/'cache',max_items=2)
-    assert done==2 and engine=='로컬 LLM model-a'
+    assert done==4 and engine=='로컬 LLM model-a'
     # the same model still resumes without a question
     q=Dummy(); q.name='local'
     r=run_refinement(src,output,q,'model-a','test',checkpoint_dir=tmp_path/'cache',max_items=2)
-    assert r['status']=='completed' and q.calls==2
+    assert r['status']=='completed' and q.calls==1      # the one unfinished group
     assert resume_conflict(src,'local','model-b',checkpoint_dir=tmp_path/'cache',max_items=2)==(0,'')
 
 

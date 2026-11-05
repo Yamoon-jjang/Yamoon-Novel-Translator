@@ -7,7 +7,8 @@ from collections import deque
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel,
                                QPushButton, QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit,
-                               QSizePolicy, QCheckBox, QApplication, QTabWidget)
+                               QSizePolicy, QCheckBox, QApplication, QTabWidget, QTableWidget,
+                               QTableWidgetItem, QHeaderView, QAbstractItemView)
 from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL, format_duration,
                                   retry_status, peek_guidance, resume_conflict, estimate_run,
                                   run_log_path, append_run_log, same_result)
@@ -15,6 +16,7 @@ from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
 from ..config import CONFIG_DIR, DATA_DIR, load_json, save_json
+from ..refinement_links import guidance_tables, guidance_counts
 from ..power import set_translation_awake
 
 
@@ -428,6 +430,7 @@ class RefinementRunDialog(QDialog):
     def _refresh_guidance(self):
         """Which reference table a run on the selected TXT uses, before it starts."""
         self._guidance_text=''
+        self._guidance_source_shown=''
         if not self.source:
             return
         try:
@@ -437,9 +440,9 @@ class RefinementRunDialog(QDialog):
         if where=='translation':
             text='기준표: 번역 기록에서 가져옴 · '+summary
         elif where=='analysis':
-            text='기준표: '+summary+'(이어서 실행하면 그대로 사용)'
+            text='기준표: '+summary+' · '+guidance_counts(table)+' (이어서 실행하면 그대로 사용)'
         else:
-            text='기준표: 번역 기록 없음 · 시작하면 샘플 분석으로 만듭니다'
+            text='기준표: 번역 기록 없음 · 시작하면 샘플 분석(책 전체의 이름 + 대사 표본)으로 인물·말투표를 만듭니다'
         self._guidance_text=table
         self.guidance_info.setText(text)
         self.guidance_view.setEnabled(bool(table))
@@ -464,12 +467,36 @@ class RefinementRunDialog(QDialog):
         launch([self._result_path], parent=self)
 
     def _show_guidance(self):
-        d=QDialog(self); d.setWindowTitle('재정비 기준표'); d.resize(560,420)
+        d=QDialog(self); d.setWindowTitle('재정비 기준표'); d.resize(620,460)
         v=QVBoxLayout(d)
         note=QLabel('윤문할 때 모든 요청에 함께 보내는 기준표입니다. 번역 기록에서 가져온 표는 번역 화면의 인물 말투·확정 용어를 고쳐 다시 번역하면 바뀌고, '
-                    '샘플 분석 표는 자동 추론입니다. 검토 기록(.review.txt) 끝에도 같은 표가 남습니다.')
+                    '샘플 분석 표는 번역할 때처럼 책 전체에서 이름을 세고 대사 표본으로 말투를 정한 자동 추론입니다. '
+                    '검토 기록(.review.txt) 끝에도 같은 표가 남습니다.')
         note.setWordWrap(True); v.addWidget(note)
-        box=QPlainTextEdit(); box.setReadOnly(True); box.setPlainText(self._guidance_text); v.addWidget(box,1)
+        # The same rows and columns as the translation window's 인물 말투 and 용어 (v2.6.2 보완 3);
+        # 전체 내용 keeps the table exactly as sent, so nothing a row could not read is hidden.
+        speech,terms=guidance_tables(self._guidance_text)
+        tabs=QTabWidget()
+        def table_of(headers, rows):
+            t=QTableWidget(len(rows),len(headers)); t.setHorizontalHeaderLabels(headers)
+            t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            t.setSelectionBehavior(QAbstractItemView.SelectRows)
+            t.verticalHeader().setVisible(False)
+            for r,row in enumerate(rows):
+                for c,value in enumerate(row):
+                    item=QTableWidgetItem(value); item.setToolTip(value); t.setItem(r,c,item)
+            h=t.horizontalHeader()
+            for c in range(len(headers)-1):
+                h.setSectionResizeMode(c,QHeaderView.ResizeToContents)
+            h.setSectionResizeMode(len(headers)-1,QHeaderView.Stretch)
+            return t
+        tabs.addTab(table_of(['화자','상대','말투','관계·메모'],speech),f'인물 말투 ({len(speech)})')
+        tabs.addTab(table_of(['이름·용어','종류·내용'],terms),f'이름·용어 ({len(terms)})')
+        box=QPlainTextEdit(); box.setReadOnly(True); box.setPlainText(self._guidance_text)
+        tabs.addTab(box,'전체 내용')
+        if not speech and not terms:
+            tabs.setCurrentIndex(2)
+        v.addWidget(tabs,1)
         close=QPushButton('닫기'); close.clicked.connect(d.accept)
         b=QHBoxLayout(); b.addStretch(1); b.addWidget(close); v.addLayout(b)
         d.exec()
@@ -693,7 +720,27 @@ class RefinementRunDialog(QDialog):
 
     def _stats_changed(self, st):
         self._stats=dict(st or {})
+        table=self._stats.pop('guidance',None)
+        source=self._stats.pop('guidance_source','')
+        if table is not None:
+            self._live_guidance(str(table),source)
         self.stats_info.setText(self._stats_text())
+
+    def _live_guidance(self, table: str, source: str):
+        """The table this run uses, shown as soon as it is ready (v2.6.2 보완 3): a sample
+        analysis opens with [기준표 보기] during the run, not only after it ends."""
+        if table==self._guidance_text and getattr(self,'_guidance_source_shown','')==source:
+            return
+        self._guidance_text=table
+        self._guidance_source_shown=source
+        self.guidance_view.setEnabled(bool(table))
+        if source=='translation':
+            text='기준표: 번역 기록 · '+guidance_counts(table)
+        elif source=='analysis' and table:
+            text='기준표: 샘플 분석 · '+guidance_counts(table)+' · 이번 윤문에 쓰는 표'
+        else:
+            text='기준표: 없음 · 샘플 분석 결과가 없어 기준표 없이 다듬습니다'
+        self.guidance_info.setText(text)
 
     def _tick(self):
         if self.worker and self.worker.isRunning():

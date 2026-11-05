@@ -79,8 +79,8 @@ class EditLocal:
 
     def translate(self, req, key):
         self.purposes.append(req.purpose)
-        if req.purpose == 'analysis':
-            return TranslationResponse('SAME' if '수정문' in req.user_prompt else '인물표')
+        if req.purpose in ('analysis', 'json'):
+            return TranslationResponse('SAME' if '수정문' in req.user_prompt else '{"names": []}')
         ids = list(req.paragraph_ids)
         self.edit_sizes.append(len(ids))
         body = req.user_prompt.split('교정 대상:\n', 1)[1]
@@ -107,7 +107,7 @@ def test_refinement_keeps_the_rest_when_one_paragraph_is_missing(tmp_path):
     assert p.edit_sizes == [8, 1, 1]
     out = (tmp_path / 'book.ko.refined.txt').read_text(encoding='utf-8-sig')
     assert out.count('MERGEME') == 1 and out.count('다듬음') == 8
-    assert 'analysis' in p.purposes and 'edit' in p.purposes
+    assert 'json' in p.purposes and 'edit' in p.purposes      # the name check asks a local LLM for JSON
 
 
 # ---------------------------------------------------------------- term-conflict window
