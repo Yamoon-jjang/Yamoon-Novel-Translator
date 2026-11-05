@@ -187,8 +187,14 @@ ROLE_TERMS = {
            ('선생님', ('先生',)), ('선배', ('先輩',))],
     'en': [('엄마', ('Mom', 'Mum', 'Mother', 'Mama')), ('아빠', ('Dad', 'Father', 'Papa')),
            ('선생님', ('Teacher', 'Professor'))],
+    # A Korean novel (refinement of a TXT with no translation record, v2.6.2 보완 3): the roles
+    # are already Korean words, so each is its own role (오빠 and 형 are not merged).
+    'ko': [('엄마', ('엄마', '어머니', '어머님')), ('아빠', ('아빠', '아버지', '아버님')),
+           ('오빠', ('오빠', '오라버니')), ('언니', ('언니',)), ('누나', ('누나', '누님')), ('형', ('형님',)),
+           ('할아버지', ('할아버지',)), ('할머니', ('할머니',)), ('사부', ('사부님',)), ('선생님', ('선생님',))],
 }
-_NARRATOR_MARK = {'zh': ('我',), 'ja': ('僕', '俺', '私'), 'en': (' I ', ' my ', ' me ')}
+_NARRATOR_MARK = {'zh': ('我',), 'ja': ('僕', '俺', '私'), 'en': (' I ', ' my ', ' me '),
+                  'ko': (' 나는 ', ' 내가 ', ' 나를 ', ' 나의 ', ' 내 ')}
 
 
 def role_entries(text: str, lang: str, taken=()) -> dict[str, str]:
@@ -274,7 +280,7 @@ def split_samples(samples: str, parts: int = 3) -> list[str]:
 
 
 def build_prompts(samples: str, names: dict[str, str], lang: str, as_json: bool = False) -> tuple[str, str]:
-    lang_name = {'zh': 'Chinese', 'ja': 'Japanese', 'en': 'English'}.get(lang, 'source-language')
+    lang_name = {'zh': 'Chinese', 'ja': 'Japanese', 'en': 'English', 'ko': 'Korean'}.get(lang, 'source-language')
     roster = '\n'.join(f'- {src} = {ko}' for src, ko in list(names.items())[:60])
     levels = '\n'.join(f'- {lv}: {LEVEL_HINTS[lv]}' for lv in LEVELS)
     system = ('You prepare a Korean translation style sheet for a novel. You read dialogue excerpts and decide, for pairs of '
@@ -310,6 +316,12 @@ List only pairs where the excerpts make the speaker and the listener clear. If n
                             f'- {NARRATOR}: the first-person narrator (我/僕/I in the narration).\n'
                             '- 엄마, 아빠, 오빠·형 … : family/address roles as the dialogue uses them (妈妈, 哥哥 …); '
                             'use the role exactly as written in the list as the speaker/listener name.\n\n[KOREAN SPEECH LEVELS]', 1)
+    if lang == 'ko':
+        # The book is already Korean (refinement): the level is read, not chosen.
+        user = user.replace('Choose from these by the relationship the excerpts show, then keep it fixed for that pair.',
+                            'The book is already written in Korean: read each pair\'s level from the actual sentence endings '
+                            'the speaker uses in the excerpts (해/했어 반말, 해요 해요체, 합니다 합쇼체 …). Use the usual choices '
+                            'above only when the endings are unclear.', 1)
     if as_json:
         # Local models: Ollama's JSON mode keeps the answer readable (a tab-separated table is
         # often rewritten with spaces, arrows or a literal "<TAB>"). Same question, same rules.
@@ -571,7 +583,7 @@ def render_instruction(rows) -> str:
         return ''
     body = '\n'.join(f"- {r['speaker']} → {r['listener']}: {r['level']}" + (f" ({r['note']})" if r['note'] else '') for r in rows)
     roles = {r['speaker'] for r in rows} | {r['listener'] for r in rows}
-    if NARRATOR in roles or roles & {ko for pairs in ROLE_TERMS.values() for ko, _ in pairs}:
+    if NARRATOR in roles or roles & {ko for lang, pairs in ROLE_TERMS.items() if lang != 'ko' for ko, _ in pairs}:
         body += (f'\n({NARRATOR} = the first-person narrator; 엄마, 아빠, 오빠·형 and the like are the family/address '
                  'roles as the narrator\'s dialogue uses them)')
     body += ('\n(Forms of address and kinship words — 哥/姐/弟/妹, 叔/伯/姨/姑/舅/嫂, birth order such as 二哥 · 老二, '

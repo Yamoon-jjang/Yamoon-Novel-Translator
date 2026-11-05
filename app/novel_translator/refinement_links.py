@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import re
 import time
 
 from .config import DATA_DIR, load_json, save_json
@@ -112,3 +113,124 @@ def reference_summary(ref: dict | None) -> str:
     n_rows = len(clean_rows(ref.get('speech')))
     n_names = len([n for n in (ref.get('names') or []) if str(n).strip()])
     return f'인물 말투 {n_rows}쌍 · 확정 이름·용어 {n_names}개'
+
+
+# ---- 기준표 보기 (v2.6.2 보완 3): the same table text shown as the translation window shows
+# its 인물 말투 and 용어 (rows and columns), for both a translation record and a sample analysis.
+_ARROW = r'(?:→|->|⇒|➔|➡)'
+_SPEECH_LINE = re.compile(r'^\s*(?:[-*•·]\s*|\d+[.)]\s*)?(.+?)\s*' + _ARROW + r'\s*(.+?)\s*[:：]\s*(.+?)\s*$')
+_NOTE_TAIL = re.compile(r'^(.*?)\s*[(（]([^()（）]*)[)）]\s*$')
+_TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$')
+_NAMES_LINE = re.compile(r'^\s*(확정 )?이름·용어[^:：]*[:：]\s*(.+)$')
+
+
+def _plain(cell: str) -> str:
+    """A cell without markdown emphasis, backticks or list marks."""
+    s = re.sub(r'[*_`]+', '', str(cell or '')).strip()
+    return re.sub(r'^(?:[-•·]\s+|\d+[.)]\s+)', '', s).strip()
+
+
+def _split_level(level: str) -> tuple[str, str]:
+    level = _plain(level)
+    m = _NOTE_TAIL.match(level)
+    if m and m.group(1).strip():
+        return m.group(1).strip(), m.group(2).strip()
+    return level, ''
+
+
+def guidance_tables(text: str) -> tuple[list[tuple[str, str, str, str]], list[tuple[str, str]]]:
+    """(speech rows, term rows) read from a reference table, for display only.
+
+    Speech rows are (화자, 상대, 말투, 관계·메모) from lines such as "A → B: 반말 (note)"
+    or table rows with an arrow cell or 화자/상대 columns. Term rows are (항목, 내용) from the
+    other table rows and "key: value" lines; a translation record's confirmed names become
+    one row each. Nothing here changes what a run sends: the text itself stays the table."""
+    speech, terms, seen, seen_terms = [], [], set(), set()
+
+    def add_speech(sp, li, level, note=''):
+        sp, li = _plain(sp), _plain(li)
+        level, tail = _split_level(level)
+        note = _plain(note) or tail
+        if not sp or not li or not level or sp == li or (sp, li) in seen:
+            return False
+        if len(sp) > 30 or len(li) > 30 or len(level) > 30:
+            return False
+        seen.add((sp, li)); speech.append((sp, li, level, note))
+        return True
+
+    def add_term(key, value=''):
+        key, value = _plain(key), _plain(value)
+        if not key or (key, value) in seen_terms:
+            return
+        seen_terms.add((key, value)); terms.append((key, value))
+
+    header = None          # columns of the markdown table being read
+    lines = str(text or '').splitlines()
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            header = None
+            continue
+        if _TABLE_SEP.match(line):
+            continue
+        m = _NAMES_LINE.match(line)
+        if m:
+            # 확정 이름·용어 (a translation record) or 이름·용어 with kinds (a sample analysis: 시즈코(인물))
+            for name in m.group(2).split(','):
+                kind = _NOTE_TAIL.match(name.strip())
+                if kind and kind.group(1).strip():
+                    add_term(kind.group(1), kind.group(2))
+                else:
+                    add_term(name, '확정 표기' if m.group(1) else '')
+            continue
+        if line.startswith('|') or line.count('|') >= 2:
+            cells = [_plain(c) for c in line.strip('|').split('|')]
+            following = lines[i + 1].strip() if i + 1 < len(lines) else ''
+            if _TABLE_SEP.match(following):       # the header row of a table
+                header = cells
+                continue
+            cols = [c.replace(' ', '') for c in (header or [])]
+            if '화자' in cols and '상대' in cols:
+                get = lambda name: cells[cols.index(name)] if cols.index(name) < len(cells) else ''
+                level_col = next((c for c in cols if c in ('말투', '말투(존댓말/반말)', '존댓말/반말', '높임')), '')
+                if level_col:
+                    rest = [c for j, c in enumerate(cells) if j < len(cols) and cols[j] not in ('화자', '상대', level_col) and c]
+                    add_speech(get('화자'), get('상대'), get(level_col), ' · '.join(rest))
+                    continue
+            arrow = next((j for j, c in enumerate(cells) if re.search(_ARROW, c)), None)
+            if arrow is not None:
+                parts = re.split(_ARROW, cells[arrow], maxsplit=1)
+                after = [c for c in cells[arrow + 1:] if c]
+                if len(parts) == 2:
+                    pair = re.split(r'[:：]', parts[1], maxsplit=1)
+                    if len(pair) == 2 and add_speech(parts[0], pair[0], pair[1], ' · '.join(after)):
+                        continue
+                    if after and add_speech(parts[0], parts[1], after[0], ' · '.join(after[1:])):
+                        continue
+            cells = [c for c in cells if c and c not in ('-', '—', '–')]
+            if cells:
+                add_term(cells[0], ' · '.join(cells[1:]))
+            continue
+        header = None
+        if (line.startswith('#') or (line.startswith('[') and line.endswith(']'))
+                or re.fullmatch(r'\*\*[^*]+\*\*[:：]?', line)):
+            continue        # a heading or the "[번역할 때 확정된 기준표 …]" line
+        if line.endswith((':', '：')):
+            continue        # a section title such as "인물 말투(화자 → 상대: 말투):"
+        m = _SPEECH_LINE.match(line)
+        if m and add_speech(m.group(1), m.group(2), m.group(3)):
+            continue
+        key, sep, value = _plain(line).partition(':')
+        if not sep:
+            key, sep, value = _plain(line).partition('：')
+        if sep and key.strip() and len(key) <= 40:
+            add_term(key, value)
+        else:
+            add_term(line)
+    return speech, terms
+
+
+def guidance_counts(text: str) -> str:
+    """'인물 말투 8쌍 · 이름·용어 12개' for the log and the window."""
+    speech, terms = guidance_tables(text)
+    return f'인물 말투 {len(speech)}쌍 · 이름·용어 {len(terms)}개'

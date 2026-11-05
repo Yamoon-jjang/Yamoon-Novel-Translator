@@ -169,10 +169,12 @@ def test_a_resume_of_the_same_text_is_unchanged(tmp_path):
 
 
 def test_sample_analysis_of_an_edited_txt_is_shown_and_reused(tmp_path):
-    src = _first_run(tmp_path, '\n\n'.join(PARAS))
+    # v2.6.2 보완 3: the analysis finds names in the book (a book with no names has no table)
+    named = [f'어색한 은지의 문장 {i}번입니다. 민수가 어색한 표정으로 웃었다.' for i in range(1, 41)]
+    src = _first_run(tmp_path, '\n\n'.join(named))
     where, _, table = peek_guidance(src, checkpoint_dir=tmp_path / 'cp', links_root=tmp_path)
     assert where == 'analysis' and table
-    src.write_bytes(('\n\n'.join(PARAS) + '\n\n추가.').encode('utf-8'))
+    src.write_bytes(('\n\n'.join(named) + '\n\n추가.').encode('utf-8'))
     where2, _, table2 = peek_guidance(src, checkpoint_dir=tmp_path / 'cp', links_root=tmp_path)
     assert where2 == 'analysis' and table2 == table
     res, ed, _ = _second_run(tmp_path, src)
