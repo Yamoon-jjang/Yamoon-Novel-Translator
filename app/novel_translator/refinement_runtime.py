@@ -326,6 +326,11 @@ def format_duration(seconds: float) -> str:
 MAX_REFINEMENT_BYTES = 30_000_000  # 30 MB decimal
 MAX_REFINEMENT_LABEL = f'{MAX_REFINEMENT_BYTES // 1_000_000}MB'
 
+# The run log warns once when, after this many paragraphs edited in this run, fewer than this
+# share of them changed (the model copies most paragraphs back).
+LOW_RATE_AFTER = 150
+LOW_RATE = 0.5
+
 
 def _save_state(path: Path, data: dict) -> None:
     """The resume file, written as save_json does (temporary file, flush, replace), but encoded
@@ -791,6 +796,7 @@ def _residue_paragraphs(paragraphs, texts=None) -> int:
 
 
 _LEAD_SPACE = re.compile(r'^[ \t\u3000]*')
+_TRAIL_SPACE = re.compile(r'[ \t\u3000]*$')
 
 
 def finalize_body(original: str, body: str, punct: bool = False, quote_style: str = 'straight') -> str:
@@ -803,10 +809,32 @@ def finalize_body(original: str, body: str, punct: bool = False, quote_style: st
       translation result (설정 [따옴표]), so a refined book never comes back in the
       model's own quote marks."""
     indent = _LEAD_SPACE.match(original or '').group(0)
-    text = indent + _LEAD_SPACE.sub('', body or '', count=1)
+    tail = _TRAIL_SPACE.search(original or '').group(0)      # the end of a line too (v2.6.2 보완)
+    core = _TRAIL_SPACE.sub('', _LEAD_SPACE.sub('', body or '', count=1), count=1)
+    text = indent + core + tail
     if punct:
         text = korean_punctuation(text, quote_style)
     return text
+
+
+def same_result(original: str, body: str) -> bool:
+    """The edit says the same as the original once the result file's own tidying is done
+    (v2.6.2 보완): quotation-mark shape, Chinese/Japanese punctuation and the spaces at either end
+    do not make a paragraph "changed" (they were counted so up to v2.6.2)."""
+    return (finalize_body(original, body, True, 'straight').strip()
+            == finalize_body(original, original, True, 'straight').strip())
+
+
+_PERIOD_COMMA_SPACE = re.compile(r'[.,\s\u3000]')
+
+
+def only_period_comma(original: str, body: str) -> bool:
+    """The edit differs from the original only in full stops, commas and spaces (v2.6.2 보완):
+    "후후후." → "후후후," is no improvement, so the original is kept. A question or
+    exclamation mark the edit added, or any changed word, is a real edit."""
+    a = finalize_body(original, body, True, 'straight')
+    b = finalize_body(original, original, True, 'straight')
+    return a != b and _PERIOD_COMMA_SPACE.sub('', a) == _PERIOD_COMMA_SPACE.sub('', b)
 
 
 def assemble(paragraphs, completed, punct=None, quote_style='straight'):
@@ -929,7 +957,9 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
 
     stats = {'groups': len(groups), 'group': 0, 'paragraphs': len(paragraphs), 'requests': 0,
              'retries': 0, 'reviews': 0, 'reply_last': 0.0, 'reply_total': 0.0, 'replies': 0,
-             'changed': 0, 'identical': 0}
+             'changed': 0, 'identical': 0,
+             'run_changed': 0, 'run_identical': 0}
+    low_rate_warned = [False]
 
     def publish():
         if on_stats is not None:
@@ -946,9 +976,9 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         _save_state(cp, state)
     valid_ids = {str(p.pid) for p in paragraphs}
     state['completed']={k:v for k,v in state['completed'].items() if k in valid_ids}
-    by_text = {str(p.pid): p.text.strip() for p in paragraphs}
+    by_text = {str(p.pid): p.text for p in paragraphs}
     for k, v in state['completed'].items():          # paragraphs kept from an earlier run
-        stats['identical' if v.strip() == by_text.get(k, '') else 'changed'] += 1
+        stats['identical' if same_result(by_text.get(k, ''), v) else 'changed'] += 1
     try:
         size_mb = source.stat().st_size / 1e6
     except OSError:
@@ -1152,11 +1182,18 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
             if reason:
                 log(f'연속성 확인({reason}) → 이상 없음 · {parts[0].pid}~{parts[-1].pid}문단 유지')
             changed_now = 0
+            bodies = [p.text if only_period_comma(p.text, body) else body for p, body in zip(parts, bodies)]
             for p, body in zip(parts, bodies):
                 state['completed'][str(p.pid)] = body
                 state['issues'].pop(str(p.pid), None)
-                changed_now += body.strip() != p.text.strip()
+                changed_now += not same_result(p.text, body)
             stats['changed'] += changed_now; stats['identical'] += len(parts) - changed_now
+            stats['run_changed'] += changed_now; stats['run_identical'] += len(parts) - changed_now
+            seen = stats['run_changed'] + stats['run_identical']
+            if not low_rate_warned[0] and seen >= LOW_RATE_AFTER and stats['run_changed'] < seen * LOW_RATE:
+                low_rate_warned[0] = True
+                log(f'⚠ 변경률 낮음 · 이번 실행에서 다듬은 {seen:,}문단 중 {stats["run_changed"] * 100 // seen}%만 문장이 바뀜 · '
+                    '모델이 대부분 그대로 두고 있습니다. [실시간 결과]에서 전·후를 확인하고, 계속 낮으면 [안전 중지] 후 다른 모델을 써 보세요')
             log(f'✓ 요청 {stats["group"]:,}/{stats["groups"]:,} · {parts[0].pid:,}~{parts[-1].pid:,}문단'
                                      f' · 변경 {changed_now} · 동일 {len(parts) - changed_now}'
                                      f' · 응답 {stats["reply_last"]:.0f}초')
@@ -1190,7 +1227,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
         except Exception:
             pass
     report=output.with_name(output.name+'.review.txt')
-    changed=sum(1 for p in paragraphs if str(p.pid) in state['completed'] and state['completed'][str(p.pid)].strip()!=p.text.strip())
+    changed=sum(1 for p in paragraphs if str(p.pid) in state['completed'] and not same_result(p.text, state['completed'][str(p.pid)]))
     identical=len(state['completed'])-changed
     preserved=len(paragraphs)-len(state['completed'])
     residue_after=_residue_paragraphs(paragraphs, state['completed'])

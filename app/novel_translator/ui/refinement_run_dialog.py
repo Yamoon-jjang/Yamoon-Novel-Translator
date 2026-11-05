@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, Q
                                QSizePolicy, QCheckBox, QApplication, QTabWidget)
 from ..refinement_runtime import (run_refinement, MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL, format_duration,
                                   retry_status, peek_guidance, resume_conflict, estimate_run,
-                                  run_log_path, append_run_log)
+                                  run_log_path, append_run_log, same_result)
 from ..api_keys import normalize_key_records
 from .main_window import _make_provider
 from ..textio import read_txt_sample, decode_txt_bytes
@@ -112,10 +112,10 @@ def short_name(name, keep: int = 44) -> str:
     return name[:head]+'…'+name[-(keep-head-1):]
 
 
-# Lines kept free for the status text: a finished run's summary is at most four lines (five on a
-# large system font), so
+# Lines kept free for the status text: a finished run's summary is at most three lines (v2.6.2 보완:
+# its counts are on the 결과 line above, no longer repeated here), so
 # the window keeps one size from opening to finishing (only a rare long error grows it).
-STATUS_LINES = 5
+STATUS_LINES = 3
 
 
 class _StatusLabel(QLabel):
@@ -179,6 +179,7 @@ class RefinementRunDialog(QDialog):
         self.host=host
         self.setWindowTitle('한국어 소설 재정비 · 문학적 윤문')
         self.resize(700,690)
+        self.setSizeGripEnabled(True)    # the corner mark that shows the window can be resized (v2.6.2 보완)
         self.worker=None
         self._stage_text='대기 중'
         self._stage_started=0.0
@@ -598,6 +599,9 @@ class RefinementRunDialog(QDialog):
     def _live_text(self, row) -> str:
         pid,before,after=row
         if self.compare.isChecked():
+            if same_result(before, after):
+                # v2.6.2 보완: nothing to compare (only quotes or spaces may differ): one line
+                return f'[{pid:,}] (변경 없음) {after.strip()}\n'
             return f'[{pid:,}] 전: {before.strip()}\n[{pid:,}] 후: {after.strip()}\n'
         return after.rstrip()
 
@@ -673,7 +677,9 @@ class RefinementRunDialog(QDialog):
         groups=int(st.get('groups') or 0)
         line1=f'요청  {int(st.get("group") or 0):,}/{groups:,}묶음 · 보낸 요청 {int(st.get("requests") or 0):,}회'
         line1+=f' · 재요청 {int(st.get("retries") or 0):,}회 · 연속성 확인 {int(st.get("reviews") or 0):,}회'
-        line2=(f'결과  실제 변경 {int(st.get("changed") or 0):,} · 원문과 동일 {int(st.get("identical") or 0):,}'
+        changed=int(st.get("changed") or 0); same=int(st.get("identical") or 0)
+        rate=f' (변경률 {changed*100//(changed+same)}%)' if changed+same else ''
+        line2=(f'결과  실제 변경 {changed:,}{rate} · 원문과 동일 {same:,}'
                f' · 원문 보존 {int(issues or 0):,}문단')
         replies=int(st.get('replies') or 0)
         if replies:
@@ -714,8 +720,11 @@ class RefinementRunDialog(QDialog):
                      if result.get('residue_before') else '')
             retry=('\n보존한 문단은 같은 TXT로 [재정비 시작]을 다시 누르면 그 문단만 다시 시도합니다.' if preserved else '')
             out=Path(str(result["output"])); rep=Path(str(result["report"]))
+            # The finished counts go on the 결과 line above (v2.6.2 보완), so they are said once.
+            self._stats=dict(self._stats or {}); self._stats['changed']=int(changed or 0); self._stats['identical']=int(identical or 0)
+            self._counts=(int(result.get('done') or 0), int(result.get('total') or 0), int(preserved or 0))
+            self.stats_info.setText(self._stats_text()); self.stats_info.show()
             self.status.setText(f'총 소요 시간 {format_duration(result.get("seconds",0))} · 기준표 {where}{residue}\n'
-                                f'실제 변경 {changed}문단 · 원문과 동일 {identical}문단 · 미교정 원문 보존 {preserved}문단\n'
                                 f'결과: {short_name(out.name)} · 검토 기록(.review.txt)도 같은 폴더{retry}')
             self.status.setToolTip(f'결과: {out}\n검토 기록: {rep}')
             self._guidance_text=str(result.get('guidance') or '')

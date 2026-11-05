@@ -440,7 +440,7 @@ def test_counts_and_log_in_the_window(qt_app, cfg_dir):
                       'reply_last': 41.2, 'reply_total': 170.0, 'replies': 5, 'changed': 100, 'identical': 17})
     text = d.stats_info.text()
     assert '요청  4/12묶음 · 보낸 요청 5회 · 재요청 1회 · 연속성 확인 2회' in text
-    assert '결과  실제 변경 100 · 원문과 동일 17 · 원문 보존 3문단' in text
+    assert '결과  실제 변경 100 (변경률 85%) · 원문과 동일 17 · 원문 보존 3문단' in text
     assert '최근 응답 41초 · 평균 34초' in text
     for i in range(rd.LOG_ROWS + 20):
         d._log_line(f'줄 {i}')
