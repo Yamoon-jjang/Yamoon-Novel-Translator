@@ -368,11 +368,13 @@ def test_retries_and_reviews_are_counted(tmp_path):
     run_refinement(src, out, Wrap(bad_group=True), 'm', 'test', checkpoint_dir=tmp_path / 'cp',
                    links_root=tmp_path / 'l', on_stats=stats.append)
     assert stats[-1]['requests'] == 3 and stats[-1]['retries'] == 2     # one group, asked again in halves
-    src2 = write(tmp_path, 'c.txt', '"어색한 대사입니다요." 그가 말했다.\n')
+    # A whole group shorter by a third (each paragraph within the paragraph guard): one review.
+    long = '그는 오랫동안 아무 말도 하지 않은 채 창밖의 비 내리는 거리를 하염없이 바라보고 있었다.'
+    src2 = write(tmp_path, 'c.txt', '\n'.join([long] * 4))
     stats2 = []
-    run_refinement(src2, tmp_path / 'c.r.txt', Editor(lambda pid, t: '"그래." 그가 말했다.'), 'm', '',
-                   checkpoint_dir=tmp_path / 'cp2', links_root=tmp_path / 'l2', on_stats=stats2.append)
-    assert stats2[-1]['reviews'] == 1                                   # 존댓말 → 반말: a continuity review
+    run_refinement(src2, tmp_path / 'c.r.txt', Editor(lambda pid, t: '그는 말없이 창밖의 비 내리는 거리를 바라보고 있었다.'),
+                   'm', '', checkpoint_dir=tmp_path / 'cp2', links_root=tmp_path / 'l2', on_stats=stats2.append)
+    assert stats2[-1]['reviews'] == 1
 
 
 def test_log_continues_on_resume_and_a_new_run_keeps_the_previous_log(tmp_path):

@@ -88,8 +88,10 @@ def test_partial_failure_no_longer_skips_the_continuity_review(tmp_path):
     ed = Editor(body=lambda pid, t: '짧음' if pid == 1 else '바뀐 문장입니다만 아주 많이 줄었다', review='CHANGED')
     res = run_refinement(src, tmp_path / 'p.out.txt', ed, 'm', 'k', checkpoint_dir=tmp_path / 'cp',
                          links_root=tmp_path)
-    assert 'review' in ed.calls
+    # v2.6.2 보완: an edit that lost most of its narration is held by the paragraph guard at once
+    # (no review needed); either way nothing shrunk reaches the result.
     assert res['changed'] == 0 and res['preserved'] == 4
+    assert '서술 줄어듦 · 원문 보존' in (tmp_path / 'p.out.txt.review.txt').read_text(encoding='utf-8-sig')
 
 
 def test_new_kanji_in_an_edit_is_rejected_and_leftovers_are_requested():
