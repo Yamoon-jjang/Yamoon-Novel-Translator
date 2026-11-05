@@ -119,7 +119,7 @@ def test_large_source_is_rejected_before_model_or_input_read(tmp_path):
 
 def test_long_group_format_fallback_bisects_not_one_request_per_line(tmp_path):
     src=tmp_path/'long_scene.txt'
-    src.write_text('\n'.join('어색한 한국어 소설 장면입니다 '+str(i) for i in range(16)),encoding='utf-8')
+    src.write_text('\n'.join('어색한 한국어 소설 장면입니다. '+str(i) for i in range(16)),encoding='utf-8')
     class FailsLarge(Dummy):
         def translate(self,request,key):
             self.calls+=1

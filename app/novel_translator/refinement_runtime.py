@@ -47,7 +47,17 @@ _FOREIGN_SPAN = re.compile(r'[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟ]+')
 
 # Dialogue speech level: polite (존댓말) and plain (반말) sentence endings.
 _DIALOGUE = re.compile(r'[“"「『]([^”"」』\n]{1,400})[”"」』]')
-_POLITE_END = re.compile(r'(?:요|니다|니까|세요|십시오|십시요|지요|죠|소서)[.!?…~\s]*$')
+_POLITE_END = re.compile(r'(?:요|니다|세요|십시오|십시요|지요|죠|소서)[.!?…~\s]*$')
+# "~니까" is polite only as "합니까 / 입니까 / 갑니까" (a syllable ending in ㅂ before it);
+# "인질이니까." / "여자뿐이니까." are plain speech (v2.6.2 보완: they were counted as polite).
+_NIKKA_END = re.compile(r'([가-힣])니까[.!?…~\s]*$')
+
+
+def _polite_sentence(s: str) -> bool:
+    if _POLITE_END.search(s):
+        return True
+    m = _NIKKA_END.search(s)
+    return bool(m) and (ord(m.group(1)) - 0xAC00) % 28 == 17
 _HANGUL_END = re.compile(r'[가-힣][.!?…~\s]*$')
 _SENTENCE = re.compile(r'[^.!?…]+[.!?…]*')
 
@@ -498,7 +508,7 @@ def _speech_levels(text: str) -> tuple[int, int]:
             s = s.strip()
             if not s:
                 continue
-            if _POLITE_END.search(s):
+            if _polite_sentence(s):
                 polite += 1
             elif _HANGUL_END.search(s) and (len(s.split()) >= 2 or len(re.findall(r'[가-힣]', s)) >= 3):
                 plain += 1     # a sentence of its own (not a bare call like "엄마!")
@@ -837,6 +847,83 @@ def only_period_comma(original: str, body: str) -> bool:
     return a != b and _PERIOD_COMMA_SPACE.sub('', a) == _PERIOD_COMMA_SPACE.sub('', b)
 
 
+# --- paragraph guard (v2.6.2 보완) ---------------------------------------------------------
+# The continuity review is asked only for a whole group and a small model often answers
+# "SAME" anyway, so a few edits that drop a line of dialogue, add one, cut the narration or
+# turn 반말 into 존댓말 reached the result. Each paragraph is now checked on its own, by
+# general rules (no word lists); a paragraph that fails keeps its original text and is
+# recorded as 원문 보존, so "보존한 문단만 다시 시도" can try it again later.
+_QUOTE_SPAN = re.compile(r'"[^"\n]*"')   # dialogue; '…' marks thoughts or emphasis
+_HANGUL_CHAR = re.compile(r'[가-힣]')
+GUARD_PART_MIN = 6          # Hangul letters a part (dialogue or narration) needs to be judged
+GUARD_KEEP = 0.5            # a part may not shrink below half
+GUARD_TOTAL_MIN = 20        # a paragraph this long may not shrink below GUARD_TOTAL_KEEP
+GUARD_TOTAL_KEEP = 0.6
+GUARD_GROW = 1.3            # dialogue may not grow by more than this ...
+GUARD_GROW_MIN = 4          # ... and this many letters (a new line of speech)
+GUARD_MOVED_MIN = 3          # letter pairs of the held paragraph's lost text found in a neighbour
+GUARD_TITLE_MAX = 15         # a line this short with no closing mark is a heading: kept as it is
+_LINE_MARK = re.compile(r'[.,!?…。，！？"“”‘’\'「」『』~]')    # a heading has none of these
+
+
+def _speech_parts(text: str):
+    """(number of quoted spans, Hangul inside them, Hangul outside them), quotation marks of
+    every shape counted alike."""
+    t = korean_punctuation(text or '', 'straight') if _HANGUL_CHAR.search(text or '') else (text or '')
+    spans = _QUOTE_SPAN.findall(t)
+    inside = sum(len(_HANGUL_CHAR.findall(x)) for x in spans)
+    outside = len(_HANGUL_CHAR.findall(_QUOTE_SPAN.sub(' ', t)))
+    return len(spans), inside, outside
+
+
+def paragraph_guard(original: str, body: str) -> str:
+    """Why this edit of one paragraph must not be kept ('' when it may)."""
+    if same_result(original, body):
+        return ''
+    if (not _LINE_MARK.search(original or '') and len(_HANGUL_CHAR.findall(original or '')) <= GUARD_TITLE_MAX
+            and not _QUOTE_SPAN.search(original or '')):
+        return '소제목·짧은 줄'      # "유괴된 레이부진", "옷을 벗겨내다": a heading is never rewritten
+    n_o, in_o, out_o = _speech_parts(original)
+    n_b, in_b, out_b = _speech_parts(body)
+    if n_o != n_b:
+        return '대사 수 변화'
+    if in_o >= GUARD_PART_MIN and in_b < in_o * GUARD_KEEP:
+        return '대사 줄어듦'
+    if in_b - in_o >= GUARD_GROW_MIN and in_b > in_o * GUARD_GROW:
+        return '대사 늘어남'
+    if out_o >= GUARD_PART_MIN and out_b < out_o * GUARD_KEEP:
+        return '서술 줄어듦'
+    if in_o + out_o >= GUARD_TOTAL_MIN and in_b + out_b < (in_o + out_o) * GUARD_TOTAL_KEEP:
+        return '분량 크게 줄어듦'
+    if speech_level_changed(original, body):
+        return '존댓말·반말 변화'
+    return ''
+
+
+def guard_paragraphs(parts, bodies) -> dict:
+    """{pid: reason} of the paragraphs whose edit is not kept. When a held paragraph lost text
+    that now appears in the edit of the paragraph next to it (a line moved across paragraphs),
+    that neighbour is held too, so a sentence is never kept twice or lost."""
+    held = {}
+    for p, b in zip(parts, bodies):
+        why = paragraph_guard(p.text, b)
+        if why:
+            held[p.pid] = why
+    if held:
+        first = dict(held)
+        for i, (p, b) in enumerate(zip(parts, bodies)):
+            if p.pid in held:
+                continue
+            gained = _bigrams(b) - _bigrams(p.text)
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(parts) and parts[j].pid in first:
+                    lost = _bigrams(parts[j].text) - _bigrams(bodies[j])
+                    if len(gained & lost) >= GUARD_MOVED_MIN:
+                        held[p.pid] = '이웃 문단과 섞임'
+                        break
+    return held
+
+
 def assemble(paragraphs, completed, punct=None, quote_style='straight'):
     """punct=None: the bodies exactly as stored (the raw edit, as before v2.6.2)."""
     if punct is None:
@@ -1150,6 +1237,21 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
 
         def finish(parts, bodies):
             """Continuity review of validated edits, then store them."""
+            held = guard_paragraphs(parts, bodies)
+            if held:
+                for p in parts:
+                    if p.pid in held:
+                        state['issues'][str(p.pid)] = held[p.pid] + ' · 원문 보존'
+                kinds = {}
+                for why in held.values():
+                    kinds[why] = kinds.get(why, 0) + 1
+                log(f'원문 유지 · {len(held)}문단 (' + ', '.join(f'{k} {v}' for k, v in kinds.items()) + ') · '
+                    + ', '.join(f'{pid:,}' for pid in sorted(held)) + '문단')
+                keep = [(p, b) for p, b in zip(parts, bodies) if p.pid not in held]
+                if not keep:
+                    publish()
+                    return
+                parts = [p for p, _ in keep]; bodies = [b for _, b in keep]
             original = '\n'.join(p.text for p in parts)
             rewritten = '\n'.join(bodies)
             reason = review_reason(parts, bodies, names)
