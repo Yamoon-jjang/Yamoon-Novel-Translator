@@ -5,6 +5,7 @@ from datetime import datetime
 from .textio import directory_writable, atomic_write_text
 from .validation import parse_tagged_translation
 from .punctuation import korean_punctuation, _LETTERS
+from .hidden_marks import restore as restore_marks
 
 
 def _has_letters(text: str) -> bool:
@@ -209,6 +210,9 @@ def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallba
             body=html_line_breaks(translated_by_pid[paragraph.pid])
             if korean_punct:
                 body=korean_punctuation(body,quote_style)
+            # The source's invisible marks (zero-width characters) are written back into the
+            # translation; a paragraph kept as source already has them (v2.6.3).
+            body=restore_marks(paragraph.text,body)
         else:
             # Never create a hole in the readable output. The raw source is safer
             # than a missing scene and enables DB-less mixed-language retry later.

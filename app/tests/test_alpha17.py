@@ -482,10 +482,10 @@ def test_korean_punctuation_can_be_turned_off(tmp_path):
 def test_version_label_and_about_dialog(qt_app,sandbox,monkeypatch):
     import novel_translator as nt
     from novel_translator.ui.about_dialog import AboutDialog, app_icon
-    assert nt.__version__=='2.6.2' and nt.VERSION_LABEL=='v2.6.2'
+    assert nt.VERSION_LABEL=='v'+nt.__version__   # the number itself: test_v263_version_one_place
     w=_window(monkeypatch)
     try:
-        assert w.windowTitle()=='야문 Novel Translator v2.6.2' and 'Alpha' not in w.windowTitle()
+        assert w.windowTitle()=='야문 Novel Translator '+nt.VERSION_LABEL and 'Alpha' not in w.windowTitle()
         assert w.about_btn.text()=='정보' and w.manual_btn.text()=='사용 설명서'
         assert not app_icon().isNull()
         d=AboutDialog(w)

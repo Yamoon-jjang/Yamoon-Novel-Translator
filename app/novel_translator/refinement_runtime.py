@@ -8,6 +8,7 @@ import time
 from dataclasses import replace
 from difflib import SequenceMatcher
 from .chunking import split_paragraphs, escape_protocol_literals
+from .hidden_marks import strip as strip_marks, restore as restore_marks
 from .config import DATA_DIR, load_json, save_json
 from .textio import atomic_write_text
 from .providers.base import TranslationRequest, ProviderError, ErrorKind, TranslationCancelled
@@ -273,7 +274,7 @@ def shift_run(paragraphs, bodies) -> int:
     have=[p for p in paragraphs if p.pid in bodies]
     if len(have) < SHIFT_RUN_MIN + 1:
         return 0
-    src='\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(p.text)}' for p in have)
+    src='\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(strip_marks(p.text))}' for p in have)
     out='\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(bodies[p.pid])}' for p in have)
     return max(dialogue_shift_run(src, out), content_shift_run(have, bodies))
 
@@ -299,7 +300,9 @@ def refinement_prompt(paragraphs, previous: str = '', following: str = '', guida
         '각 <P000001> 형식 ID를 독립된 줄로 출력하고 바로 아래에 교정문을 작성하세요. '
         '앞뒤 문맥은 참고만 하고 결과에 포함하지 마세요. 설명·주석·머리말·코드 펜스 없이 결과만 출력하세요.'
     )
-    tagged = '\n\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(p.text)}' for p in paragraphs)
+    # Invisible marks (zero-width characters) never go to the model; finalize_body puts
+    # them back into the edit (hidden_marks, v2.6.3).
+    tagged = '\n\n'.join(f'<P{p.pid:06d}>\n{escape_protocol_literals(strip_marks(p.text))}' for p in paragraphs)
     leftovers = []
     for p in paragraphs:
         for span in _FOREIGN_SPAN.findall(p.text):
@@ -473,7 +476,7 @@ def prepare_guidance(paragraphs, provider, model, key, *, stop, event):
     counted over the whole book and the 인물 말투표, built the way the translation builds them
     (refinement_analysis). A bounded number of requests, never a full-book LLM scan."""
     if stop(): return ''
-    text='\n'.join(p.text for p in paragraphs)
+    text=strip_marks('\n'.join(p.text for p in paragraphs))   # invisible marks never split a name
     if not text.strip(): return ''
     from .refinement_analysis import build_reference
     started=time.monotonic()
@@ -518,7 +521,7 @@ def speech_level_changed(original: str, edited: str) -> bool:
 
 def review_reason(parts, bodies, names=()) -> str:
     """Why an edited passage needs the continuity review ('' when it does not)."""
-    original = '\n'.join(p.text for p in parts)
+    original = strip_marks('\n'.join(p.text for p in parts))   # invisible marks are no length
     edited = '\n'.join(bodies)
     if not (len(edited) >= len(original)*.72 and len(edited) <= len(original)*1.55):
         return '분량 변화'
@@ -813,7 +816,7 @@ def finalize_body(original: str, body: str, punct: bool = False, quote_style: st
     text = indent + core + tail
     if punct:
         text = korean_punctuation(text, quote_style)
-    return text
+    return restore_marks(original, text)   # the original's invisible marks (v2.6.3)
 
 
 def same_result(original: str, body: str) -> bool:
@@ -916,7 +919,7 @@ def guard_paragraphs(parts, bodies) -> dict:
 def assemble(paragraphs, completed, punct=None, quote_style='straight'):
     """punct=None: the bodies exactly as stored (the raw edit, as before v2.6.2)."""
     if punct is None:
-        return ''.join(p.prefix_before + completed.get(str(p.pid), p.text) + p.separator_after for p in paragraphs)
+        return ''.join(p.prefix_before + restore_marks(p.text, completed.get(str(p.pid), p.text)) + p.separator_after for p in paragraphs)
     return ''.join(p.prefix_before + finalize_body(p.text, completed.get(str(p.pid), p.text), punct, quote_style)
                    + p.separator_after for p in paragraphs)
 
@@ -1252,7 +1255,7 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                     publish()
                     return
                 parts = [p for p, _ in keep]; bodies = [b for _, b in keep]
-            original = '\n'.join(p.text for p in parts)
+            original = strip_marks('\n'.join(p.text for p in parts))   # never sent to the model
             rewritten = '\n'.join(bodies)
             reason = review_reason(parts, bodies, names)
             if reason and stop():

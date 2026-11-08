@@ -16,6 +16,7 @@ from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
 from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, LOCAL_SAFE_PARAGRAPHS
 from ..rendering import render_snapshot, html_line_breaks
+from ..hidden_marks import strip as strip_marks, restore as restore_marks
 from ..protected_literals import stale_bracket_prose
 
 _TAG = re.compile(r'(?m)^<P\d{6}>\s*\n?')
@@ -524,7 +525,9 @@ class TranslationWorker(QThread):
     def _call_orch_once(self, orch, chunk, prev: str, recovery: bool, reason: str = 'format'):
         if self._chunk_requests >= self.max_requests_per_chunk and getattr(orch,'provider_id','')!='local':
             raise ProviderError(ErrorKind.REFUSAL, f'청크당 요청 상한({self.max_requests_per_chunk}회) 도달 · 비용 보호를 위해 원문 유지')
-        result=orch.translate_chunk(self.profile, chunk.source_text, self.terms, prev, recovery_mode=recovery,
+        # Invisible marks (zero-width characters) never go to the model; the chunk keeps them
+        # (its identity) and the result file gets them back (hidden_marks, v2.6.3).
+        result=orch.translate_chunk(self.profile, strip_marks(chunk.source_text), self.terms, prev, recovery_mode=recovery,
                                     book_memory=self.book_memory, language_options=self._request_language_options(),
                                     recovery_reason=reason)
         excluded=list(getattr(orch,'last_excluded',[]) or [])
@@ -706,7 +709,7 @@ class TranslationWorker(QThread):
         for para in chunk.paragraphs:
             if para.pid in handled or para.pid not in leftover:
                 continue
-            body=out.get(para.pid,''); src=escape_protocol_literals(para.text)
+            body=out.get(para.pid,''); src=escape_protocol_literals(strip_marks(para.text))
             allowed=''.join(self.terms.values())
             before=len(leftover_script(body, allowed)); tried=False
             for name,orch in (engines if getattr(self,'_repair_enabled',True) else []):
@@ -1527,7 +1530,7 @@ class TranslationWorker(QThread):
                     self.progress.emit(i+1, total, '저장된 번역 사용')
                     try:   # resumed job: the live view shows the saved part too (sent in one block below)
                         _parsed=parse_tagged_translation(translations[c.index])
-                        saved_view.append('\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
+                        saved_view.append('\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
                     except Exception:
                         pass
                     continue
@@ -1579,7 +1582,7 @@ class TranslationWorker(QThread):
                         translations[c.index]=partial_base; prev=self._roll_context(prev, partial_base, context_chars); self.final_context=prev
                         try:   # the live view shows this saved chunk too
                             _parsed=parse_tagged_translation(partial_base)
-                            saved_view.append('\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
+                            saved_view.append('\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
                         except Exception:
                             pass
                         self.eta_left.discard(c.index)
@@ -1685,7 +1688,7 @@ class TranslationWorker(QThread):
                 translations[c.index] = text; prev = self._roll_context(prev, context_text, context_chars); self.final_context=prev; consecutive_infra_failures = 0
                 try:   # live view: just this chunk's Korean, in paragraph order
                     _parsed=parse_tagged_translation(text)
-                    self.chunk_translated.emit(i+1, total, '\n'.join(html_line_breaks(_parsed[p.pid].strip()) for p in c.paragraphs if p.pid in _parsed))
+                    self.chunk_translated.emit(i+1, total, '\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
                 except Exception:
                     pass
                 self.provider_chunks[used_provider]=self.provider_chunks.get(used_provider,0)+1

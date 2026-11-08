@@ -9,22 +9,34 @@ Every finished book adds its confirmed glossary entries that are not already the
   * gets the remaining entries that occur in a chunk as reference hints.
 Suspicious entries (Chinese characters left in the Korean, plain common words,
 one-character sources) are never stored.
+
+Last use (v2.6.3): beside the list, common_terms_used.json keeps the day each entry was last
+added, used by a book (found in a book whose names/terms were extracted) or changed, so a full
+list can be tidied from the entries no book has needed for the longest time. It is a separate
+file: common_terms.json keeps its format and an older version reads it as before. Entries
+stored before v2.6.3 start counting from the first day this version opens the list.
 """
 from __future__ import annotations
 import json, os, re
 from pathlib import Path
 
 FILE = 'common_terms.json'
+USED_FILE = 'common_terms_used.json'
 MAX_PER_LANG = 5000
 PULL_MIN = 2          # times a source must occur in a new book to be taken into its glossary
 PULL_MIN_SHORT = 5    # ... when the source is only two characters long
 
 
-def _path(base) -> Path:
+def _path(base, name: str = FILE) -> Path:
     if base is None:
         from .config import DATA_DIR
         base = DATA_DIR
-    return Path(base) / FILE
+    return Path(base) / name
+
+
+def _today() -> str:
+    from datetime import date
+    return date.today().isoformat()
 
 
 def load_all(base=None) -> dict:
@@ -39,11 +51,73 @@ def load(lang: str, base=None) -> dict[str, str]:
     return {str(a): str(b) for a, b in load_all(base).get(lang, {}).items() if str(a).strip() and str(b).strip()}
 
 
-def _save_all(data: dict, base=None) -> None:
-    p = _path(base); p.parent.mkdir(parents=True, exist_ok=True)
+def _save_all(data: dict, base=None, name: str = FILE) -> None:
+    p = _path(base, name); p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
     os.replace(tmp, p)
+
+
+# --- last use (v2.6.3) -------------------------------------------------------------------
+def _load_used_all(base=None) -> dict:
+    try:
+        data = json.loads(_path(base, USED_FILE).read_text(encoding='utf-8'))
+        return {k: {str(a): str(d) for a, d in v.items()} for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def last_used(lang: str, base=None, today: str | None = None) -> dict[str, str]:
+    """{source: 'YYYY-MM-DD'} for every entry of the list. An entry with no record yet (stored
+    before v2.6.3, or written into the file by hand) gets today, once, and is saved so."""
+    entries = load(lang, base)
+    data = _load_used_all(base)
+    cur = data.get(lang, {})
+    day = today or _today()
+    out = {a: cur.get(a) or day for a in entries}
+    if out != cur:
+        data[lang] = out
+        try: _save_all(data, base, USED_FILE)
+        except OSError: pass
+    return out
+
+
+def touch(lang: str, sources, base=None, today: str | None = None) -> int:
+    """Record that these entries were used today (only entries of the list). Never raises."""
+    try:
+        entries = load(lang, base)
+        names = [str(a).strip() for a in (sources or ()) if str(a).strip() in entries]
+        if not names:
+            return 0
+        data = _load_used_all(base); cur = data.setdefault(lang, {})
+        day = today or _today(); changed = 0
+        for a in names:
+            if cur.get(a) != day:
+                cur[a] = day; changed += 1
+        if changed:
+            _save_all(data, base, USED_FILE)
+        return changed
+    except Exception:
+        return 0
+
+
+def unused_since(lang: str, days: int, base=None, today: str | None = None) -> list[str]:
+    """Entries no book has used for `days` days or more, the longest unused first."""
+    from datetime import date, timedelta
+    day = today or _today()
+    limit = (date.fromisoformat(day) - timedelta(days=max(0, int(days)))).isoformat()
+    used = last_used(lang, base, day)
+    return [a for a, d in sorted(used.items(), key=lambda x: (x[1], x[0])) if d <= limit]
+
+
+def _keep_used(lang: str, entries: dict, base=None, fresh=()) -> None:
+    """The last-use file follows the list: removed entries go, new or changed ones get today."""
+    try:
+        data = _load_used_all(base); cur = data.get(lang, {}); day = _today()
+        data[lang] = {a: (day if (a in fresh or a not in cur) else cur[a]) for a in entries}
+        _save_all(data, base, USED_FILE)
+    except Exception:
+        pass
 
 
 def acceptable(source: str, korean: str) -> bool:
@@ -96,14 +170,17 @@ def add(lang: str, terms: dict, base=None) -> list[tuple[str, str]]:
         cur[a] = b; added.append((a, b))
     if added:
         _save_all(data, base)
+        touch(lang, [a for a, _ in added], base)
     return added
 
 
 def replace(lang: str, terms: dict, base=None) -> None:
     """Save the list as edited in the dialog."""
     data = load_all(base)
+    before = data.get(lang, {})
     data[lang] = {str(a).strip(): str(b).strip() for a, b in (terms or {}).items() if str(a).strip() and str(b).strip()}
     _save_all(data, base)
+    _keep_used(lang, data[lang], base, fresh={a for a, b in data[lang].items() if before.get(a) != b})
 
 
 def present_in(text: str, entries: dict[str, str], min_count: int = PULL_MIN,
