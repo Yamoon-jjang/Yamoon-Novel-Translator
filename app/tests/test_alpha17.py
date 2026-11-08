@@ -482,16 +482,16 @@ def test_korean_punctuation_can_be_turned_off(tmp_path):
 def test_version_label_and_about_dialog(qt_app,sandbox,monkeypatch):
     import novel_translator as nt
     from novel_translator.ui.about_dialog import AboutDialog, app_icon
-    assert nt.__version__=='2.6.2' and nt.VERSION_LABEL=='v2.6.2'
+    assert nt.VERSION_LABEL=='v'+nt.__version__   # the number itself: test_v263_version_one_place
     w=_window(monkeypatch)
     try:
-        assert w.windowTitle()=='야문 Novel Translator v2.6.2' and 'Alpha' not in w.windowTitle()
+        assert w.windowTitle()=='야문 Novel Translator '+nt.VERSION_LABEL and 'Alpha' not in w.windowTitle()
         assert w.about_btn.text()=='정보' and w.manual_btn.text()=='사용 설명서'
         assert not app_icon().isNull()
         d=AboutDialog(w)
         texts=' '.join(d.texts)
         assert d.width()==480 and d.height()==460, '빌드 정보 행을 포함한 정보 창 크기'
-        assert '야문 Novel Translator' in texts and '버전 2.6.2' in texts and '야문 짱' in texts and '무료 프로그램' in texts
+        assert '야문 Novel Translator' in texts and ('버전 '+nt.__version__) in texts and '야문 짱' in texts and '무료 프로그램' in texts
         assert 'Alpha' not in texts
         d.close()
     finally:
@@ -503,7 +503,8 @@ def test_manual_is_found_and_opened(qt_app,sandbox,monkeypatch):
     path=manual_path()
     assert path is not None and path.name=='사용설명서.html'
     html=path.read_text(encoding='utf-8')
-    assert 'v2.6.2' in html and 'Alpha' not in html
+    from novel_translator import VERSION_LABEL
+    assert VERSION_LABEL in html and 'Alpha' not in html   # the manual is updated with every version
     for heading in ('API 설정','번역하기','이름·용어','거부·차단','결과 파일','로컬 LLM','자주 묻는 질문'):
         assert heading in html
     opened=[]
@@ -533,6 +534,7 @@ def test_manual_mentions_only_buttons_that_exist(qt_app,sandbox,monkeypatch):
         r.close()
         have|={'다시 진행','번역 중지','추가 정보','실행','결과 복사','결과 저장','번역 결과','원문','말투표 건너뛰고 번역 시작','말투표 생성 취소','용어 추출 취소'}   # state labels / Windows dialog
         have|={'이어서 번역','처음부터 다시 번역'}   # buttons of the "이전 번역 이어 쓰기" question (v2.5.2, checked in test_v252)
+        have|={'오래 안 쓴 항목 고르기'}   # button of the 공용 용어집 window (v2.6.3, clicked in test_v263_common_last_use)
         from novel_translator.ui.name_collision_dialog import NameCollisionDialog
         c=NameCollisionDialog([('스잔',['Susan','Suzanne'])],{},set(),parent=w)
         have|={b.text() for b in c.findChildren(QPushButton)}; c.close()   # 한글 이름 겹침 확인 (v2.5.2 보완)

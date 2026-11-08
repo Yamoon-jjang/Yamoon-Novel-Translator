@@ -88,6 +88,7 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 - **거부 대응 사다리** — 거부 · 차단이 나면 이전 문맥을 빼고 한 번 더, 그래도 막히면 문단 단위로 좁혀 **엔진 순서의 다음 엔진**이 이어받습니다. 성공한 문단은 절대 버리지 않습니다.
 - **번역 기억** — 조금씩 저장하며 번역하므로 중간에 멈추거나 PC가 꺼져도 번역한 곳부터 이어집니다. 파일 이름을 바꿔도 내용이 같으면 이미 번역한 부분은 다시 요청하지 않습니다. 몇 번을 껐다 켜도 한 번에 번역한 것과 같은 결과가 나오고, 지난번에 막혔던 곳에서 다시 멈추지 않고 끝까지 이어 갑니다.
 - **원본 보호** — 원본 파일은 고치지 않습니다. 결과는 `파일이름.ko.txt`, 덜 끝났으면 `파일이름.ko.partial.txt` (원문으로 남은 부분까지 빠짐없이 포함). PDF · EPUB으로 연 책도 같습니다. 출력 폴더에 이름이 같은 **다른 책**의 결과가 있으면 덮어쓰지 않고 `.bak`으로 남긴 뒤 저장합니다.
+- **보이지 않는 표식도 그대로** — 전자책 사이트가 저작권 · 배포처 표시로 원문에 숨겨 둔 제로폭 문자는 번역 요청에 넣지 않고(모델이 옮기다 깨뜨리므로), 결과 파일의 같은 문단에 원래 순서대로 다시 넣습니다. 중지해 저장한 결과와 재정비 결과도 같습니다.
 - **폴더 통째로** — 폴더 안의 TXT · PDF · EPUB을 순서대로 끝까지, 하위 폴더 구조 그대로. 파일마다 미번역 부분을 자동으로 다시 번역하고, 그래도 남은 것만 마지막에 모아 알려 줍니다.
 - **폴더에서도 이름 · 말투 그대로** — 폴더 번역도 파일마다 확정 용어집과 인물 말투표를 자동으로 만듭니다. 서로 다른 작품이면 작품마다 따로 만들어 이름이 섞이지 않고, 한 작품의 연속 파일이면 함께 쓰며 새로 나온 이름 · 인물만 더합니다. 중간에 멈추고 파일을 바꾸거나 추가해도, 번역하던 파일은 그때 쓴 용어집 그대로 이어 가 다시 번역하지 않습니다.
 - **설정을 바꿔도 이어서** — 중지한 뒤 용어집 · 작품 메모 · 번역 방식을 바꾸거나 새 버전으로 바꿔도, 이미 번역한 부분을 버리기 전에 무엇이 바뀌었는지 보여 주고 **이어서 번역할지 먼저 묻습니다.** 수천 청크짜리 책도 이어 번역 준비가 1~2초면 끝납니다.
@@ -128,10 +129,12 @@ Ollama에는 **보낸 문단 번호가 모두 들어간 형식(구조화 출력)
 - 엔진 1~3개를 원하는 순서로 (로컬 LLM · Gemini · OpenAI), Gemini 키는 최대 10개까지 순서대로 돌려 쓰기
 - 문단 번호 검증, 생략 · 순화 흔적 감지, 남은 한자 · 가나 감지, 미완료 구간 재시도
 - 확정 용어집 자동 추출 · 공용 용어집 · 인물 말투표 · 작품 메모 · 번역 지침 (용어가 수백 개인 긴 책은 요청마다 그 원문에 나오는 용어만 보내 가볍게)
+- 공용 용어집은 항목마다 **마지막으로 쓴 날**을 기록해, 가득 차면 [오래 안 쓴 항목 고르기]로 오래 쓰지 않은 항목부터 정리
 - 서로 다른 인물이 같은 한글 이름으로 추출되면(Susan · Suzanne → 둘 다 "스잔") 번역 전에 알려 고치게 하고, 고친 이름은 인물 말투표에도 그대로 반영
 - 이름이 아닌 일반 낱말 · 호칭(sister · bro · dear, 宝贝 · 娘子 · あなた, 公司 등)과 한자가 남은 표기는 추출에서 아예 빼고, 예전에 들어간 것도 추출 때 정리 — 직접 넣은 항목은 그대로
 - 모델 고르기 · 양자화 · VRAM · 컨텍스트 설정부터 용어집 · 말투표 · 재정비 요령까지 담은 **자세한 사용 설명서**(프로그램의 [사용 설명서] 버튼)
 - 번역 결과 실시간 보기(폴더 번역 중에도 번역 중인 파일의 원문 · 결과를 오가며 보기), 줄마다 잘린 옛 TXT · BOM 없는 UTF-16도 읽기, 붙여넣은 글 바로 번역, 출력 폴더 지정, 창 위치 · 크기 기억, 최근 연 파일 20개(번역 진행 정도 표시), 이어 번역해도 정확한 남은 예상 시간
+- 원문 글자 수는 **줄바꿈 · 보이지 않는 문자를 뺀 실제 글자 수**(Windows 줄바꿈도 한 번만), 수백만 자 소설에서 번역 방식을 바꿔도 문단을 다시 나누지 않아 바로 반영
 - 번역 기록 자동 정리(90일 넘게 손대지 않은 작업만, 진행 중인 책은 그대로), 마우스를 올리면 나오는 안내 문구는 읽기 좋은 폭으로 줄바꿈
 - 사용량 · 예상 비용 표시, 한국어 소설 재정비, [야문 클린리더](https://github.com/Yamoon-jjang/Yamoon-CleanReader)로 바로 열어 문단 정리 · 읽기
 
@@ -151,11 +154,13 @@ Windows에서 Python 3.12로 빌드합니다.
 
 ```bat
 cd app
-python -m pip install -r requirements-build.txt
+python -m pip install -r requirements-build.txt -c constraints-build.txt
 build_windows.bat
 ```
 
-`build_windows.bat`은 자동 테스트(1,170여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
+`constraints-build.txt`는 마지막으로 시험한 빌드의 부품 버전을 고정해, 새 부품이 나와도 프로그램이 저절로 바뀌지 않게 합니다.
+`build_windows.bat`은 자동 테스트(1,400여 개)와 점검을 모두 통과해야 `app\dist\NovelTranslator\`에 실행 파일을 만듭니다.
+프로그램 버전은 `app/novel_translator/__init__.py` 한 곳에 쓰고, `version_info.txt`가 같은지 테스트가 확인합니다.
 GitHub Actions(`.github/workflows/build.yml`)도 같은 과정으로 빌드하며, 새 버전이 main에서 모든 점검을 통과하면 Releases에 배포본을 자동으로 올립니다.
 
 ---
@@ -177,6 +182,7 @@ Its goal is faithful translation: no embellishment, no rewriting, no omissions. 
 - **Korean refinement** — polishes already-translated Korean text into natural prose with a local LLM, keeping plot, names and speech levels intact; a passage whose suspected change could not be checked keeps the original and can be retried later
 - **Stop means stop** — stopping a job also closes the running local LLM request, so Ollama stops generating right away
 - **Safe name changes** — changing only the Korean spelling of a name updates the stored translation without re-translating, and leaves words that merely start with the name untouched
+- **Hidden marks kept** — invisible zero-width marks (copyright / distributor marks) are never sent to a model and are written back into the same paragraph of every result, partial results and refinement included
 - Sexual content involving minors is always excluded from translation
 
 Download the portable zip from [Releases](https://github.com/Yamoon-jjang/Yamoon-Novel-Translator/releases/latest). Requires Windows 10/11 (64-bit); 16 GB of VRAM is recommended for the local LLM. The interface and manual are in Korean.

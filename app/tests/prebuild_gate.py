@@ -55,7 +55,7 @@ def main():
     for token in ('windows-latest','requirements-build.txt','build_windows.bat','actions/upload-artifact@v4'):
         if token not in wf: fail(f'Windows CI workflow missing: {token}')
 
-    required=['NovelTranslator.spec','build_windows.bat','requirements-build.txt','README.txt','LICENSE.txt','THIRD_PARTY_NOTICES.txt','run.py','tests/postbuild_windows.ps1']
+    required=['NovelTranslator.spec','build_windows.bat','requirements-build.txt','constraints-build.txt','README.txt','LICENSE.txt','THIRD_PARTY_NOTICES.txt','run.py','tests/postbuild_windows.ps1']
     missing=[x for x in required if not (ROOT/x).is_file()]
     if missing: fail('missing build files: '+', '.join(missing))
 

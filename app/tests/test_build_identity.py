@@ -9,7 +9,8 @@ from novel_translator import build_identity
 
 def test_version_unchanged_and_missing_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(build_identity, '_BUILD_FILE', tmp_path / 'missing.json')
-    assert VERSION_LABEL == 'v2.6.2'
+    from novel_translator import __version__
+    assert VERSION_LABEL == 'v' + __version__   # the number itself: test_v263_version_one_place
     assert '개발본' in build_identity.build_display()
     assert '정보' in build_identity.build_detail()
 

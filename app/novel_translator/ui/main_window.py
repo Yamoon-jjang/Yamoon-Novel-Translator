@@ -12,6 +12,7 @@ from ..profiles import ProfileManager
 from ..textio import decode_txt_bytes, atomic_write_text, directory_writable, read_txt_sample, read_source_file, ENCODING_CHOICES, saved_encoding, damaged_text_reason
 from ..source_formats import document_kind, SourceTextError, NoTextError, document_sample_text
 from ..rendering import output_stem
+from ..hidden_marks import strip as strip_marks
 from ..chunking import split_paragraphs,make_chunks,mark_translatable
 from ..secure_store import SecretStore
 from ..config import DATA_DIR, CONFIG_DIR, load_json, save_json
@@ -1225,11 +1226,24 @@ class MainWindow(QMainWindow):
         self._apply_profile(target); self._update_output_label(); self._update_ready_state(); self.tabs.setCurrentWidget(self.preview_tab)
         if note: self.status.setText(note)
         self._add_recent(str(p))
+        self._note_hidden_marks(text)
         damaged=self._damaged_source_reason()
         if damaged:
             self._busy_note_hide()
             self.status.setText('원문 글자가 깨진 파일로 보입니다 · 번역 전에 원본 파일을 확인하세요')
             QMessageBox.warning(self,'원문 글자가 깨져 있음',self._damaged_message(damaged))
+
+    def _note_hidden_marks(self, text):
+        """Say once in the log that the opened book holds invisible marks (zero-width
+        characters, often a copyright/distributor mark) and that they are kept (v2.6.3)."""
+        try:
+            from ..hidden_marks import has_marks, MARK_RE
+            if not has_marks(text): return
+            found=list(MARK_RE.finditer(text))
+            self.on_worker_issue(f'보이지 않는 표식 {len(found):,}곳(문자 {sum(len(m.group(0)) for m in found):,}개) · '
+                                 '번역 요청에는 넣지 않고 번역 결과 파일의 같은 문단에 그대로 보존')
+        except Exception:
+            pass
 
     def _damaged_source_reason(self) -> str:
         """Why the open single source looks already broken ('' when it looks normal)."""
@@ -1411,7 +1425,17 @@ class MainWindow(QMainWindow):
         if self._source_doc_kind():
             try: size=self.source_path.stat().st_size   # the PDF/EPUB file, not the text taken out of it
             except OSError: pass
-        return f'단일 파일 · {name} · {self._size_text(size)} · {enc} · {len(text or ""):,}자'
+        return f'단일 파일 · {name} · {self._size_text(size)} · {enc} · {self._char_count(text):,}자(줄바꿈 제외)'
+
+    @staticmethod
+    def _char_count(text) -> int:
+        """Characters shown to the user: line breaks are not counted, and a Windows line
+        break (CR LF) is not counted as two characters, so the same text gives the same
+        number whether it was opened from a file or pasted. Invisible marks (zero-width
+        characters, hidden_marks) are not letters either (v2.6.3)."""
+        from ..hidden_marks import count as mark_count
+        t=text or ''
+        return len(t)-t.count('\n')-t.count('\r')-mark_count(t)
 
     @classmethod
     def _safe_size(cls,p:Path)->str:
@@ -1897,6 +1921,7 @@ class MainWindow(QMainWindow):
     def _begin_term_extraction(self, source: str, auto: bool) -> bool:
         """Start one extraction request. auto=True: no dialogs; translation starts when it ends."""
         self._auto_terms_fail=''
+        source=strip_marks(source)   # invisible marks never split a name (hidden_marks, v2.6.3)
         lang=self.pm.active.source_language
         common=self._common_terms_for_job() if (self._common_enabled() and not getattr(self,'_term_replace',False)) else {}
         current=self._terms()
@@ -1905,6 +1930,10 @@ class MainWindow(QMainWindow):
         cands,earlier,self._term_ordinary=self._busy_call(lambda: prepare_candidates(source,lang,common,current,term_candidates),
                                                          '인명·용어 후보를 찾는 중…')
         self._term_earlier=earlier
+        if common:
+            # Shared entries this book uses: found in it now, or already in its glossary (v2.6.3).
+            from .. import common_terms
+            common_terms.touch(lang,list(earlier)+[a for a in current if a in common],DATA_DIR)
         if not cands:
             if not auto: QMessageBox.information(self,'후보 없음','원문에서 반복되는 이름/용어 후보를 찾지 못했습니다.')
             self._auto_terms_fail='인명·용어 자동 추출 · 원문에서 여러 번 나오는 이름·용어 후보를 찾지 못해 용어집 없이 번역합니다'
@@ -2184,7 +2213,7 @@ class MainWindow(QMainWindow):
         left=len(wanted)-len(added)
         if left>0:
             self.on_worker_issue(f'공용 용어집이 가득 찼습니다({common_terms.MAX_PER_LANG:,}개) · 새 항목 {left}개를 쌓지 못함. '
-                                 '[공용 용어집]을 열어 틀렸거나 더 쓰지 않을 항목을 지워 정리하세요.')
+                                 '[공용 용어집]을 열어 [오래 안 쓴 항목 고르기]로 오래 쓰지 않은 항목부터 지워 정리하세요.')
         self._update_common_btn()
 
     def _update_common_btn(self):
@@ -2193,7 +2222,7 @@ class MainWindow(QMainWindow):
             n=len(common_terms.load(self.pm.active.source_language, DATA_DIR))
             full=n>=common_terms.MAX_PER_LANG
             self.common_btn.setText((f'공용 용어집 ({n:,} · 가득 참)' if full else f'공용 용어집 ({n:,})') if n else '공용 용어집')
-            self.common_btn.setToolTip('공용 용어집이 가득 찼습니다. 눌러서 틀렸거나 더 쓰지 않을 항목을 지워 정리하세요.' if full else '')
+            self.common_btn.setToolTip('공용 용어집이 가득 찼습니다.\n눌러서 오래 쓰지 않은 항목부터 지워 정리하세요.' if full else '')
         except Exception:
             pass
 
@@ -2206,7 +2235,7 @@ class MainWindow(QMainWindow):
         info=QLabel('책을 번역할 때마다 확정 용어 중 새것이 여기에 쌓이고, 새 책에 자동으로 쓰입니다. 틀린 항목은 고치거나 지우세요.'); info.setWordWrap(True); v.addWidget(info)
         cap=common_terms.MAX_PER_LANG
         if len(entries)>=cap:
-            full_note=QLabel(f'<b>가득 찼습니다 ({len(entries):,} / {cap:,}개).</b> 더는 새 항목이 쌓이지 않습니다. 틀렸거나 더 쓰지 않을 항목을 골라 [선택&nbsp;삭제]한 뒤 [저장]하세요.')
+            full_note=QLabel(f'<b>가득 찼습니다 ({len(entries):,} / {cap:,}개).</b> 더는 새 항목이 쌓이지 않습니다. [오래&nbsp;안&nbsp;쓴&nbsp;항목&nbsp;고르기]로 오래 쓰지 않은 항목을 골라 [선택&nbsp;삭제]한 뒤 [저장]하세요.')
             full_note.setWordWrap(True); full_note.setObjectName('commonFullNote')
             full_note.setStyleSheet('QLabel#commonFullNote{background:#fff4d6;border:1px solid #d9a400;color:#5a4300;padding:6px;}')
             v.addWidget(full_note)
@@ -2217,15 +2246,21 @@ class MainWindow(QMainWindow):
         plabel=QLabel(f'지금 확정 용어집에서 새로 쌓일 항목: <b>{len(pending)}개</b>'+(' (자리가 없어 더는 쌓이지 않음)' if not room else '')+(' — '+', '.join(f'{a}→{b}' for a,b in list(pending.items())[:6])+(' …' if len(pending)>6 else '') if pending else ('' if not room else ' (번역을 시작할 때도 자동으로 쌓입니다)')))
         plabel.setWordWrap(True); prow.addWidget(plabel,1)
         add_now=QPushButton('지금 추가'); add_now.setEnabled(bool(pending)); prow.addWidget(add_now); v.addLayout(prow)
+        def date_item(text):
+            it=QTableWidgetItem(text); it.setFlags(it.flags()&~Qt.ItemIsEditable); return it
         def do_add():
             for a,b in pending.items():
-                r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b))
+                r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b)); table.setItem(r,2,date_item('새 항목'))
             plabel.setText(f'{len(pending)}개를 목록에 넣었습니다. [저장]을 누르면 쌓입니다.'); add_now.setEnabled(False)
         add_now.clicked.connect(do_add)
         find=QLineEdit(); find.setPlaceholderText('찾기 (원문 또는 한국어)'); v.addWidget(find)
-        table=QTableWidget(0,2); table.setHorizontalHeaderLabels(['원문','한국어']); table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.verticalHeader().setVisible(False)
+        table=QTableWidget(0,3); table.setHorizontalHeaderLabels(['원문','한국어','마지막 사용']); table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.ResizeToContents)
+        table.horizontalHeaderItem(2).setToolTip('이 항목을 마지막으로 쌓거나 고치거나,\n번역한 책에서 쓴 날입니다.')
+        try: used=common_terms.last_used(lang, DATA_DIR)
+        except Exception: used={}
         for a,b in sorted(entries.items()):
-            r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b))
+            r=table.rowCount(); table.insertRow(r); table.setItem(r,0,QTableWidgetItem(a)); table.setItem(r,1,QTableWidgetItem(b)); table.setItem(r,2,date_item(used.get(a,'')))
         from ..term_extraction import is_not_name, is_ordinary_word
         from PySide6.QtGui import QBrush, QColor
         flagged=0
@@ -2247,7 +2282,24 @@ class MainWindow(QMainWindow):
                 a=table.item(r,0).text() if table.item(r,0) else ''; b=table.item(r,1).text() if table.item(r,1) else ''
                 table.setRowHidden(r, bool(t) and t not in a and t not in b)
         find.textChanged.connect(apply_filter)
-        row=QHBoxLayout(); dele=QPushButton('선택 삭제'); row.addWidget(dele); row.addStretch(1)
+        row=QHBoxLayout(); dele=QPushButton('선택 삭제'); row.addWidget(dele)
+        old_btn=QPushButton('오래 안 쓴 항목 고르기'); row.addWidget(old_btn); row.addStretch(1)
+        old_btn.setToolTip('정한 기간보다 오래 어떤 책에도 쓰이지 않은 항목을 모두 골라 줍니다.\n확인한 뒤 [선택 삭제] → [저장]을 누르면 지워집니다.')
+        def pick_old():
+            from PySide6.QtWidgets import QInputDialog
+            months,ok=QInputDialog.getInt(d,'오래 안 쓴 항목 고르기','몇 달 넘게 쓰지 않은 항목을 고를까요?',6,1,120,1)
+            if not ok: return
+            old=set(common_terms.unused_since(lang, months*30, DATA_DIR))
+            from PySide6.QtCore import QItemSelectionModel
+            table.clearSelection(); n=0; sel=table.selectionModel(); first=None
+            for r in range(table.rowCount()):
+                if table.item(r,0) and table.item(r,0).text().strip() in old and not table.isRowHidden(r):
+                    sel.select(table.model().index(r,0),QItemSelectionModel.Select|QItemSelectionModel.Rows); n+=1
+                    if first is None: first=r
+            if first is not None: table.scrollToItem(table.item(first,0))
+            plabel.setText(f'{months}달 넘게 쓰지 않은 항목 {n:,}개를 골랐습니다. 확인한 뒤 [선택 삭제] → [저장]하면 지워집니다.' if n
+                           else f'{months}달 넘게 쓰지 않은 항목이 없습니다.')
+        old_btn.clicked.connect(pick_old)
         dele.clicked.connect(lambda: [table.removeRow(r) for r in sorted({i.row() for i in table.selectedIndexes()},reverse=True)])
         bb=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); bb.button(QDialogButtonBox.Save).setText('저장'); bb.button(QDialogButtonBox.Cancel).setText('취소')
         bb.accepted.connect(d.accept); bb.rejected.connect(d.reject); row.addWidget(bb); v.addLayout(row)
@@ -2475,6 +2527,7 @@ class MainWindow(QMainWindow):
         # The characters shown to the model: the first-person narrator and family roles when the
         # book has them, then the glossary names most present in this book's dialogue (never the
         # first rows of the glossary table). Answers may name any glossary entry or role.
+        source=strip_marks(source)   # after the key: invisible marks never split a name (v2.6.3)
         roster,parse_names,roles=self._speech_roster(source,names,lang)
         samples=sample_dialogue(source,roster,cues=cues) if len(roster)>=2 else ''
         if not samples:
@@ -2735,9 +2788,9 @@ class MainWindow(QMainWindow):
         elif self.preview.document().isEmpty():
             self._paste_lang_locked=False   # an emptied window: the next text is detected again
         if self._preview_edited():
-            n=len(self.preview.toPlainText())
+            n=self._char_count(self.preview.toPlainText())
             base=f' (열린 파일 {self.source_path.name} 수정본)' if (self.input_mode=='single' and self.source_path and not self._paste_active) else ''
-            self.file_label.setText(f'원문 창의 글 · {n:,}자{base} · [번역 시작 / 계속]을 누르면 이 내용을 번역합니다')
+            self.file_label.setText(f'원문 창의 글 · {n:,}자(줄바꿈 제외){base} · [번역 시작 / 계속]을 누르면 이 내용을 번역합니다')
         self._update_ready_state()
 
     def _use_preview_as_source(self) -> bool:
@@ -2767,7 +2820,7 @@ class MainWindow(QMainWindow):
         self._preview_baseline=self.preview.toPlainText(); self._source_draft=self._preview_baseline
         self._batch_view=None; self._update_preview_hint()
         self._rechunk(); self._refresh_job_table(); self._update_output_label()
-        self.file_label.setText(f'원문 창의 글 · {len(text):,}자 · 임시 원문 {path.name} (이미 번역한 부분은 번역 기억으로 재사용)')
+        self.file_label.setText(f'원문 창의 글 · {self._char_count(text):,}자(줄바꿈 제외) · 임시 원문 {path.name} (이미 번역한 부분은 번역 기억으로 재사용)')
         if not self.paragraphs:
             QMessageBox.information(self,'번역할 내용 없음','원문 창에서 번역할 문장을 찾지 못했습니다.'); return False
         return True
@@ -2957,8 +3010,35 @@ class MainWindow(QMainWindow):
         if idx>=0 and typed==self.model.itemText(idx):return str(self.model.itemData(idx) or typed).strip()
         return typed.removeprefix('models/')
 
+    # A book this long shows "문단 나누는 중" and the wait cursor while it is split (v2.6.3).
+    SPLIT_NOTICE_CHARS = 500_000
+
+    def _split_source(self):
+        """The paragraphs of the open source. Splitting a long book takes seconds; a setting
+        that does not change the text or its language (번역 방식, 고급 설정) reuses the last
+        split (v2.6.3). Strings never change in place, so the same text object with the same
+        language is the same split; a new copy of the list is handed out each time."""
+        text=self.source_text; lang=self.pm.active.source_language
+        cached=getattr(self,'_split_cache',None)
+        if cached is not None and cached[0] is text and cached[1]==lang:
+            return list(cached[2])
+        big=len(text or '')>=self.SPLIT_NOTICE_CHARS
+        if big:
+            from PySide6.QtWidgets import QApplication
+            # Shown at once without handling any other event, so nothing can start meanwhile.
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            old=self.status.text(); self.status.setText(f'문단 나누는 중… ({len(text):,}자)'); self.status.repaint()
+        try:
+            paras=mark_translatable(split_paragraphs(text),lang)
+        finally:
+            if big:
+                QApplication.restoreOverrideCursor()
+                if self.status.text().startswith('문단 나누는 중'): self.status.setText(old)
+        self._split_cache=(text,lang,tuple(paras))
+        return list(paras)
+
     def _rechunk(self):
-        paras=mark_translatable(split_paragraphs(self.source_text),self.pm.active.source_language); self.paragraphs=paras
+        paras=self._split_source(); self.paragraphs=paras
         target,minimum,maximum,target_chars,min_chars,max_chars=self._mode_chunk_settings()
         self.chunks=make_chunks(paras,self.pm.active.source_language,target,minimum,maximum,target_chars,min_chars,max_chars)
         passed=sum(1 for p in paras if not p.translatable); protected=count_protectable_literals(self.source_text)

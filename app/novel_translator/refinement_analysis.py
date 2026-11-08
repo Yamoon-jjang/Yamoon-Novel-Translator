@@ -182,7 +182,6 @@ def build_reference(text: str, provider, model: str, key: str, *, ask, stop, eve
     from .speech_levels import (sample_dialogue, build_prompts, parse_table, split_samples, rank_names,
                                 role_entries, role_parse_names, clean_rows, ROSTER_MAX, MAX_ROWS, ANSWER_TOKENS)
     local = getattr(provider, 'name', '') == 'local'
-    started = time.monotonic()
     # 1. Names, counted over the whole book.
     cands = name_candidates(text)
     if not cands:

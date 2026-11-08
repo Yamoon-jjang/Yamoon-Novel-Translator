@@ -1,6 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
+from .. import __version__ as _APP_VERSION
+
+# Sent to every engine; follows the program version (it differed per engine up to v2.6.2).
+USER_AGENT = f'NovelTranslator/{_APP_VERSION}'
 
 class TranslationCancelled(Exception):
     """User cancellation; never an API/key/content failure."""
