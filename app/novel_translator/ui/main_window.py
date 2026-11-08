@@ -3010,8 +3010,35 @@ class MainWindow(QMainWindow):
         if idx>=0 and typed==self.model.itemText(idx):return str(self.model.itemData(idx) or typed).strip()
         return typed.removeprefix('models/')
 
+    # A book this long shows "문단 나누는 중" and the wait cursor while it is split (v2.6.3).
+    SPLIT_NOTICE_CHARS = 500_000
+
+    def _split_source(self):
+        """The paragraphs of the open source. Splitting a long book takes seconds; a setting
+        that does not change the text or its language (번역 방식, 고급 설정) reuses the last
+        split (v2.6.3). Strings never change in place, so the same text object with the same
+        language is the same split; a new copy of the list is handed out each time."""
+        text=self.source_text; lang=self.pm.active.source_language
+        cached=getattr(self,'_split_cache',None)
+        if cached is not None and cached[0] is text and cached[1]==lang:
+            return list(cached[2])
+        big=len(text or '')>=self.SPLIT_NOTICE_CHARS
+        if big:
+            from PySide6.QtWidgets import QApplication
+            # Shown at once without handling any other event, so nothing can start meanwhile.
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            old=self.status.text(); self.status.setText(f'문단 나누는 중… ({len(text):,}자)'); self.status.repaint()
+        try:
+            paras=mark_translatable(split_paragraphs(text),lang)
+        finally:
+            if big:
+                QApplication.restoreOverrideCursor()
+                if self.status.text().startswith('문단 나누는 중'): self.status.setText(old)
+        self._split_cache=(text,lang,tuple(paras))
+        return list(paras)
+
     def _rechunk(self):
-        paras=mark_translatable(split_paragraphs(self.source_text),self.pm.active.source_language); self.paragraphs=paras
+        paras=self._split_source(); self.paragraphs=paras
         target,minimum,maximum,target_chars,min_chars,max_chars=self._mode_chunk_settings()
         self.chunks=make_chunks(paras,self.pm.active.source_language,target,minimum,maximum,target_chars,min_chars,max_chars)
         passed=sum(1 for p in paras if not p.translatable); protected=count_protectable_literals(self.source_text)
