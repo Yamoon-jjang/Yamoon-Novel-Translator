@@ -190,12 +190,18 @@ Download the portable zip from [Releases](https://github.com/Yamoon-jjang/Yamoon
 
 ---
 
-## 라이선스 · 이용 안내
+## 라이선스 · 이용 안내 / License & Terms of use
 
 [MIT License](LICENSE) — 누구나 무료로 사용 · 수정 · 재배포할 수 있으며, 저작권 표시는 유지해야 합니다.
 배포본에 포함된 Qt(PySide6, LGPL-3.0), pypdf(BSD-3-Clause) 등 외부 구성 요소의 라이선스는 [THIRD_PARTY_NOTICES.txt](app/THIRD_PARTY_NOTICES.txt)에 있습니다.
 
 - 이 프로그램은 번역 **도구**입니다. 번역할 작품의 저작권과, 번역 결과를 공유 · 배포하는 데 따르는 책임은 사용자에게 있습니다.
 - 이 프로그램은 있는 그대로 제공되며, 사용으로 생긴 문제에 대해 제작자는 책임지지 않습니다. 중요한 파일은 미리 백업해 두세요.
+
+**English** — Released under the [MIT License](LICENSE): free to use, modify and redistribute, provided the copyright notice is kept.
+Licenses of the external components included in the release, such as Qt (PySide6, LGPL-3.0) and pypdf (BSD-3-Clause), are listed in [THIRD_PARTY_NOTICES.txt](app/THIRD_PARTY_NOTICES.txt).
+
+- This program is a translation **tool**. You are responsible for the copyright of the works you translate and for sharing or distributing the translated results.
+- Provided "as is", without warranty of any kind; the author is not liable for any problems arising from its use. Back up important files beforehand.
 
 <div align="center"><sub>제작 · 야문 짱 &amp; Claude (협동작)</sub></div>
