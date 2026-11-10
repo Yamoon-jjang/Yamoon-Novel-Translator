@@ -274,7 +274,7 @@ class TranslationOrchestrator:
         return '\n\n'.join(f'<P{k:06d}>\n{v}' for k, v in out.items())
 
     @staticmethod
-    def _attach_salvage(error, protected, normalized: str, expected_tags, normalized_tags, missing_tags) -> None:
+    def _attach_salvage(error, protected, normalized: str, expected_tags, normalized_tags, missing_tags, source_language: str = '') -> None:
         """A local answer that lacks exactly ONE paragraph and is otherwise correct keeps
         its other paragraphs: they are validated as if that paragraph had not been sent,
         their literals are restored, and the result rides on the error as `salvage`
@@ -289,7 +289,7 @@ class TranslationOrchestrator:
             missing = int(missing_tags[0][2:8])
             src = {k: v for k, v in parse_tagged_translation(protected.text).items() if k != missing}
             src_text = '\n\n'.join(f'<P{k:06d}>\n{v}' for k, v in src.items())
-            validate_translation(src_text, normalized)
+            validate_translation(src_text, normalized, source_language=source_language)
             sub_map = {tok: val for tok, val in protected.mapping.items() if tok in src_text}
             restored = restore_literals(normalized, sub_map)
             error.salvage = (restored, missing)
@@ -340,7 +340,7 @@ class TranslationOrchestrator:
                     # Diagnostics only (counts, never text): how the model wrote the IDs.
                     self._event('ID 형태 · 제 줄 {own_line} · 같은 줄 본문 {text_after} · 줄 중간 {mid_line} · 변형 표기 {look_alike} · 없음 {absent}'.format(**forms))
                 try:
-                    validate_translation(protected.text, normalized)
+                    validate_translation(protected.text, normalized, source_language=profile.source_language)
                 except ProviderError as verr:
                     if verr.kind == ErrorKind.FORMAT and verr.message.startswith('문단 ID 불일치'):
                         raw_tags = re.findall(r'<P[0-9]{6}>', resp.text or '')
@@ -350,7 +350,7 @@ class TranslationOrchestrator:
                         missing_tags = [tag for tag in expected_tags if tag not in normalized_tags]
                         self._event('문단 위치 진단 · 누락 ID ' + (', '.join(missing_tags[:5]) if missing_tags else '없음') + (' 외 추가 누락' if len(missing_tags) > 5 else '') + ' · 마지막 문단 누락 ' + ('예' if expected_tags and expected_tags[-1] in missing_tags else '아니오'))
                         if self.provider_id == 'local':
-                            self._attach_salvage(verr, protected, normalized, expected_tags, normalized_tags, missing_tags)
+                            self._attach_salvage(verr, protected, normalized, expected_tags, normalized_tags, missing_tags, profile.source_language)
                     # A sentence left in Chinese/Japanese inside an otherwise Korean paragraph
                     # (typical of small local models) gets the leftover repair before rejecting.
                     residue = (self.repair_script and profile.source_language in ('zh','ja')
@@ -362,7 +362,7 @@ class TranslationOrchestrator:
                     try:
                         if fixed is normalized:
                             raise verr
-                        validate_translation(protected.text, fixed)
+                        validate_translation(protected.text, fixed, source_language=profile.source_language)
                     except ProviderError:
                         self._record_usage(False)   # this answer was not usable after all
                         raise verr
@@ -383,7 +383,7 @@ class TranslationOrchestrator:
                     self._record_usage(False)
                     raise ProviderError(ErrorKind.FORMAT,str(exc)) from exc
                 try:
-                    validate_translation(chunk_text,restored,ignore_pids=skipped,check_residue=False)
+                    validate_translation(chunk_text,restored,ignore_pids=skipped,check_residue=False,source_language=profile.source_language)
                 except ProviderError:
                     self._record_usage(False)
                     raise
@@ -407,7 +407,7 @@ class TranslationOrchestrator:
                     if fixed is not normalized:
                         try:
                             candidate = restore_literals(fixed, protected.mapping)
-                            validate_translation(chunk_text, candidate, ignore_pids=skipped, check_residue=False)
+                            validate_translation(chunk_text, candidate, ignore_pids=skipped, check_residue=False, source_language=profile.source_language)
                             restored = candidate
                         except (ValueError, ProviderError):
                             pass   # keep the validated answer without the repair
