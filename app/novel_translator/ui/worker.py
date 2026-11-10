@@ -14,7 +14,7 @@ from ..chunking import split_chunk_for_retry, Chunk, Paragraph, estimate_tokens 
 from ..translation_settings import canonical_kind
 from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
-from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, LOCAL_SAFE_PARAGRAPHS
+from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, leftover_needs_fix, LOCAL_SAFE_PARAGRAPHS
 from ..rendering import render_snapshot, html_line_breaks
 from ..hidden_marks import strip as strip_marks, restore as restore_marks
 from ..protected_literals import stale_bracket_prose
@@ -584,14 +584,15 @@ class TranslationWorker(QThread):
         return (rebuilt,key_id,retries), remaining
 
     def _leftover_pids(self, chunk, text: str) -> set[int]:
-        """Translated paragraphs that still hold 2+ Chinese characters / kana (characters of the
-        confirmed glossary renderings are allowed)."""
+        """Translated paragraphs that still hold 2+ Chinese characters / kana, or one glued to a
+        Hangul syllable inside a word (v2.6.4; characters of the confirmed glossary renderings
+        are allowed)."""
         allowed=''.join(self.terms.values())
         out=parse_tagged_translation(text or '')
         bad=set()
         for para in chunk.paragraphs:
             body=out.get(para.pid)
-            if body and re.sub(r'\s+','',body)!=re.sub(r'\s+','',para.text) and len(leftover_script(body, allowed))>=2:
+            if body and re.sub(r'\s+','',body)!=re.sub(r'\s+','',para.text) and leftover_needs_fix(body, allowed):
                 bad.add(para.pid)
         return bad
 
@@ -618,7 +619,7 @@ class TranslationWorker(QThread):
             # as source inside a translated paragraph), as are paragraphs with chatter or
             # a long verbatim source run (rows saved before kept paragraphs were recorded).
             if body is None or para.pid in kept or norm(body) in {norm(para.text), norm(escape_protocol_literals(para.text))} \
-                    or meta_leak(para.text, body) or untranslated_residue(para.text, body):
+                    or meta_leak(para.text, body) or untranslated_residue(para.text, body, self.profile.source_language):
                 left.append(para)
         if not left:
             return None
@@ -670,7 +671,7 @@ class TranslationWorker(QThread):
             src=escape_protocol_literals(para.text)
             if norm(body)==norm(src):
                 continue
-            runs=self._untranslated_runs(src, body) if (para.pid in kept or untranslated_residue(para.text, body)) else []
+            runs=self._untranslated_runs(src, body) if (para.pid in kept or untranslated_residue(para.text, body, self.profile.source_language)) else []
             if runs:
                 handled.add(para.pid); kept.discard(para.pid)
                 pieces.extend((para.pid, r) for r in runs)
@@ -726,10 +727,10 @@ class TranslationWorker(QThread):
                 new=parse_tagged_translation(fixed).get(para.pid, body)
                 if len(leftover_script(new, allowed)) < before:
                     body=new; before=len(leftover_script(body, allowed))
-                if before < 2:
+                if not leftover_needs_fix(body, allowed):
                     break
             out[para.pid]=body
-            if before < 2 or (tried and len(para.text) > 400):
+            if not leftover_needs_fix(body, allowed) or (tried and len(para.text) > 400):
                 handled.add(para.pid); kept.discard(para.pid)   # fixed, or too long to re-translate for a few characters
             else:
                 kept.add(para.pid)   # short paragraph, or repair switched off / unavailable: translate it again
@@ -751,8 +752,8 @@ class TranslationWorker(QThread):
                 t=out.get(k)
                 if k in kept:
                     continue
-                if t and self._norm_para(t)!=self._norm_para(body) and not meta_leak(body,t) and not untranslated_residue(body,t) \
-                        and len(leftover_script(t, ''.join(self.terms.values())))<2 and not stale_bracket_prose(body,t):
+                if t and self._norm_para(t)!=self._norm_para(body) and not meta_leak(body,t) and not untranslated_residue(body,t,self.profile.source_language) \
+                        and not leftover_needs_fix(t, ''.join(self.terms.values())) and not stale_bracket_prose(body,t):
                     # Keyed by the paragraph's place AND its text: the same book keeps its paragraph
                     # numbers (they come from the source text alone), so a resumed or re-chunked job
                     # finds every paragraph it translated. A short line repeated elsewhere in the book
@@ -1562,7 +1563,7 @@ class TranslationWorker(QThread):
                     self._chunk_label=f'청크 {i+1}/{total}'; self._chunk_prev=prev
                     self._chunk_requests=0; self._chunk_loops=0; self._fallback_chain=[]
                     kept_now=kept_map.get(c.index, ())
-                    if kept_now or self._leftover_pids(c, partial_base) or any(untranslated_residue(p.text, b) for p in c.paragraphs
+                    if kept_now or self._leftover_pids(c, partial_base) or any(untranslated_residue(p.text, b, self.profile.source_language) for p in c.paragraphs
                                                                               for b in [parse_tagged_translation(partial_base).get(p.pid,'')] if b):
                         try:
                             partial_base, kept_now, handled, self._extra_kept = self._targeted_fixes(c, partial_base, kept_now, engines, prev)

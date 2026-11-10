@@ -214,6 +214,32 @@ def has_unsourced_omission_note(source: str, output: str) -> bool:
 _JA_RUN=re.compile(r'[ぁ-ゟ゠-ヿ一-龥々〆ー]{14,}')
 _ZH_RUN=re.compile(r'[一-龥]{14,}')
 _EN_RUN=re.compile(r"(?:[A-Za-z][A-Za-z'’-]*[ ,]+){7,}[A-Za-z][A-Za-z'’-]*")
+_CJK_SCRIPT=re.compile(r'[一-龥ぁ-ゟ゠-ヿ]')
+# A stretch of English (words, spaces, sentence punctuation) inside a translated paragraph.
+_LATIN_STRETCH=re.compile(r"[A-Za-z][A-Za-z0-9'’ ,.!?;:-]*[A-Za-z0-9.!?]")
+
+
+def english_kept_from_cjk(src_para: str, source_language: str = '') -> bool:
+    """True when English in this paragraph's Korean output can only be the source's own
+    English: a Chinese / Japanese book whose paragraph quotes an English line ("Please
+    follow us. ..." with a Chinese gloss in brackets). Such a line rightly stays in English,
+    so it is no sign of a sentence left untranslated (v2.6.4). English books, and a Chinese /
+    Japanese setting whose paragraph has no Chinese characters / kana at all (a wrong
+    source-language choice), are checked exactly as before."""
+    return source_language in ('zh', 'ja') and len(_CJK_SCRIPT.findall(src_para or '')) >= 2
+
+
+def _without_source_english(src_para: str, out_para: str, source_language: str = '') -> str:
+    """The output paragraph minus English stretches copied from its own Chinese / Japanese
+    source paragraph (see english_kept_from_cjk). English that is not in the source (an
+    answer in English instead of Korean) still counts."""
+    if not out_para or not english_kept_from_cjk(src_para, source_language):
+        return out_para
+    for m in list(_LATIN_STRETCH.finditer(out_para)):
+        run = m.group(0).strip()
+        if len(run) >= 2 and run in src_para:
+            out_para = out_para.replace(run, ' ', 1)
+    return out_para
 
 
 # Everyday English words. A comma list made of these is speech ("Oh, yes, please, more")
@@ -263,14 +289,19 @@ def _without_kept_name_lists(src_para: str, out_para: str) -> str:
     return out_para
 
 
-def untranslated_residue(src_para: str, out_para: str) -> str:
+def untranslated_residue(src_para: str, out_para: str, source_language: str = '') -> str:
     """Return a long source-script run copied verbatim into the Korean output.
 
     Models sometimes keep one explicit sentence in the original language instead of
     refusing outright. Requiring a verbatim match against this paragraph's own source
     keeps names, short sound effects and deliberately foreign words from tripping it.
+    An English line quoted in a Chinese / Japanese paragraph is the book's own English,
+    kept in English by a correct translation: not counted (english_kept_from_cjk, v2.6.4).
     """
+    skip_en = english_kept_from_cjk(src_para, source_language)
     for rx,needs_kana in ((_JA_RUN,True),(_ZH_RUN,False),(_EN_RUN,False)):
+        if rx is _EN_RUN and skip_en:
+            continue
         for m in rx.finditer(out_para or ''):
             run=m.group(0).strip(' ,')
             if needs_kana and len(re.findall(r'[ぁ-ゟ゠-ヿ]',run)) < 3:
@@ -313,7 +344,8 @@ def _codeish(text: str) -> bool:
     return bool(t) and sum(ch in '{}();=<>[]#$_|\\/*+&%@`' for ch in t) >= max(3, len(t) * 0.05)
 
 
-def validate_translation(source: str, output: str, ignore_pids=None, check_residue: bool = True) -> None:
+def validate_translation(source: str, output: str, ignore_pids=None, check_residue: bool = True,
+                         source_language: str = '') -> None:
     out = normalize_translation_output(output)
     if not out:
         raise ProviderError(ErrorKind.FORMAT, '번역 결과가 비어 있습니다.')
@@ -347,7 +379,8 @@ def validate_translation(source: str, output: str, ignore_pids=None, check_resid
     body = TAG_RE.sub('', out).strip()
     # Code / data lines that are correctly left unchanged do not count against the Korean ratio.
     src_paras = parse_tagged_translation(source); out_paras = parse_tagged_translation(out)
-    prose = '\n'.join(_without_kept_name_lists(src_paras.get(k, ''), b) for k, b in out_paras.items()
+    prose = '\n'.join(_without_source_english(src_paras.get(k, ''), _without_kept_name_lists(src_paras.get(k, ''), b), source_language)
+                      for k, b in out_paras.items()
                       if not (_codeish(b) and re.sub(r'\s+', '', b) == re.sub(r'\s+', '', src_paras.get(k, ''))))
     hangul = len(re.findall(r'[가-힣]', prose))
     letters = len(re.findall(r'[A-Za-z가-힣一-龥ぁ-ゟ゠-ヿ]', prose))
@@ -371,7 +404,7 @@ def validate_translation(source: str, output: str, ignore_pids=None, check_resid
         if len(src_text) >= 300 and len(out_para) < max(45, int(len(src_text)*0.10)):
             raise ProviderError(ErrorKind.FORMAT, f'문단 P{pid:06d} 번역이 원문에 비해 비정상적으로 짧습니다. 원문 {len(src_text):,}자 → 응답 {len(out_para):,}자 · 누락/요약 또는 거부 응답 의심')
         if check_residue:
-            residue=untranslated_residue(src_text,out_para)
+            residue=untranslated_residue(src_text,out_para,source_language)
             if residue:
                 raise ProviderError(ErrorKind.REFUSAL, f'문단 P{pid:06d}에 원문 문장이 번역되지 않고 남아 있습니다 · 일부 문장 회피 의심: {residue[:30]}…')
         if len(out_para) >= 180:
@@ -408,8 +441,31 @@ def leftover_script(body: str, allowed: str = '') -> list[str]:
     if not body or not _HANGUL_RE.search(body):
         return []
     ok = set(allowed or '')
-    body = re.sub(r'［＃[^］\r\n]{1,200}］', '', _ELONGATION_ONE.sub('', body))   # Aozora markup kept on purpose
+    body = _leftover_view(body)
     return [ch for ch in _LEFTOVER_RE.findall(body) if ch not in ok]
+
+
+def _leftover_view(body: str) -> str:
+    return re.sub(r'［＃[^］\r\n]{1,200}］', '', _ELONGATION_ONE.sub('', body))   # Aozora markup kept on purpose
+
+
+# One Chinese character / kana glued to a Hangul syllable inside a word ("철钳처럼", "윤滑",
+# "암사蛇처럼"): a word the model left half translated. A character on its own in brackets
+# (성(性), a gloss the translation writes on purpose) or between spaces is not glued.
+_GLUED_LEFTOVER = re.compile(r'(?<=[가-힣])' + _LEFTOVER_RE.pattern + r'|' + _LEFTOVER_RE.pattern + r'(?=[가-힣])')
+
+
+def leftover_needs_fix(body: str, allowed: str = '') -> bool:
+    """A translated paragraph that still has untranslated Chinese characters / kana: two or
+    more of them (as before v2.6.4), or a single one glued to a Hangul syllable inside a word
+    (v2.6.4: 2 or more only had missed "철钳처럼" · "윤滑" · "암사蛇처럼")."""
+    chars = leftover_script(body, allowed)
+    if len(chars) >= 2:
+        return True
+    if not chars:
+        return False
+    ok = set(allowed or '')
+    return any(ch not in ok for ch in _GLUED_LEFTOVER.findall(_leftover_view(body)))
 
 
 # ---------------------------------------------------------------- 문단 밀림 감지
