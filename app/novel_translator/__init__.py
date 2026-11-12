@@ -1,5 +1,5 @@
-__version__ = '2.6.4'
+__version__ = '2.6.5'
 APP_NAME = '야문 Novel Translator'
-VERSION_LABEL = 'v2.6.4'
-RELEASE_DATE = '2026년 11월 10일'
+VERSION_LABEL = 'v2.6.5'
+RELEASE_DATE = '2026년 11월 12일'
 MANUAL_FILENAME = '사용설명서.html'

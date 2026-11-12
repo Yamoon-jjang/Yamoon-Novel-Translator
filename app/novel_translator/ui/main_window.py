@@ -18,7 +18,7 @@ from ..secure_store import SecretStore
 from ..config import DATA_DIR, CONFIG_DIR, load_json, save_json
 from ..storage import Database
 from ..api_keys import normalize_key_records, normalize_secret_payload
-from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalModelsThread, ClickModelCombo
+from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalModelsThread, ClickModelCombo, NoWheelCombo
 from .advanced_dialog import AdvancedSettingsDialog
 from ..translation_settings import canonical_kind, CONTENT_LABELS, default_settings
 from .worker import TranslationWorker
@@ -532,7 +532,10 @@ class MainWindow(QMainWindow):
 
         controls=QFrame(); controls.setFrameShape(QFrame.StyledPanel); c=QGridLayout(controls)
         c.addWidget(QLabel('원문 언어'),0,0)
-        self.lang=QComboBox()
+        # 원문 언어 is chosen by clicking only: the mouse wheel passing over it while scrolling
+        # changed it unnoticed, and a language changed here is remembered as this book's choice.
+        # Switching it in code (the language of an opened file) is not affected.
+        self.lang=NoWheelCombo()
         # Per-option help is visible in the dropdown and when the box is closed.
         language_help = {
             'zh-ko': '중국어 → 한국어\n인명·호칭·성어를 고려한 소설 번역. 확정 용어집과 말투표를 적용합니다.\n용어·말투 검출 엔진은 본문 번역 엔진과 독립적으로 지정할 수 있습니다.',
