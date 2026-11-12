@@ -37,12 +37,22 @@ def detect_language_bytes(raw: bytes) -> tuple[str|None, float, str|None]:
         return None, 0.0, None
     candidates: list[tuple[str, str]]=[]
     damaged: list[tuple[str, str, float]]=[]
+    # A file opened is judged by its first 256KB, which may end in the middle of a character:
+    # a BOM file is read with the same tolerance as one without (before this, a UTF-8 BOM file
+    # over 256KB was often not judged at all and the language was not switched on opening).
     if raw.startswith(b'\xef\xbb\xbf'):
-        try: candidates.append((raw.decode('utf-8-sig'),'UTF-8 BOM'))
-        except UnicodeDecodeError: pass
+        for cut in (0,1,2,3):
+            try:
+                candidates.append((raw[:len(raw)-cut].decode('utf-8-sig'),'UTF-8 BOM')); break
+            except UnicodeDecodeError:
+                continue
     elif raw.startswith((b'\xff\xfe',b'\xfe\xff')):
-        try: candidates.append((raw.decode('utf-16'),'UTF-16'))
-        except UnicodeDecodeError: pass
+        even=raw[:len(raw)//2*2]
+        for cut in (0,2):   # half of a surrogate pair at the end
+            try:
+                candidates.append((even[:len(even)-cut].decode('utf-16'),'UTF-16')); break
+            except UnicodeDecodeError:
+                continue
     else:
         for cut in (0,1,2,3):
             try:

@@ -18,7 +18,7 @@ from ..secure_store import SecretStore
 from ..config import DATA_DIR, CONFIG_DIR, load_json, save_json
 from ..storage import Database
 from ..api_keys import normalize_key_records, normalize_secret_payload
-from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalModelsThread, ClickModelCombo
+from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalModelsThread, ClickModelCombo, NoWheelCombo
 from .advanced_dialog import AdvancedSettingsDialog
 from ..translation_settings import canonical_kind, CONTENT_LABELS, default_settings
 from .worker import TranslationWorker
@@ -532,7 +532,10 @@ class MainWindow(QMainWindow):
 
         controls=QFrame(); controls.setFrameShape(QFrame.StyledPanel); c=QGridLayout(controls)
         c.addWidget(QLabel('원문 언어'),0,0)
-        self.lang=QComboBox()
+        # 원문 언어 is chosen by clicking only: the mouse wheel passing over it while scrolling
+        # changed it unnoticed, and a language changed here is remembered as this book's choice.
+        # Switching it in code (the language of an opened file) is not affected.
+        self.lang=NoWheelCombo()
         # Per-option help is visible in the dropdown and when the box is closed.
         language_help = {
             'zh-ko': '중국어 → 한국어\n인명·호칭·성어를 고려한 소설 번역. 확정 용어집과 말투표를 적용합니다.\n용어·말투 검출 엔진은 본문 번역 엔진과 독립적으로 지정할 수 있습니다.',
@@ -573,9 +576,11 @@ class MainWindow(QMainWindow):
         model_box=QWidget(); mbl=QHBoxLayout(model_box); mbl.setContentsMargins(0,0,0,0); mbl.setSpacing(0)
         mbl.addWidget(self.model,1); mbl.addWidget(self.alt_model,1)
         c.addWidget(model_box,0,3); c.addWidget(QLabel('번역 방식'),1,0)
-        self.mode=QComboBox(); self.mode.addItem('균형 (권장)','balanced'); self.mode.addItem('품질 우선','quality'); self.mode.addItem('속도 우선','speed')
+        # 번역 방식 and TXT 인코딩 are chosen by clicking only, like 원문 언어 (v2.6.5): the wheel passing
+        # over them while scrolling changed them unnoticed (인코딩 even read the open book again).
+        self.mode=NoWheelCombo(); self.mode.addItem('균형 (권장)','balanced'); self.mode.addItem('품질 우선','quality'); self.mode.addItem('속도 우선','speed')
         self.mode.currentIndexChanged.connect(self._mode_changed); c.addWidget(self.mode,1,1); c.addWidget(QLabel('TXT 인코딩'),1,2)
-        self.encoding=QComboBox()
+        self.encoding=NoWheelCombo()
         for name,value in ENCODING_CHOICES: self.encoding.addItem(name,value)
         self.encoding.currentIndexChanged.connect(self._encoding_changed); c.addWidget(self.encoding,1,3)
         self.profile_hint=QLabel(''); self.profile_hint.setStyleSheet('color:#2563eb;font-weight:600;'); c.addWidget(self.profile_hint,0,4,2,1); c.setColumnStretch(1,1); c.setColumnStretch(3,2)
