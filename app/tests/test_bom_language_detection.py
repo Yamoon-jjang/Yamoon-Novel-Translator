@@ -80,8 +80,8 @@ def test_opening_a_big_bom_file_switches_the_language(qt_app, sandbox, monkeypat
         w.close(); w.deleteLater()
 
 
-def test_the_mouse_wheel_never_changes_the_source_language(qt_app, sandbox, monkeypatch):
-    """원문 언어 is chosen by clicking only. The wheel passing over it while scrolling changed
+def test_the_mouse_wheel_never_changes_language_mode_or_encoding(qt_app, sandbox, monkeypatch):
+    """원문 언어 · 번역 방식 · TXT 인코딩 are chosen by clicking only. The wheel passing over it while scrolling changed
     it unnoticed (and a language changed there is remembered as the book's choice); opening
     a file of another language still switches it automatically."""
     from PySide6.QtCore import QPoint, QPointF, Qt
@@ -102,6 +102,16 @@ def test_the_mouse_wheel_never_changes_the_source_language(qt_app, sandbox, monk
             QApplication.sendEvent(w.lang, ev)
         assert w.lang.currentData() == 'zh-ko' and w.pm.active.id == 'zh-ko'
         assert not w._lang_chosen, 'the wheel never records a language choice for the book'
+        # 번역 방식 and TXT 인코딩 too: clicking only (the 인코딩 box would read the open book again)
+        for box in (w.mode, w.encoding):
+            before = box.currentIndex(); box.setFocus()
+            for dy in (-120, 120, -120):
+                ev = QWheelEvent(QPointF(5, 5), QPointF(box.mapToGlobal(QPoint(5, 5))), QPoint(0, 0), QPoint(0, dy),
+                                 Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+                QApplication.sendEvent(box, ev)
+            assert box.currentIndex() == before
+        w.mode.setCurrentIndex(w.mode.findData('quality')); assert w.mode.currentData() == 'quality'
+        w.mode.setCurrentIndex(w.mode.findData('balanced'))
         w._open_txt_path(str(ja))
         assert w.lang.currentData() == 'ja-ko' and w.pm.active.id == 'ja-ko'
         w._open_txt_path(str(zh))

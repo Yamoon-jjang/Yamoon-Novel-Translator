@@ -576,9 +576,11 @@ class MainWindow(QMainWindow):
         model_box=QWidget(); mbl=QHBoxLayout(model_box); mbl.setContentsMargins(0,0,0,0); mbl.setSpacing(0)
         mbl.addWidget(self.model,1); mbl.addWidget(self.alt_model,1)
         c.addWidget(model_box,0,3); c.addWidget(QLabel('번역 방식'),1,0)
-        self.mode=QComboBox(); self.mode.addItem('균형 (권장)','balanced'); self.mode.addItem('품질 우선','quality'); self.mode.addItem('속도 우선','speed')
+        # 번역 방식 and TXT 인코딩 are chosen by clicking only, like 원문 언어 (v2.6.5): the wheel passing
+        # over them while scrolling changed them unnoticed (인코딩 even read the open book again).
+        self.mode=NoWheelCombo(); self.mode.addItem('균형 (권장)','balanced'); self.mode.addItem('품질 우선','quality'); self.mode.addItem('속도 우선','speed')
         self.mode.currentIndexChanged.connect(self._mode_changed); c.addWidget(self.mode,1,1); c.addWidget(QLabel('TXT 인코딩'),1,2)
-        self.encoding=QComboBox()
+        self.encoding=NoWheelCombo()
         for name,value in ENCODING_CHOICES: self.encoding.addItem(name,value)
         self.encoding.currentIndexChanged.connect(self._encoding_changed); c.addWidget(self.encoding,1,3)
         self.profile_hint=QLabel(''); self.profile_hint.setStyleSheet('color:#2563eb;font-weight:600;'); c.addWidget(self.profile_hint,0,4,2,1); c.setColumnStretch(1,1); c.setColumnStretch(3,2)
