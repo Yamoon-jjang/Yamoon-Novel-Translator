@@ -16,6 +16,7 @@ from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
 from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, leftover_needs_fix, LOCAL_SAFE_PARAGRAPHS
 from ..rendering import render_snapshot, html_line_breaks
+from ..punctuation import korean_punctuation
 from ..hidden_marks import strip as strip_marks, restore as restore_marks
 from ..protected_literals import stale_bracket_prose
 
@@ -1170,13 +1171,32 @@ class TranslationWorker(QThread):
             raise last
         raise ProviderError(ErrorKind.AUTH,'사용 가능한 번역 엔진이 없습니다.')
 
+    @staticmethod
+    def _punct_settings():
+        """(문장부호 정리 on/off, 따옴표 style) as the result file uses them, read when used so a
+        change made during a run applies from then on."""
+        try:
+            cfg=load_json(CONFIG_DIR/'app.json'); return bool(cfg.get('korean_punctuation',True)), str(cfg.get('quote_style') or 'straight')
+        except Exception:
+            return True, 'straight'
+
+    def _live_lines(self, paragraphs, parsed) -> str:
+        """One chunk's Korean for the live 번역 결과 (진행 중) view, made exactly like the result
+        file's paragraphs (rendering.render_snapshot): line breaks, then 문장부호 · 따옴표 정리,
+        then the source's invisible marks. Only what is shown changes, not what is stored (v2.6.6)."""
+        punct,quotes=self._punct_settings()
+        out=[]
+        for p in paragraphs:
+            if p.pid not in parsed: continue
+            body=html_line_breaks(parsed[p.pid].strip())
+            if punct: body=korean_punctuation(body,quotes)
+            out.append(restore_marks(p.text,body))
+        return '\n'.join(out)
+
     def _write_snapshot(self, db, project_id: int):
         rows=db.all_chunks(project_id)
         preferred_dir=self.output_dir or self.source_path.parent
-        try:
-            cfg=load_json(CONFIG_DIR/'app.json'); punct=bool(cfg.get('korean_punctuation',True)); quotes=str(cfg.get('quote_style') or 'straight')
-        except Exception:
-            punct=True; quotes='straight'
+        punct,quotes=self._punct_settings()
         out,failed,report,output_dir=render_snapshot(self.chunks,rows,self.source_path,preferred_dir,DATA_DIR/'exports',self.all_paragraphs,korean_punct=punct,quote_style=quotes)
         self.pending_report=report or ''   # shown in the window's 미완료 목록 tab
         from ..rendering import not_started
@@ -1531,7 +1551,7 @@ class TranslationWorker(QThread):
                     self.progress.emit(i+1, total, '저장된 번역 사용')
                     try:   # resumed job: the live view shows the saved part too (sent in one block below)
                         _parsed=parse_tagged_translation(translations[c.index])
-                        saved_view.append('\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
+                        saved_view.append(self._live_lines(c.paragraphs,_parsed))
                     except Exception:
                         pass
                     continue
@@ -1583,7 +1603,7 @@ class TranslationWorker(QThread):
                         translations[c.index]=partial_base; prev=self._roll_context(prev, partial_base, context_chars); self.final_context=prev
                         try:   # the live view shows this saved chunk too
                             _parsed=parse_tagged_translation(partial_base)
-                            saved_view.append('\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
+                            saved_view.append(self._live_lines(c.paragraphs,_parsed))
                         except Exception:
                             pass
                         self.eta_left.discard(c.index)
@@ -1689,7 +1709,7 @@ class TranslationWorker(QThread):
                 translations[c.index] = text; prev = self._roll_context(prev, context_text, context_chars); self.final_context=prev; consecutive_infra_failures = 0
                 try:   # live view: just this chunk's Korean, in paragraph order
                     _parsed=parse_tagged_translation(text)
-                    self.chunk_translated.emit(i+1, total, '\n'.join(restore_marks(p.text, html_line_breaks(_parsed[p.pid].strip())) for p in c.paragraphs if p.pid in _parsed))
+                    self.chunk_translated.emit(i+1, total, self._live_lines(c.paragraphs,_parsed))
                 except Exception:
                     pass
                 self.provider_chunks[used_provider]=self.provider_chunks.get(used_provider,0)+1
