@@ -23,6 +23,12 @@ def _isolated_local_models_cache(tmp_path, monkeypatch):
         monkeypatch.setattr(refinement_run_dialog, 'DATA_DIR', tmp_path / 'window-state')
     except Exception:
         pass
+    try:
+        # 이전 작업 이어 열기 (v2.6.8): one test's unfinished-work note never reaches another test.
+        from novel_translator import resume_work
+        monkeypatch.setattr(resume_work, 'DATA_DIR', tmp_path / 'resume')
+    except Exception:
+        pass
     yield
 
 
