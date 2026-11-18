@@ -60,8 +60,11 @@ def test_a_broken_note_file_never_breaks_the_start(tmp_path):
 def test_question_texts_say_what_will_open():
     s = resume_work.question_text({'kind': 'single', 'path': 'C:/책/소설.txt', 'percent': 63, 'auto_refine': True, 'saved_at': '2026-11-18 12:00'})
     assert '소설.txt' in s and '63%' in s and '재정비 자동 시작: 켬' in s and '[번역 시작 / 계속]' in s and '2026-11-18 12:00' in s
-    s = resume_work.question_text({'kind': 'folder', 'root': 'C:/책', 'files': 12, 'next': 4, 'relation_label': '한 작품의 연속 파일', 'auto_refine': False})
-    assert '파일 12개 중 5번째' in s and '한 작품의 연속 파일' in s and '재정비 자동 시작: 끔' in s and '끝난 파일은 건너뛰고' in s
+    now = [f'C:/책/{i}.txt' for i in range(1, 13)]
+    s = resume_work.question_text({'kind': 'folder', 'root': 'C:/책', 'current': 'C:/책/5.txt', 'relation_label': '한 작품의 연속 파일', 'auto_refine': False},
+                                  {'now': now, 'gone': []})
+    assert '파일 12개 중 5번째 파일(5.txt)까지 진행' in s and '한 작품의 연속 파일' in s and '재정비 자동 시작: 끔' in s and '끝난 파일은 건너뛰고' in s
+    assert '지워졌거나' not in s
     s = resume_work.question_text({'kind': 'folder', 'root': 'C:/책', 'selection': ['a', 'b', 'c']})
     assert '끌어다 놓은 파일 3개' in s
     s = resume_work.question_text({'kind': 'refine', 'path': 'C:/책/소설.ko.txt'})
@@ -203,6 +206,7 @@ def test_a_stopped_folder_reopens_with_its_list_and_settings_and_goes_on(qt_app,
         note = resume_work.get('translation')
         assert note['kind'] == 'folder' and Path(note['root']) == books and note['relation'] == 'continuous'
         assert note['files'] == 3 and note['next'] == 1 and note['auto_refine'] is True
+        assert Path(note['current']).name == '3.txt' and [Path(x).name for x in note['names']] == ['1.txt', '3.txt', '4.txt']
         assert note['excluded'] == [str((books/'2.txt').resolve())]
         assert [p for p, *_ in rec['refine']] and rec['refine'][0][0].name == '1.ko.txt'   # 1 was refined
     finally:
@@ -216,7 +220,7 @@ def test_a_stopped_folder_reopens_with_its_list_and_settings_and_goes_on(qt_app,
         w.auto_refine.setChecked(False)
         w.offer_previous_work()
         text = _answer(w, qt_app, '열기')
-        assert '파일 3개 중 2번째' in text and '한 작품의 연속 파일' in text
+        assert '파일 3개 중 2번째 파일(3.txt)까지 진행' in text and '한 작품의 연속 파일' in text
         assert w.input_mode == 'folder' and w.batch_root == books and w.batch_relation.currentData() == 'continuous'
         assert [p.name for p in w.batch_files] == ['1.txt', '3.txt', '4.txt']           # 2.txt still excluded
         assert w.auto_refine.isChecked() and not w._job_busy()
@@ -341,3 +345,209 @@ def test_only_the_real_program_start_asks():
     assert 'offer_previous_work' in inspect.getsource(app.main)
     assert 'offer_previous_work' not in inspect.getsource(app.gui_self_test)
     assert 'offer_previous_work' not in inspect.getsource(ui.MainWindow.__init__)
+
+
+# ---------------------------------------------------------------- files deleted or moved before the restart
+def _folder_note(books, names, current=None, **extra):
+    return {'kind': 'folder', 'root': str(books), 'names': [str(books/n) for n in names],
+            'current': str(books/current) if current else None, 'files': len(names), 'next': 0,
+            'skip_root': str((books/'한국어_번역').resolve()), 'include_sub': False, 'excluded': [],
+            'relation': 'independent', 'relation_label': '각 파일 독립 작품', 'auto_refine': True, **extra}
+
+
+def test_deleted_single_file_is_not_asked_and_says_why(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    book = _single_file(root)
+    resume_work.mark('translation', {'kind': 'single', 'path': str(book), 'percent': 40})
+    book.unlink()
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work()
+        for _ in range(20): qt_app.processEvents()
+        assert getattr(w, '_resume_box', None) is None and resume_work.get('translation') is None
+        assert '번역하던 파일이 없어졌습니다 (book.txt)' in w.error_view.toPlainText()
+        assert '묻지 않았습니다' in w.status.text()
+    finally:
+        w.close()
+
+
+def test_folder_left_but_all_its_files_deleted_is_not_asked(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt'))
+    (books/'한국어_번역').mkdir(); (books/'한국어_번역'/'1.ko.txt').write_text('번역', encoding='utf-8')
+    resume_work.mark('translation', _folder_note(books, ('1.txt', '2.txt'), '2.txt'))
+    for n in ('1.txt', '2.txt'): (books/n).unlink()
+    asks, dropped = resume_work.review()
+    assert asks == [] and dropped == ['일괄 번역하던 폴더에 원문 파일이 남아 있지 않습니다 (books)']   # results are not sources
+    assert resume_work.get('translation') is None
+
+
+def test_folder_with_some_files_deleted_asks_with_what_is_left(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt', '3.txt', '4.txt'))
+    resume_work.mark('translation', _folder_note(books, ('1.txt', '2.txt', '3.txt', '4.txt'), '3.txt'))
+    (books/'2.txt').unlink()
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work()
+        text = _answer(w, qt_app, '열기')
+        assert '파일 3개 중 2번째 파일(3.txt)까지 진행' in text and '그때 있던 파일 중 1개는 지워졌거나 옮겨져 건너뜁니다' in text
+        assert [p.name for p in w.batch_files] == ['1.txt', '3.txt', '4.txt']
+        assert '1개가 지워졌거나 옮겨져 건너뜁니다: 2.txt · 지금 3개' in w.error_view.toPlainText()
+    finally:
+        w.close()
+
+
+def test_the_file_being_worked_on_deleted_goes_on_with_the_next(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt', '3.txt'))
+    resume_work.mark('translation', _folder_note(books, ('1.txt', '2.txt', '3.txt'), '2.txt'))
+    (books/'2.txt').unlink()
+    (slot, entry, info), = resume_work.review()[0]
+    text = resume_work.question_text(entry, info)
+    assert '파일 2개 · 하던 파일(2.txt)은 없어져 그다음 파일부터' in text
+
+
+def test_a_new_file_added_to_the_folder_is_simply_in_the_list(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt'))
+    resume_work.mark('translation', _folder_note(books, ('1.txt', '2.txt'), '2.txt'))
+    (books/'3.txt').write_text('第一章\n\n新的。', encoding='utf-8')
+    (slot, entry, info), = resume_work.review()[0]
+    assert [Path(x).name for x in info['now']] == ['1.txt', '2.txt', '3.txt'] and info['gone'] == []
+    assert '파일 3개 중 2번째' in resume_work.question_text(entry, info)
+
+
+def test_excluded_and_dropped_lists_count_only_what_the_run_would_do(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt', '3.txt'))
+    note = _folder_note(books, ('1.txt', '3.txt'), excluded=[str((books/'2.txt').resolve())])
+    resume_work.mark('translation', note)
+    (slot, entry, info), = resume_work.review()[0]
+    assert [Path(x).name for x in info['now']] == ['1.txt', '3.txt']
+    resume_work.mark('translation', {**note, 'selection': [str(books/'1.txt'), str(books/'3.txt')], 'names': None, 'excluded': []})
+    (books/'3.txt').unlink()
+    (slot, entry, info), = resume_work.review()[0]
+    text = resume_work.question_text(entry, info)
+    assert '끌어다 놓은 파일 2개' in text and '파일 1개' in text and '1개는 지워졌거나' in text
+
+
+def test_deleted_while_the_question_is_open_opens_nothing(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    book = _single_file(root)
+    resume_work.mark('translation', {'kind': 'single', 'path': str(book), 'percent': 10})
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work()
+        assert _wait(qt_app, lambda: getattr(w, '_resume_box', None) is not None)
+        book.unlink()
+        _answer(w, qt_app, '열기')
+        assert w.source_path is None and resume_work.get('translation') is None
+        assert '열지 못하고 기록만 지웠습니다' in w.error_view.toPlainText()
+    finally:
+        w.close()
+
+
+def test_refinement_txt_deleted_but_original_there_offers_the_original(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    book = _single_file(root)
+    gone = root/'book.ko.txt'
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(gone), 'output': str(root/'book.ko.refined.txt'), 'origin': str(book)})
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.auto_refine.setChecked(False)
+        w.offer_previous_work()
+        text = _answer(w, qt_app, '열기')
+        assert '결과 TXT(book.ko.txt)가 없어졌습니다' in text and '원문: book.txt' in text
+        assert w.source_path == book and w.auto_refine.isChecked()          # result made again, then refined
+        assert '저장된 번역으로 결과를 다시 만들고' in w.error_view.toPlainText()
+    finally:
+        w.close()
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work(); _answer(w, qt_app, '열지 않음')
+        assert resume_work.get('refinement') is None
+    finally:
+        w.close()
+
+
+def test_refinement_txt_and_original_both_deleted_is_not_asked(tmp_path):
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(tmp_path/'a.ko.txt'), 'origin': str(tmp_path/'a.txt')})
+    asks, dropped = resume_work.review()
+    assert asks == [] and dropped == ['재정비하던 TXT가 없어졌습니다 (a.ko.txt)'] and resume_work.get('refinement') is None
+
+
+def test_refinement_by_hand_has_no_original_to_fall_back_to(tmp_path):
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(tmp_path/'a.ko.txt'), 'origin': None})
+    assert resume_work.review() == ([], ['재정비하던 TXT가 없어졌습니다 (a.ko.txt)'])
+
+
+def test_one_question_when_both_notes_point_to_the_same_original(tmp_path):
+    book = tmp_path/'a.txt'; book.write_text('x', encoding='utf-8')
+    resume_work.mark('translation', {'kind': 'single', 'path': str(book)})
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(tmp_path/'a.ko.txt'), 'origin': str(book)})
+    asks, dropped = resume_work.review()
+    assert [(s, e['kind']) for s, e, _ in asks] == [('translation', 'single')] and dropped == []
+
+
+def test_auto_refinement_after_a_single_file_records_its_original(qt_app, monkeypatch, tmp_path):
+    from test_v26_shutdown_prompt import _Host, _refine_dialog, _done
+    out = tmp_path/'소설.ko.refined.txt'
+    host = _Host(False)
+    host.input_mode = 'single'; host.source_path = tmp_path/'소설.txt'; host._paste_active = False
+    d, _awake = _refine_dialog(monkeypatch, tmp_path, host, _done(out, 'stopped'))
+    try:
+        d._auto_source = d.source                     # as when the translation started it
+        d.show(); d._start()
+        assert _wait(qt_app, lambda: d.worker is None)
+        assert resume_work.get('refinement')['origin'] == str(tmp_path/'소설.txt')
+    finally:
+        d.close()
+    d, _awake = _refine_dialog(monkeypatch, tmp_path, host, _done(out, 'stopped'))
+    try:
+        d.show(); d._start()                          # started by hand: no original to fall back to
+        assert _wait(qt_app, lambda: d.worker is None)
+        assert resume_work.get('refinement')['origin'] is None
+    finally:
+        d.close()
+
+
+def test_a_second_work_for_the_main_window_never_replaces_the_one_just_opened(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt', '2.txt'))
+    book = root/'소설.txt'; book.write_text('第一章\n\n他看着。', encoding='utf-8')
+    resume_work.mark('translation', _folder_note(books, ('1.txt', '2.txt'), '2.txt'))
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(root/'소설.ko.txt'), 'origin': str(book)})
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work()
+        _answer(w, qt_app, '열기')
+        for _ in range(20): qt_app.processEvents()
+        assert getattr(w, '_resume_box', None) is None                     # not asked now
+        assert w.input_mode == 'folder' and w.batch_root == books         # the folder stays open
+        assert '소설.txt 도 끝나지 않았습니다' in w.error_view.toPlainText()
+        assert resume_work.get('refinement')                               # asked at the next start
+    finally:
+        w.close()
+    w = _local_window(monkeypatch, rec)
+    try:
+        resume_work.clear('translation')
+        w.offer_previous_work()
+        assert '결과 TXT(소설.ko.txt)가 없어졌습니다' in _answer(w, qt_app, '열지 않음')
+    finally:
+        w.close()
+
+
+def test_declining_the_first_still_asks_the_second(qt_app, env, monkeypatch):
+    root, cfg, rec = env
+    books = _folder(root, ('1.txt',))
+    book = root/'소설.txt'; book.write_text('第一章', encoding='utf-8')
+    resume_work.mark('translation', _folder_note(books, ('1.txt',)))
+    resume_work.mark('refinement', {'kind': 'refine', 'path': str(root/'소설.ko.txt'), 'origin': str(book)})
+    w = _local_window(monkeypatch, rec)
+    try:
+        w.offer_previous_work()
+        _answer(w, qt_app, '열지 않음')
+        assert '원문: 소설.txt' in _answer(w, qt_app, '열기') and w.source_path == book
+    finally:
+        w.close()
