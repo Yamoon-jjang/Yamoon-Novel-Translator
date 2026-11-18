@@ -5,6 +5,7 @@ import re
 import time
 from collections import deque
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
+from .. import resume_work
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel,
                                QPushButton, QFileDialog, QProgressBar, QMessageBox, QPlainTextEdit,
                                QSizePolicy, QCheckBox, QApplication, QTabWidget, QTableWidget,
@@ -194,7 +195,8 @@ class RefinementWorker(QThread):
 
 
 class RefinementRunDialog(QDialog):
-    def __init__(self, host, auto_source=None, auto_note: str = '', batch: bool = False):
+    def __init__(self, host, auto_source=None, auto_note: str = '', batch: bool = False,
+                 preset_source=None, preset_output=None):
         super().__init__(host)
         self.host=host
         # batch: one file of a folder run. The window closes by itself when the run ends and
@@ -204,6 +206,9 @@ class RefinementRunDialog(QDialog):
         self._batch_auto=bool(batch and auto_source)
         self.auto_outcome=('', '')
         self._out_override=Path(auto_source).parent if auto_source else None
+        if preset_output and not auto_source:
+            # 이전 작업 이어 열기 (v2.6.8): the result goes where the unfinished run was writing it.
+            self._out_override=Path(str(preset_output)).parent
         # 번역이 끝나면 재정비 자동 시작 (v2.6.7): the finished translation is selected and the run
         # starts by itself, with no question windows (a choice that could lose earlier work
         # skips the run instead, and says why in the window and its log).
@@ -358,6 +363,9 @@ class RefinementRunDialog(QDialog):
             if korean_share(candidate) >= KOREAN_MIN_SHARE:
                 self._set_source(candidate)
                 break
+        if preset_source and not auto_source and Path(str(preset_source)).is_file():
+            # 이전 작업 이어 열기 (v2.6.8): the TXT of the unfinished run is selected; [재정비 시작] goes on.
+            self._set_source(Path(str(preset_source)))
         if auto_source:
             self._auto_note=str(auto_note or '')
             self._set_source(Path(auto_source))
@@ -693,6 +701,9 @@ class RefinementRunDialog(QDialog):
         self._run_end=('failed','작업이 결과 없이 끝났습니다')
         # A refinement runs as long as a translation: the PC must not go to sleep meanwhile.
         set_translation_awake(_sleep_prevention_wanted())
+        if not self._batch_auto:
+            # 이전 작업 이어 열기 (v2.6.8); a folder run's refinements belong to the folder's note.
+            resume_work.mark('refinement',{'kind':'refine','path':str(self.source),'output':str(self.output)})
         self.worker.start()
 
     def _confirm_long_run(self, model) -> bool:
@@ -857,6 +868,8 @@ class RefinementRunDialog(QDialog):
 
     def _finished(self,result):
         self._run_end=(str(result.get('status') or ''), '')
+        if result['status']=='completed' and not self._batch_auto:
+            resume_work.clear('refinement',{'path':str(self.source)})
         if result['status']=='completed':
             changed=result.get('changed',result["done"])
             identical=result.get('identical',0)

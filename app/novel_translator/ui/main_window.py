@@ -24,6 +24,7 @@ from ..translation_settings import canonical_kind, CONTENT_LABELS, default_setti
 from .worker import TranslationWorker
 from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES
 from ..workspace import WorkspaceStore
+from .. import resume_work
 from ..language_options import option_spec
 from ..language_detection import detect_language, detect_language_bytes
 from ..power import set_translation_awake, request_system_shutdown
@@ -1057,6 +1058,7 @@ class MainWindow(QMainWindow):
             self.status.setText(f'재정비 자동 시작 설정 저장 실패 · 이번 실행에만 적용 ({type(exc).__name__})')
         if self._job_busy():
             self.on_worker_issue('재정비 자동 시작 · '+('켬 · 번역이 끝나면 재정비를 바로 시작합니다' if on else '끔'))
+            resume_work.update('translation',{},auto_refine=bool(on))   # the running job's note follows the choice
 
     def _auto_refine_wanted(self) -> bool:
         box=getattr(self,'auto_refine',None)
@@ -1098,6 +1100,130 @@ class MainWindow(QMainWindow):
             show_timed_information(self,title,text)
         else:
             QMessageBox.information(self,title,text)
+
+    # ------------------------------------------------------------ 이전 작업 이어 열기 (v2.6.8)
+    # A job that starts leaves a note (resume_work); a job that reaches its end removes it.
+    # At the next start (app.main) the user is asked once per note whether to open that work
+    # again with the settings it ran with. Opening starts nothing: [번역 시작 / 계속] /
+    # [재정비 시작] go on from the saved records, exactly as after opening it by hand.
+
+    def _unfinished_entry(self):
+        """The note for the job about to start, or None (pasted / edited text in the
+        program's own folder is not reopened)."""
+        box=getattr(self,'auto_refine',None)
+        refine=bool(box is not None and box.isChecked())
+        profile=self.pm.active.id
+        if self.input_mode=='single':
+            if getattr(self,'_paste_active',False) or not self.source_path: return None
+            return {'kind':'single','path':str(self.source_path),'profile':profile,'auto_refine':refine,'percent':-1}
+        if self.input_mode=='folder' and self.batch_root:
+            return {'kind':'folder','root':str(self.batch_root),'profile':profile,'auto_refine':refine,
+                    'selection':[str(p) for p in self.batch_selection] if self.batch_selection else None,
+                    'excluded':sorted(self.batch_excluded),'include_sub':bool(self.include_sub.isChecked()),
+                    'relation':self.batch_relation.currentData(),'relation_label':self.batch_relation.currentText(),
+                    'memory_common':bool(self.batch_memory_common.isChecked()),
+                    'files':len(self.batch_files),'next':0}
+        return None
+
+    def _mark_unfinished(self):
+        try:
+            entry=self._unfinished_entry()
+            if entry is None: return
+            old=resume_work.get('translation') or {}
+            same=(old.get('kind')==entry['kind'] and resume_work._same(old.get('path') or old.get('root'),entry.get('path') or entry.get('root')))
+            if same and entry['kind']=='single':
+                entry['percent']=old.get('percent',-1)      # a resumed file keeps its last known progress
+            self._resume_percent=None                       # the next progress of this job is written
+            resume_work.mark('translation',entry)
+        except Exception:
+            pass
+
+    def _note_unfinished_folder_progress(self):
+        if self.input_mode=='folder' and self.batch_root:
+            resume_work.update('translation',{'kind':'folder','root':str(self.batch_root)},
+                               next=int(self.batch_index),files=len(self.batch_files))
+
+    def _clear_unfinished(self):
+        path=self.source_path if self.input_mode=='single' else self.batch_root if self.input_mode=='folder' else None
+        if path is None: return
+        key='path' if self.input_mode=='single' else 'root'
+        resume_work.clear('translation',{'kind':self.input_mode,key:str(path)})
+
+    def offer_previous_work(self):
+        """Program start: one question for each job that did not reach its end."""
+        if self._job_busy() or self._extracting(): return
+        self._resume_queue=resume_work.pending()
+        self._ask_next_previous_work()
+
+    def _ask_next_previous_work(self):
+        queue=getattr(self,'_resume_queue',None) or []
+        if not queue or self._job_busy() or self._extracting(): return
+        slot,entry=queue.pop(0)
+        box=QMessageBox(QMessageBox.Question,'이전 작업 이어 하기',resume_work.question_text(entry),parent=self)
+        opened=box.addButton('열기',QMessageBox.AcceptRole)
+        box.addButton('열지 않음',QMessageBox.RejectRole)
+        box.setDefaultButton(opened)
+        self._resume_box=box
+        # Not modal-blocking (open, not exec): the window works normally behind it.
+        box.finished.connect(lambda _r=0,b=box,s=slot,e=entry,o=opened: self._previous_work_answered(b,s,e,o))
+        box.open()
+
+    def _previous_work_answered(self, box, slot, entry, opened):
+        clicked=box.clickedButton()
+        self._resume_box=None
+        try: box.deleteLater()
+        except Exception: pass
+        if clicked is opened:
+            try:
+                self._reopen_previous_work(slot,entry)
+            except Exception as e:
+                self.status.setText(f'이전 작업을 열지 못했습니다 · {type(e).__name__}: {e}')
+        elif clicked is not None:
+            # "열지 않음": the note goes; the saved records stay (opening it by hand still goes on).
+            key='root' if entry.get('kind')=='folder' else 'path'
+            resume_work.clear(slot,{key:entry.get(key)})
+        # Closed with the window's X: the note stays and is asked about next time.
+        QTimer.singleShot(0,self._ask_next_previous_work)
+
+    def _reopen_previous_work(self, slot, entry):
+        kind=entry.get('kind')
+        if kind=='refine':
+            from .refinement_run_dialog import RefinementRunDialog
+            RefinementRunDialog(self,preset_source=entry.get('path'),preset_output=entry.get('output')).exec()
+            return
+        if kind=='single':
+            self._open_txt_path(str(entry['path']))
+            if self.input_mode!='single' or not self.source_path or not resume_work._same(str(self.source_path),str(entry['path'])):
+                return
+            self._restore_auto_refine(entry)
+            self._log_line('이전 작업 열기 · 끝나지 않은 번역을 그때 설정으로 열었습니다 · [번역 시작 / 계속]을 누르면 번역한 곳부터 이어집니다')
+            self.status.setText('이전 작업을 열었습니다 · [번역 시작 / 계속]을 누르면 이어서 번역합니다')
+            return
+        if kind=='folder':
+            pid=entry.get('profile')
+            idx=self.lang.findData(pid) if pid else -1
+            if idx>=0 and idx!=self.lang.currentIndex():
+                self.lang.setCurrentIndex(idx)          # the folder's language, before its settings are read
+            sel=[p for p in (entry.get('selection') or []) if Path(str(p)).is_file()]
+            self._open_folder_path(str(entry['root']),selection=sel or None)
+            # The run's own folder settings (what the folder's saved settings may not have yet).
+            if not sel:
+                self.include_sub.blockSignals(True); self.include_sub.setChecked(bool(entry.get('include_sub'))); self.include_sub.blockSignals(False)
+            ridx=self.batch_relation.findData(entry.get('relation'))
+            if ridx>=0: self.batch_relation.setCurrentIndex(ridx)
+            self.batch_memory_common.setChecked(bool(entry.get('memory_common')))
+            self._update_batch_memory_mode()
+            self.batch_excluded={str(x) for x in (entry.get('excluded') or [])}
+            self._scan_batch_files(); self._save_workspace(); self._update_ready_state()
+            self._restore_auto_refine(entry)
+            self._log_line('이전 작업 열기 · 끝나지 않은 일괄 번역을 그때 목록과 설정으로 열었습니다 · [번역 시작 / 계속]을 누르면 '
+                           '끝난 파일은 건너뛰고 하던 파일(번역 · 재정비)부터 이어집니다')
+            self.status.setText('이전 일괄 작업을 열었습니다 · [번역 시작 / 계속]을 누르면 이어서 진행합니다')
+
+    def _restore_auto_refine(self, entry):
+        box=getattr(self,'auto_refine',None)
+        if box is not None and 'auto_refine' in entry and box.isChecked()!=bool(entry['auto_refine']):
+            box.setChecked(bool(entry['auto_refine']))     # saved like a click (app.json)
 
     def open_api(self, first_provider=None):
         raw=(self.secrets.get('gemini') or {}).get('keys',[]); records=normalize_key_records(raw)
@@ -3937,6 +4063,7 @@ class MainWindow(QMainWindow):
         bad_terms=self._suspicious_terms()
         if bad_terms:
             self.on_worker_issue(f'확정 용어집 확인 필요 {len(bad_terms)}개 (한자가 남은 표기·일반 단어): '+', '.join(f'{a}→{b}' for _,a,b in bad_terms[:8])+(' …' if len(bad_terms)>8 else '')+' · 확정 용어집 탭에 빨갛게 표시')
+        self._mark_unfinished()
         if self.input_mode=='single':
             self._stop_batch=False; self.batch_index=0; self._start_one_worker(self.source_path,self.source_bytes,self.source_text,self.chunks,keys,model)
         elif self.input_mode=='folder':
@@ -3966,6 +4093,7 @@ class MainWindow(QMainWindow):
         if self.batch_index>=len(self.batch_files):
             self._finish_batch_summary(); return
         p=self.batch_files[self.batch_index]
+        self._note_unfinished_folder_progress()
         try:
             text,enc,raw=self._read_source(p); paras=mark_translatable(split_paragraphs(text),self.pm.active.source_language); target,minimum,maximum,target_chars,min_chars,max_chars=self._mode_chunk_settings(); chunks=make_chunks(paras,self.pm.active.source_language,target,minimum,maximum,target_chars,min_chars,max_chars)
             if not paras: raise ValueError('처리할 본문이 없습니다.')
@@ -4667,6 +4795,8 @@ class MainWindow(QMainWindow):
             rounds=self._retry_rounds; self._retry_rounds=0; self._retry_prev_remaining=None
             self.on_worker_issue(f'작업 끝 · 걸린 시간 {took}'+(f' (본문 번역 + 미번역 재시도 {rounds}회 포함)' if rounds else ''))
             if self._completion_message:
+                # The translation reached its end; a refinement that starts now keeps its own note.
+                self._clear_unfinished()
                 msg=self._completion_message+f'\n걸린 시간: {took}'; self._completion_message=''
                 self._last_worker_status=''
                 if self._auto_refine_wanted():
@@ -4844,6 +4974,7 @@ class MainWindow(QMainWindow):
         self.on_worker_issue('자동 재개를 취소했습니다.')
 
     def _finish_batch_summary(self):
+        self._clear_unfinished()      # the whole folder (and its refinements) reached its end
         outroot=self._default_output_dir() or (DATA_DIR/'exports'); outroot.mkdir(parents=True,exist_ok=True)
         lines=['야문 Novel Translator 폴더 번역 요약',f'원본 폴더: {self.batch_root}',f'결과 폴더: {outroot}',f'원문 언어: {self.pm.active.display_name}',f'폴더 파일 관계: {self.batch_relation.currentText()}','']
         completed=partial=failed=0
@@ -5082,7 +5213,11 @@ class MainWindow(QMainWindow):
     def _note_recent_progress(self, done: int, total: int) -> None:
         """The open book's translation progress (single file only; written when the percent changes)."""
         if self.input_mode!='single' or getattr(self,'_paste_active',False) or not self.source_path or not total: return
-        self._set_recent_progress(str(self.source_path),max(0,min(100,int(100*done/total))))
+        percent=max(0,min(100,int(100*done/total)))
+        self._set_recent_progress(str(self.source_path),percent)
+        if getattr(self,'_resume_percent',None)!=percent:
+            self._resume_percent=percent
+            resume_work.update('translation',{'kind':'single','path':str(self.source_path)},percent=percent)
 
     def _build_recent_menu(self):
         from PySide6.QtWidgets import QMenu

@@ -119,4 +119,8 @@ def main():
     from .ui.main_window import MainWindow
     w=MainWindow(); w.restore_window_state(); w.show()
     single_instance.remember_window(DATA_DIR, int(w.winId()))
+    # 이전 작업 이어 열기 (v2.6.8): asked once the window is on screen (only in the real program,
+    # never in the self-tests, which build the window without this start).
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(700, w.offer_previous_work)
     return app.exec()
