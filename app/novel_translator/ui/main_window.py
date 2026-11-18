@@ -1122,6 +1122,8 @@ class MainWindow(QMainWindow):
                     'excluded':sorted(self.batch_excluded),'include_sub':bool(self.include_sub.isChecked()),
                     'relation':self.batch_relation.currentData(),'relation_label':self.batch_relation.currentText(),
                     'memory_common':bool(self.batch_memory_common.isChecked()),
+                    'skip_root':str(self._batch_skip_root(self.batch_root)),
+                    'names':[str(p) for p in self.batch_files],'current':None,
                     'files':len(self.batch_files),'next':0}
         return None
 
@@ -1140,8 +1142,9 @@ class MainWindow(QMainWindow):
 
     def _note_unfinished_folder_progress(self):
         if self.input_mode=='folder' and self.batch_root:
+            cur=self.batch_files[self.batch_index] if 0<=self.batch_index<len(self.batch_files) else None
             resume_work.update('translation',{'kind':'folder','root':str(self.batch_root)},
-                               next=int(self.batch_index),files=len(self.batch_files))
+                               next=int(self.batch_index),files=len(self.batch_files),current=str(cur) if cur else None)
 
     def _clear_unfinished(self):
         path=self.source_path if self.input_mode=='single' else self.batch_root if self.input_mode=='folder' else None
@@ -1152,14 +1155,25 @@ class MainWindow(QMainWindow):
     def offer_previous_work(self):
         """Program start: one question for each job that did not reach its end."""
         if self._job_busy() or self._extracting(): return
-        self._resume_queue=resume_work.pending()
+        asks,dropped=resume_work.review()
+        if dropped:
+            # Nothing left to open (files deleted or moved): no question, one line to say why.
+            for why in dropped: self._log_line('이전 작업 · '+why+' · 열 것이 없어 묻지 않고 기록만 지웠습니다')
+            self.status.setText('이전 작업 · '+dropped[0]+' · 열 것이 없어 묻지 않았습니다')
+        self._resume_queue=asks
+        self._resume_opened_main=False
         self._ask_next_previous_work()
 
     def _ask_next_previous_work(self):
         queue=getattr(self,'_resume_queue',None) or []
         if not queue or self._job_busy() or self._extracting(): return
-        slot,entry=queue.pop(0)
-        box=QMessageBox(QMessageBox.Question,'이전 작업 이어 하기',resume_work.question_text(entry),parent=self)
+        slot,entry,info=queue.pop(0)
+        if entry.get('kind') in ('single','folder') and getattr(self,'_resume_opened_main',False):
+            # The main window already holds the work just opened; a second one would replace it.
+            # Its note stays and is asked about at the next start.
+            self._log_line('이전 작업 · '+Path(str(entry.get('path') or entry.get('root'))).name+' 도 끝나지 않았습니다 · 지금 연 작업을 마친 뒤 다음에 켤 때 다시 묻습니다')
+            QTimer.singleShot(0,self._ask_next_previous_work); return
+        box=QMessageBox(QMessageBox.Question,'이전 작업 이어 하기',resume_work.question_text(entry,info),parent=self)
         opened=box.addButton('열기',QMessageBox.AcceptRole)
         box.addButton('열지 않음',QMessageBox.RejectRole)
         box.setDefaultButton(opened)
@@ -1174,18 +1188,27 @@ class MainWindow(QMainWindow):
         try: box.deleteLater()
         except Exception: pass
         if clicked is opened:
-            try:
-                self._reopen_previous_work(slot,entry)
-            except Exception as e:
-                self.status.setText(f'이전 작업을 열지 못했습니다 · {type(e).__name__}: {e}')
+            # Looked at again: files may have gone while the question was open.
+            verdict,entry,info=resume_work.inspect(entry,resume_work.get('translation'))
+            if verdict!='ask':
+                resume_work.clear(slot)
+                why=str(info or '이전 작업의 파일이 없어졌습니다')
+                self._log_line('이전 작업 · '+why+' · 열지 못하고 기록만 지웠습니다')
+                self.status.setText('이전 작업 · '+why)
+            else:
+                try:
+                    if entry.get('kind') in ('single','folder'): self._resume_opened_main=True
+                    self._reopen_previous_work(slot,entry,info)
+                except Exception as e:
+                    self.status.setText(f'이전 작업을 열지 못했습니다 · {type(e).__name__}: {e}')
         elif clicked is not None:
             # "열지 않음": the note goes; the saved records stay (opening it by hand still goes on).
-            key='root' if entry.get('kind')=='folder' else 'path'
-            resume_work.clear(slot,{key:entry.get(key)})
+            resume_work.clear(slot)
         # Closed with the window's X: the note stays and is asked about next time.
         QTimer.singleShot(0,self._ask_next_previous_work)
 
-    def _reopen_previous_work(self, slot, entry):
+    def _reopen_previous_work(self, slot, entry, info=None):
+        info=info or {}
         kind=entry.get('kind')
         if kind=='refine':
             from .refinement_run_dialog import RefinementRunDialog
@@ -1196,6 +1219,11 @@ class MainWindow(QMainWindow):
             if self.input_mode!='single' or not self.source_path or not resume_work._same(str(self.source_path),str(entry['path'])):
                 return
             self._restore_auto_refine(entry)
+            if entry.get('result_gone'):
+                self._log_line(f"이전 작업 열기 · 재정비하던 결과 TXT({entry['result_gone']})가 없어 원문을 열었습니다 · [번역 시작 / 계속]을 누르면 "
+                               '저장된 번역으로 결과를 다시 만들고 재정비 자동 시작으로 재정비를 이어 합니다')
+                self.status.setText('원문을 열었습니다 · [번역 시작 / 계속]을 누르면 결과를 다시 만들고 재정비를 이어 합니다')
+                return
             self._log_line('이전 작업 열기 · 끝나지 않은 번역을 그때 설정으로 열었습니다 · [번역 시작 / 계속]을 누르면 번역한 곳부터 이어집니다')
             self.status.setText('이전 작업을 열었습니다 · [번역 시작 / 계속]을 누르면 이어서 번역합니다')
             return
@@ -1216,6 +1244,10 @@ class MainWindow(QMainWindow):
             self.batch_excluded={str(x) for x in (entry.get('excluded') or [])}
             self._scan_batch_files(); self._save_workspace(); self._update_ready_state()
             self._restore_auto_refine(entry)
+            gone=info.get('gone') or []
+            if gone:
+                names=', '.join(Path(str(x)).name for x in gone[:5])+(f' 외 {len(gone)-5:,}개' if len(gone)>5 else '')
+                self._log_line(f'이전 작업 열기 · 그때 있던 파일 중 {len(gone):,}개가 지워졌거나 옮겨져 건너뜁니다: {names} · 지금 {len(self.batch_files):,}개')
             self._log_line('이전 작업 열기 · 끝나지 않은 일괄 번역을 그때 목록과 설정으로 열었습니다 · [번역 시작 / 계속]을 누르면 '
                            '끝난 파일은 건너뛰고 하던 파일(번역 · 재정비)부터 이어집니다')
             self.status.setText('이전 일괄 작업을 열었습니다 · [번역 시작 / 계속]을 누르면 이어서 진행합니다')
@@ -1581,11 +1613,9 @@ class MainWindow(QMainWindow):
     def _rescan_folder_if_needed(self):
         if self.input_mode=='folder' and self.batch_root and not (self.worker and self.worker.isRunning()): self._scan_batch_files(); self._save_workspace(); self._update_ready_state()
 
-    def _scan_batch_files(self):
-        root=self.batch_root
-        if not root:return
-        default_out=(root/'한국어_번역').resolve()
-        excluded=default_out
+    def _batch_skip_root(self, root: Path) -> Path:
+        """The result folder inside the batch folder that the source list leaves out."""
+        excluded=(root/'한국어_번역').resolve()
         if self.custom_output_dir:
             try:
                 candidate=self.custom_output_dir.resolve()
@@ -1593,6 +1623,12 @@ class MainWindow(QMainWindow):
                     excluded=candidate
             except Exception:
                 pass
+        return excluded
+
+    def _scan_batch_files(self):
+        root=self.batch_root
+        if not root:return
+        excluded=self._batch_skip_root(root)
         if self.batch_selection:
             discovered=sorted((p for p in self.batch_selection if p.is_file()), key=lambda p: str(p).lower())
         else:

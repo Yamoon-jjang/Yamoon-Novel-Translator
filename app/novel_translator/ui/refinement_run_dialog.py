@@ -204,6 +204,7 @@ class RefinementRunDialog(QDialog):
         # auto_outcome tells the folder run how it ended ('completed', 'skipped', 'failed',
         # 'stopped' — a user stop ends the folder run too).
         self._batch_auto=bool(batch and auto_source)
+        self._auto_source=Path(auto_source) if auto_source else None
         self.auto_outcome=('', '')
         self._out_override=Path(auto_source).parent if auto_source else None
         if preset_output and not auto_source:
@@ -703,7 +704,16 @@ class RefinementRunDialog(QDialog):
         set_translation_awake(_sleep_prevention_wanted())
         if not self._batch_auto:
             # 이전 작업 이어 열기 (v2.6.8); a folder run's refinements belong to the folder's note.
-            resume_work.mark('refinement',{'kind':'refine','path':str(self.source),'output':str(self.output)})
+            # origin: the original a single-file translation made this TXT from, so a deleted
+            # result can still be made again from the saved translation (v2.6.8).
+            host=self.host
+            origin=None
+            if self._auto_source is not None and self.source is not None and self._auto_source==self.source \
+                    and getattr(host,'input_mode','')=='single' and getattr(host,'source_path',None) \
+                    and not getattr(host,'_paste_active',False):
+                origin=str(host.source_path)
+            resume_work.mark('refinement',{'kind':'refine','path':str(self.source),'output':str(self.output),'origin':origin,
+                                           'profile':getattr(getattr(getattr(host,'pm',None),'active',None),'id',None)})
         self.worker.start()
 
     def _confirm_long_run(self, model) -> bool:

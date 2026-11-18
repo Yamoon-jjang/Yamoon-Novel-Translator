@@ -95,41 +95,127 @@ def _same(a, b) -> bool:
     return a == b
 
 
-def still_there(entry: dict) -> bool:
-    """The file or folder of the note can still be opened."""
+def _is_file(p) -> bool:
     try:
-        kind = entry.get('kind')
-        if kind in ('single', 'refine'):
-            return Path(str(entry.get('path') or '')).is_file()
+        return bool(p) and Path(str(p)).is_file()
+    except Exception:
+        return False
+
+
+def _folder_files_now(entry: dict) -> list[str]:
+    """The folder's source files as the run would list them now (same rules as the window:
+    the dropped list, or the folder with its 하위 폴더 / result-folder rule, minus 제외)."""
+    sel = entry.get('selection')
+    if sel:
+        now = [str(p) for p in sel if _is_file(p)]
+    else:
+        from .batch import discover_txt_files
+        skip = entry.get('skip_root')
+        try:
+            now = [str(p) for p in discover_txt_files(Path(str(entry.get('root'))), bool(entry.get('include_sub')),
+                                                      Path(str(skip)) if skip else None)]
+        except Exception:
+            now = []
+    excluded = set(entry.get('excluded') or [])
+    if excluded:
+        def key(x):
+            try:
+                return str(Path(x).resolve())
+            except Exception:
+                return x
+        now = [x for x in now if key(x) not in excluded]
+    return now
+
+
+def inspect(entry: dict, translation: dict | None = None):
+    """What the note can still open, decided once for every case:
+      ('ask', entry, info)  — ask about it (entry may be a converted one, see refine);
+      ('drop', entry, why)  — nothing left to open: the note goes without a question.
+    info carries what the question and the opening report (files now / gone / current file)."""
+    kind = entry.get('kind')
+    try:
+        if kind == 'single':
+            if _is_file(entry.get('path')):
+                return 'ask', entry, {}
+            return 'drop', entry, f"번역하던 파일이 없어졌습니다 ({Path(str(entry.get('path'))).name})"
+        if kind == 'refine':
+            if _is_file(entry.get('path')):
+                return 'ask', entry, {}
+            origin = entry.get('origin')
+            if _is_file(origin):
+                # The translation result it was refining is gone but the original is there:
+                # opening the original and [번역 시작 / 계속] makes the result again from the
+                # saved translation (no new translating), and 재정비 자동 시작 goes on with it.
+                t = translation or {}
+                if t.get('kind') == 'single' and _same(t.get('path'), origin):
+                    return 'drop', entry, ''      # the translation note already opens that file
+                return 'ask', {'kind': 'single', 'path': str(origin), 'profile': entry.get('profile'),
+                               'auto_refine': True, 'percent': 100, 'result_gone': Path(str(entry.get('path'))).name}, {}
+            return 'drop', entry, f"재정비하던 TXT가 없어졌습니다 ({Path(str(entry.get('path'))).name})"
         if kind == 'folder':
-            if not Path(str(entry.get('root') or '')).is_dir():
-                return False
-            sel = entry.get('selection')
-            return not sel or any(Path(str(p)).is_file() for p in sel)
+            root = Path(str(entry.get('root') or ''))
+            if not root.is_dir():
+                return 'drop', entry, f'일괄 번역하던 폴더가 없어졌습니다 ({root.name or root})'
+            now = _folder_files_now(entry)
+            if not now:
+                return 'drop', entry, f'일괄 번역하던 폴더에 원문 파일이 남아 있지 않습니다 ({root.name})'
+            now_keys = {_norm(x) for x in now}
+            then = list(entry.get('names') or entry.get('selection') or [])
+            gone = [x for x in then if _norm(x) not in now_keys]
+            cur = entry.get('current')
+            info = {'now': now, 'gone': gone,
+                    'current_gone': bool(cur) and _norm(cur) not in now_keys}
+            return 'ask', entry, info
     except Exception:
         pass
-    return False
+    return 'drop', entry, ''
 
 
-def pending() -> list[tuple[str, dict]]:
-    """Notes to ask about, translation first. A note whose file or folder is gone is dropped."""
+def _norm(p) -> str:
+    import os
+    try:
+        return os.path.normcase(os.path.abspath(str(p)))
+    except Exception:
+        return str(p)
+
+
+def still_there(entry: dict) -> bool:
+    return inspect(entry)[0] == 'ask'
+
+
+def review() -> tuple[list[tuple[str, dict, dict]], list[str]]:
+    """Program start: (questions to ask, translation first; reasons for notes dropped because
+    nothing is left to open). Dropped notes are removed here."""
     data = _read()
-    out = []
+    asks, dropped = [], []
     for slot in SLOTS:
         entry = data.get(slot)
         if not entry:
             continue
-        if still_there(entry):
-            out.append((slot, entry))
+        verdict, shown, info = inspect(entry, data.get('translation'))
+        if verdict == 'ask':
+            asks.append((slot, shown, info))
         else:
             clear(slot)
-    return out
+            if info:
+                dropped.append(str(info))
+    return asks, dropped
 
 
-def question_text(entry: dict) -> str:
+def pending() -> list[tuple[str, dict]]:
+    return [(slot, entry) for slot, entry, _info in review()[0]]
+
+
+def question_text(entry: dict, info: dict | None = None) -> str:
+    info = info or {}
     kind = entry.get('kind')
     when = f" (마지막 기록 {entry['saved_at']})" if entry.get('saved_at') else ''
     refine = '켬' if entry.get('auto_refine') else '끔'
+    if kind == 'single' and entry.get('result_gone'):
+        name = Path(str(entry.get('path'))).name
+        return (f"이전에 번역 뒤 재정비하던 결과 TXT({entry['result_gone']})가 없어졌습니다.\n\n원문: {name}\n\n"
+                '원문을 열까요? [번역 시작 / 계속]을 누르면 저장된 번역으로 결과를 다시 만들고\n'
+                '(번역한 부분은 다시 번역하지 않음) 재정비 자동 시작으로 재정비를 이어 합니다.')
     if kind == 'single':
         name = Path(str(entry.get('path'))).name
         pct = entry.get('percent')
@@ -140,15 +226,27 @@ def question_text(entry: dict) -> str:
                 '열린 뒤 [번역 시작 / 계속]을 누르면 번역한 곳부터 이어집니다.')
     if kind == 'folder':
         sel = entry.get('selection') or []
+        now = info.get('now')
+        count = len(now) if now is not None else int(entry.get('files') or 0)
         what = f'끌어다 놓은 파일 {len(sel):,}개' if sel else '폴더'
-        files = int(entry.get('files') or 0)
-        nxt = int(entry.get('next') or 0)
-        progress = f'파일 {files:,}개 중 {min(nxt + 1, files):,}번째 파일까지 진행 · ' if files else ''
+        lines = [f'이전에 일괄 번역하던 {what}가 끝나지 않은 채 남아 있습니다{when}.', '', str(entry.get('root'))]
+        gone = info.get('gone') or []
+        cur = entry.get('current')
+        line = f'파일 {count:,}개'
+        if cur and info.get('current_gone'):
+            line += f' · 하던 파일({Path(str(cur)).name})은 없어져 그다음 파일부터'
+        elif cur and now is not None:
+            pos = next((i for i, x in enumerate(now) if _norm(x) == _norm(cur)), None)
+            if pos is not None:
+                line += f' 중 {pos + 1:,}번째 파일({Path(str(cur)).name})까지 진행'
+        lines.append(line)
+        if gone:
+            lines.append(f'그때 있던 파일 중 {len(gone):,}개는 지워졌거나 옮겨져 건너뜁니다')
         rel = entry.get('relation_label') or ''
-        return (f'이전에 일괄 번역하던 {what}가 끝나지 않은 채 남아 있습니다{when}.\n\n{entry.get("root")}\n'
-                f'{progress}{("파일 관계: " + rel + " · ") if rel else ""}끝나면 재정비 자동 시작: {refine}\n\n'
-                '그때 목록과 설정대로 열까요?\n'
-                '열린 뒤 [번역 시작 / 계속]을 누르면 끝난 파일은 건너뛰고, 하던 파일(번역 · 재정비)부터 이어집니다.')
+        lines.append(f'{("파일 관계: " + rel + " · ") if rel else ""}끝나면 재정비 자동 시작: {refine}')
+        lines += ['', '그때 목록과 설정대로 열까요?',
+                  '열린 뒤 [번역 시작 / 계속]을 누르면 끝난 파일은 건너뛰고, 하던 파일(번역 · 재정비)부터 이어집니다.']
+        return '\n'.join(lines)
     name = Path(str(entry.get('path'))).name
     return (f'이전에 재정비하던 TXT가 끝나지 않은 채 남아 있습니다{when}.\n\n{name}\n\n'
             '재정비 창을 이 파일로 열까요?\n'
