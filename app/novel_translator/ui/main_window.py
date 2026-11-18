@@ -27,7 +27,8 @@ from ..workspace import WorkspaceStore
 from ..language_options import option_spec
 from ..language_detection import detect_language, detect_language_bytes
 from ..power import set_translation_awake, request_system_shutdown
-from .shutdown_dialog import shutdown_offer_enabled, ask_shutdown
+from .shutdown_dialog import shutdown_offer_enabled, ask_shutdown, auto_refine_enabled, AUTO_REFINE_KEY
+from .timed_message import show_timed_information
 from ..protected_literals import count_protectable_literals
 from ..term_extraction import candidates as term_candidates, build_prompts as term_prompts, parse_glossary
 from ..language_options import prompt_instructions
@@ -763,7 +764,14 @@ class MainWindow(QMainWindow):
         guide=QLabel('사용 순서: ① TXT·PDF·EPUB 파일/폴더 선택 → ② 원문 언어·인코딩 확인 → ③ API 키 확인 → ④ 필요하면 작품 메모/확정 용어 추가 → ⑤ 번역 시작. 완료분은 청크마다 저장되어 중단 후 이어서 진행할 수 있습니다.')
         guide.setWordWrap(True); guide.setStyleSheet('color:#374151;padding:7px 2px;'); self.settings_toggle.setToolTip(guide.text()); guide.hide()
         self.ready_label=QLabel('준비 상태 확인 중…'); self.ready_label.setWordWrap(True); self.ready_label.setStyleSheet('padding:8px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;'); layout.addWidget(self.ready_label)
-        self.api_runtime_label=QLabel('API 상태 · 아직 요청 없음'); self.api_runtime_label.setWordWrap(True); self.api_runtime_label.setStyleSheet('padding:7px;background:#f9fafb;color:#374151;border-radius:6px;'); layout.addWidget(self.api_runtime_label)
+        self.api_runtime_label=QLabel('API 상태 · 아직 요청 없음'); self.api_runtime_label.setWordWrap(True); self.api_runtime_label.setStyleSheet('padding:7px;background:#f9fafb;color:#374151;border-radius:6px;')
+        # 번역이 끝나면 재정비 자동 시작 (v2.6.7): beside the API state, the one place it can be
+        # changed while a translation runs (고급 설정 is locked then); the same app.json option.
+        self.auto_refine=QCheckBox('끝나면 재정비 자동 시작')
+        self.auto_refine.blockSignals(True); self.auto_refine.setChecked(auto_refine_enabled()); self.auto_refine.blockSignals(False)
+        self.auto_refine.toggled.connect(self._auto_refine_toggled)
+        api_row=QHBoxLayout(); api_row.setSpacing(10); api_row.addWidget(self.api_runtime_label,1); api_row.addWidget(self.auto_refine)
+        layout.addLayout(api_row)
         bottom=QHBoxLayout(); self.progress=QProgressBar(); self.progress.setValue(0); self.status=ElidedLabel('대기 중'); self.status.setMinimumWidth(220)
         self.open_result=QPushButton('결과 폴더 열기'); self.open_result.setEnabled(False); self.open_result.clicked.connect(self._open_result_folder)
         self.cleanreader_btn=QPushButton('클린리더로 열기'); self.cleanreader_btn.setEnabled(False); self.cleanreader_btn.clicked.connect(self._open_in_cleanreader)
@@ -928,6 +936,7 @@ class MainWindow(QMainWindow):
         if self.input_mode=='single' and self.source_bytes:self._encoding_changed()
         elif self.input_mode=='folder':self._rescan_all_batch_files()
         self._update_output_label();self._save_workspace();self._update_ready_state()
+        self._sync_auto_refine_box()
         self.status.setText('설정 초기화 완료 · API 설정(엔진·키·모델) 보존')
 
     def _toggle_settings(self, expanded):
@@ -992,6 +1001,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,'고급 설정 열기 실패',f'{type(e).__name__}: {e}'); return
         if dlg.exec():
+            self._sync_auto_refine_box()
             new_kind=canonical_kind(dlg.cfg.get('content_kind'))
             if new_kind!=self.content_kind:
                 self.content_kind=new_kind; self.mode.setCurrentIndex(self.mode.findData('balanced'))
@@ -1012,6 +1022,79 @@ class MainWindow(QMainWindow):
             return
         from .refinement_run_dialog import RefinementRunDialog
         RefinementRunDialog(self).exec()
+
+    AUTO_REFINE_TIP=('번역이 끝까지 끝나면(미번역 자동 재시도까지 마친 뒤) 한국어 소설 재정비 창을 열고\n'
+                     '번역 결과 TXT를 바로 다듬기 시작합니다. 번역 때의 확정 용어집·인물 말투표를 그대로 씁니다.\n'
+                     '번역 중에도 켜고 끌 수 있으며, 고급 설정의 같은 항목과 함께 바뀝니다.\n'
+                     '켜 두면 번역 완료 안내 창 없이 넘어가고, PC 종료 확인은 재정비 결과를 저장한 뒤에 뜹니다.\n'
+                     '폴더(연속) 번역이면 파일마다 번역 → 재정비를 마친 뒤 다음 파일로 넘어가고,\n'
+                     'PC 종료 확인은 마지막 파일의 재정비까지 끝난 뒤 한 번만 뜹니다.\n'
+                     '미번역이 남은 미완료 결과(.ko.partial.txt)는 재정비하지 않고 기록에만 남깁니다.')
+
+    def _refresh_auto_refine_box(self):
+        """Usable with a refinement-ready (local LLM) API setup, for a single file and a folder
+        run; otherwise greyed with the reason in the tooltip. The stored choice is kept and
+        comes back when it is usable again."""
+        box=getattr(self,'auto_refine',None)
+        if box is None:
+            return
+        from .refinement_run_dialog import refinement_route_problem
+        problem=refinement_route_problem(self.secrets)
+        if problem:
+            box.setEnabled(False); box.setToolTip('지금은 쓸 수 없습니다 · '+problem+'\n\n'+self.AUTO_REFINE_TIP); return
+        box.setEnabled(True); box.setToolTip(self.AUTO_REFINE_TIP)
+
+    def _sync_auto_refine_box(self):
+        """After 고급 설정 or 설정 초기화 wrote app.json."""
+        self.auto_refine.blockSignals(True); self.auto_refine.setChecked(auto_refine_enabled()); self.auto_refine.blockSignals(False)
+        self._refresh_auto_refine_box()
+
+    def _auto_refine_toggled(self, on: bool):
+        try:
+            cfg=load_json(CONFIG_DIR/'app.json'); cfg[AUTO_REFINE_KEY]=bool(on); save_json(CONFIG_DIR/'app.json',cfg)
+        except Exception as exc:
+            self.status.setText(f'재정비 자동 시작 설정 저장 실패 · 이번 실행에만 적용 ({type(exc).__name__})')
+        if self._job_busy():
+            self.on_worker_issue('재정비 자동 시작 · '+('켬 · 번역이 끝나면 재정비를 바로 시작합니다' if on else '끔'))
+
+    def _auto_refine_wanted(self) -> bool:
+        box=getattr(self,'auto_refine',None)
+        return bool(box is not None and box.isChecked() and box.isEnabled() and self.input_mode in ('single','folder'))
+
+    def _auto_refine_target(self):
+        """(path, '') when the finished result can be refined, else (None, why not)."""
+        from .refinement_run_dialog import refinement_route_problem, is_unfinished_translation
+        from ..refinement_runtime import MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL
+        path=getattr(self,'last_result_path',None)
+        if not path or not Path(path).is_file():
+            return None,'번역 결과 TXT를 찾을 수 없습니다'
+        path=Path(path)
+        if is_unfinished_translation(path) or not path.name.lower().endswith('.txt'):
+            return None,'미번역이 남은 미완료 결과(.ko.partial.txt)라 재정비하지 않습니다'
+        problem=refinement_route_problem(self.secrets)
+        if problem:
+            return None,problem
+        try:
+            if path.stat().st_size>=MAX_REFINEMENT_BYTES:
+                return None,f'결과 TXT가 {MAX_REFINEMENT_LABEL} 이상이라 재정비할 수 없습니다'
+        except OSError:
+            return None,'번역 결과 TXT를 읽을 수 없습니다'
+        return path,''
+
+    def _start_auto_refinement(self, path, note: str):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.wait(10000)      # the finished signal can arrive a moment before the thread ends
+        if self._job_busy():
+            self.on_worker_issue('재정비 자동 시작 건너뜀 · 번역 작업이 아직 진행 중입니다'); return
+        from .refinement_run_dialog import RefinementRunDialog
+        RefinementRunDialog(self, auto_source=path, auto_note=note).exec()
+
+    def _finish_notice(self, title: str, text: str):
+        """The usual completion message; with 재정비 자동 시작 on it closes by itself."""
+        if self._auto_refine_wanted():
+            show_timed_information(self,title,text)
+        else:
+            QMessageBox.information(self,title,text)
 
     def open_api(self, first_provider=None):
         raw=(self.secrets.get('gemini') or {}).get('keys',[]); records=normalize_key_records(raw)
@@ -3339,6 +3422,7 @@ class MainWindow(QMainWindow):
         batch_busy=getattr(self,'_batch_analysis',None) is not None
         # The separate Korean TXT picker is available even without a translation source.
         self.refinement_run_btn.setEnabled(not running and not extracting and not batch_busy)
+        self._refresh_auto_refine_box()
         self.start.setEnabled(batch_busy or ((running or (has_input and has_provider)) and not extracting) or self._speech_skippable())
         self.restart_btn.setEnabled((not running) and has_input and not extracting and not batch_busy)
         checks=[]
@@ -4582,6 +4666,19 @@ class MainWindow(QMainWindow):
             if self._completion_message:
                 msg=self._completion_message+f'\n걸린 시간: {took}'; self._completion_message=''
                 self._last_worker_status=''
+                if self._auto_refine_wanted():
+                    # No completion window and no shutdown question now: the refinement starts at
+                    # once and asks about the PC after its own result is saved.
+                    target,why=self._auto_refine_target()
+                    if target is not None:
+                        if left:
+                            self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
+                                                 +' · 결과 TXT에는 원문 그대로 들어 있고 재정비는 그대로 진행합니다')
+                        self.on_worker_issue('번역 완료 → 한국어 소설 재정비를 자동으로 시작합니다 · '+target.name)
+                        QTimer.singleShot(0,lambda p=target,n=f'번역 걸린 시간 {took}':self._start_auto_refinement(p,n))
+                        return
+                    self.on_worker_issue('재정비 자동 시작 건너뜀 · '+why)
+                    msg+=f'\n\n재정비 자동 시작 건너뜀 · {why}'
                 if left:
                     why=('자동 재시도로도 줄지 않아 멈췄습니다(같은 엔진이 계속 막는 부분일 수 있음). ' if rounds and prev is not None and remaining>=prev
                          else f'자동 재시도 {rounds}회 뒤에도 남았습니다. ' if rounds else '')
@@ -4590,10 +4687,10 @@ class MainWindow(QMainWindow):
                     text=('번역 결과를 저장했지만 번역되지 않은 부분이 남아 있습니다.\n'+self._untranslated_summary()+'\n\n'+why
                           +'[번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.\n\n'+msg)
                     if self._offer_shutdown('번역 완료 · 일부 남음', text): return
-                    QMessageBox.information(self,'번역 완료 · 일부 남음',text)
+                    self._finish_notice('번역 완료 · 일부 남음',text)
                 else:
                     if self._offer_shutdown('번역 완료', f'번역 결과를 저장했습니다.\n{msg}'): return
-                    QMessageBox.information(self,'번역 완료',f'번역 결과를 저장했습니다.\n{msg}')
+                    self._finish_notice('번역 완료',f'번역 결과를 저장했습니다.\n{msg}')
             return
         if self.input_mode=='folder':
             if self._batch_retry_pending and self.source_path:
@@ -4607,13 +4704,53 @@ class MainWindow(QMainWindow):
                 current=self.batch_results.get(str(self.source_path),('', '', 0))[0] if self.source_path else ''
                 self.batch_context=self.worker.final_context if (current=='완료' or current.startswith('부분 완료')) else ''
             else:self.batch_context=''
-            self.batch_index+=1; QTimer.singleShot(0,lambda:self._start_next_batch_file(self._enabled_keys(),self._selected_model_id()))
+            if self._auto_refine_wanted() and self.source_path:
+                current=self.batch_results.get(str(self.source_path),('', '', 0))[0]
+                if current=='완료' or current.startswith('부분 완료'):
+                    # 재정비 자동 시작 (v2.6.7): this file is refined before the next one starts.
+                    QTimer.singleShot(0,lambda p=self.source_path:self._refine_batch_file_then_next(p)); return
+            self._next_batch_file()
+
+    def _next_batch_file(self):
+        self.batch_index+=1; QTimer.singleShot(0,lambda:self._start_next_batch_file(self._enabled_keys(),self._selected_model_id()))
+
+    def _refine_batch_file_then_next(self, source):
+        """Folder run with 재정비 자동 시작: refine the file that just finished in its own window
+        (it starts and closes by itself), then go on with the next file. An unfinished result
+        is skipped with one log line; a user stop in the window ends the folder run."""
+        if self._stop_batch:
+            self._next_batch_file(); return
+        target,why=self._auto_refine_target()
+        name=Path(source).name
+        if target is None:
+            self.on_worker_issue(f'재정비 건너뜀 · {name} · {why}')
+            self._batch_refine[str(source)]=f'건너뜀 · {why}'
+            self._next_batch_file(); return
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.wait(10000)
+        self.on_worker_issue(f'번역 완료 → 한국어 소설 재정비를 자동으로 시작합니다 · {target.name} (끝나면 다음 파일로)')
+        from .refinement_run_dialog import RefinementRunDialog
+        dlg=RefinementRunDialog(self, auto_source=target, auto_note=f'폴더 파일 {self.batch_index+1:,}/{len(self.batch_files):,}', batch=True)
+        try:
+            dlg.exec()
+            outcome,detail=getattr(dlg,'auto_outcome',('',''))
+        finally:
+            self._apply_sleep_prevention(True)      # the window released it when its run ended
+        label={'completed':'완료','skipped':'건너뜀','failed':'오류','stopped':'사용자 중지'}.get(outcome,'시작하지 않음')
+        self._batch_refine[str(source)]=label+(f' · {detail}' if detail and outcome!='completed' else '')
+        self.on_worker_issue(f'재정비 {label} · {name}'+(f' · {detail}' if detail and outcome!='completed' else ''))
+        if outcome=='stopped':
+            self._stop_batch=True
+            self.on_worker_issue('재정비 창에서 중지 · 폴더 번역도 여기서 멈춥니다 (다시 시작하면 이어서 진행)')
+            self._start_next_batch_file(); return
+        self._next_batch_file()
 
     AUTO_RETRY_ROUNDS = 2   # automatic retries of the untranslated parts after the main run (single file and each folder file)
 
     def _reset_batch_retry_state(self):
         """Folder run: per-file automatic retry rounds, and what is still left at the end."""
         self._batch_rounds={}; self._batch_prev={}; self._batch_left={}; self._batch_pending_reports={}
+        self._batch_refine={}
 
     def _retry_batch_file(self):
         """Run the same folder file again; finished chunks come from its saved job, so only
@@ -4731,6 +4868,14 @@ class MainWindow(QMainWindow):
                 try: rel=p.relative_to(self.batch_root)
                 except Exception: rel=p.name
                 lines.append(f'{rel}\t{notes[str(p)]}')
+        refined=getattr(self,'_batch_refine',{}) or {}
+        if refined:
+            lines += ['','파일별 한국어 소설 재정비 (재정비 자동 시작)']
+            for p in self.batch_files:
+                if str(p) not in refined: continue
+                try: rel=p.relative_to(self.batch_root)
+                except Exception: rel=p.name
+                lines.append(f'{rel}\t{refined[str(p)]}')
         if left_files:
             lines += ['','남은 미번역 상세 (청크 번호 · 원문으로 남은 문단 번호 P······)']
             for p in left_files:
@@ -4747,11 +4892,11 @@ class MainWindow(QMainWindow):
                 +f'\n\n자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일:\n{names}\n\n남은 부분은 결과 파일에 원문 그대로 들어 있습니다. [번역 시작 / 계속]을 누르면 남은 부분만 다시 시도합니다.'
                 +f'\n\n요약: {summary}')
             if self._offer_shutdown('폴더 번역 완료 · 일부 남음', text): return
-            QMessageBox.information(self,'폴더 번역 완료 · 일부 남음',text)
+            self._finish_notice('폴더 번역 완료 · 일부 남음',text)
         else:
             text=f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')+f'\n\n요약: {summary}'
             if self._offer_shutdown('폴더 번역 완료', text): return
-            QMessageBox.information(self,'폴더 번역 완료',text)
+            self._finish_notice('폴더 번역 완료',text)
 
     def _batch_left_note(self, p) -> str:
         failed,leftover,rounds,stalled=self._batch_left.get(str(p),(0,0,0,False))
