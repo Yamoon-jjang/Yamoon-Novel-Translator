@@ -361,7 +361,7 @@ class RefinementRunDialog(QDialog):
         if auto_source:
             self._auto_note=str(auto_note or '')
             self._set_source(Path(auto_source))
-            QTimer.singleShot(300,self._auto_start)
+            QTimer.singleShot(300,self,self._auto_start)   # tied to this window: never fires after it is gone
 
     def _auto_start(self):
         """Started by the translation window (재정비 자동 시작). Runs once, and never for a
@@ -394,7 +394,7 @@ class RefinementRunDialog(QDialog):
             self._close_batch('skipped', reason); return
         self._shutdown_title='번역 완료 · 재정비 건너뜀'
         self._shutdown_summary=('번역은 완료했지만 한국어 소설 재정비는 자동으로 시작하지 못했습니다.\n'+reason)
-        QTimer.singleShot(0,self._offer_shutdown)
+        QTimer.singleShot(0,self,self._offer_shutdown)
 
     BATCH_CLOSE_MS = 1500
 
@@ -404,12 +404,12 @@ class RefinementRunDialog(QDialog):
         self._shutdown_summary=''
         if outcome!='stopped':
             self._log_line('다음 파일로 넘어갑니다')
-        QTimer.singleShot(self.BATCH_CLOSE_MS,self.accept)
+        QTimer.singleShot(self.BATCH_CLOSE_MS,self,self.accept)
 
     @staticmethod
     def _prefill_candidates(host):
-        """Never an unfinished translation (.ko.partial.txt: finishing it changes the text, so
-        a refinement of it would be done again) nor a TXT too large to refine (v2.6.1)."""
+        """Never an unfinished translation (.ko.partial.txt: it is refined on purpose only — by
+        hand after a question, or by 재정비 자동 시작) nor a TXT too large to refine (v2.6.1)."""
         out=[]
         result=getattr(host,'last_result_path',None)
         if result and Path(result).is_file() and Path(result).name.lower().endswith('.ko.txt'):
@@ -497,7 +497,7 @@ class RefinementRunDialog(QDialog):
             self.guidance_info.setText(f'기준표: {MAX_REFINEMENT_LABEL} 미만 TXT를 선택하면 표시됩니다')
             self.guidance_view.setEnabled(False)
             return
-        note=('\n미완료 번역 결과(.ko.partial.txt)입니다. 번역을 끝내면 내용이 바뀌므로 번역을 마친 .ko.txt를 다듬는 것이 좋습니다.'
+        note=('\n미완료 번역 결과(.ko.partial.txt)입니다. 지금 다듬어 두면, 번역을 마친 .ko.txt를 같은 윤문 모델로 재정비할 때 새로 번역된 문단만 다듬습니다.'
               if is_unfinished_translation(self.source) else '')
         self.status.setText(f'결과는 별도 파일에 저장됩니다: {wrap_path(self.output)}'+note)
         self.status.setToolTip(str(self.output))
@@ -594,14 +594,20 @@ class RefinementRunDialog(QDialog):
                 '나눈 파일을 선택하세요. 중·일·영 번역에는 이 제한이 없습니다.')
             return
         if is_unfinished_translation(self.source):
-            if auto: return self._auto_abort('미번역이 남은 미완료 결과(.ko.partial.txt)입니다. 번역을 마친 뒤 재정비하세요.')
-            box=QMessageBox(QMessageBox.Question,'미완료 번역 결과',
-                '선택한 TXT는 아직 끝나지 않은 번역 결과(.ko.partial.txt)입니다.\n'
-                '번역을 마저 끝내면 내용이 바뀌어, 지금 다듬은 결과를 이어 쓰지 못하고 재정비를 다시 해야 합니다.\n\n'
-                '그래도 이 파일로 시작할까요?',QMessageBox.Yes|QMessageBox.No,self)
-            box.setDefaultButton(QMessageBox.No)
-            if box.exec()!=QMessageBox.Yes:
-                return
+            if auto:
+                # v2.6.7: refined now; the finished translation later takes these edits and
+                # only its newly translated paragraphs are edited (same editing model).
+                self._log_line('미번역이 남은 미완료 결과(.ko.partial.txt)지만 재정비 진행 · '
+                               '번역을 마친 뒤 .ko.txt를 재정비하면 새로 번역된 문단만 다듬음')
+            else:
+                box=QMessageBox(QMessageBox.Question,'미완료 번역 결과',
+                    '선택한 TXT는 아직 끝나지 않은 번역 결과(.ko.partial.txt)입니다.\n'
+                    '지금 다듬어 두면, 번역을 마저 끝낸 .ko.txt를 같은 윤문 모델로 재정비할 때\n'
+                    '다듬은 문단은 이어 쓰고 새로 번역된 문단만 다듬습니다.\n\n'
+                    '이 파일로 시작할까요?',QMessageBox.Yes|QMessageBox.No,self)
+                box.setDefaultButton(QMessageBox.No)
+                if box.exec()!=QMessageBox.Yes:
+                    return
         if korean_share(self.source) < KOREAN_MIN_SHARE:
             if auto: return self._auto_abort('결과 TXT에 한국어 문장이 적어 재정비 대상으로 보기 어렵습니다.')
             answer=QMessageBox.question(self,'한국어 TXT 확인',

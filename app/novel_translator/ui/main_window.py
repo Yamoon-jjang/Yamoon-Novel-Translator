@@ -1029,7 +1029,8 @@ class MainWindow(QMainWindow):
                      '켜 두면 번역 완료 안내 창 없이 넘어가고, PC 종료 확인은 재정비 결과를 저장한 뒤에 뜹니다.\n'
                      '폴더(연속) 번역이면 파일마다 번역 → 재정비를 마친 뒤 다음 파일로 넘어가고,\n'
                      'PC 종료 확인은 마지막 파일의 재정비까지 끝난 뒤 한 번만 뜹니다.\n'
-                     '미번역이 남은 미완료 결과(.ko.partial.txt)는 재정비하지 않고 기록에만 남깁니다.')
+                     '미번역이 남은 미완료 결과(.ko.partial.txt)도 재정비합니다. 나중에 번역을 마치고 다시 재정비하면\n'
+                     '다듬어 둔 문단은 이어 쓰고 새로 번역된 문단만 다듬습니다.')
 
     def _refresh_auto_refine_box(self):
         """Usable with a refinement-ready (local LLM) API setup, for a single file and a folder
@@ -1063,14 +1064,16 @@ class MainWindow(QMainWindow):
 
     def _auto_refine_target(self):
         """(path, '') when the finished result can be refined, else (None, why not)."""
-        from .refinement_run_dialog import refinement_route_problem, is_unfinished_translation
+        from .refinement_run_dialog import refinement_route_problem
         from ..refinement_runtime import MAX_REFINEMENT_BYTES, MAX_REFINEMENT_LABEL
         path=getattr(self,'last_result_path',None)
         if not path or not Path(path).is_file():
             return None,'번역 결과 TXT를 찾을 수 없습니다'
         path=Path(path)
-        if is_unfinished_translation(path) or not path.name.lower().endswith('.txt'):
-            return None,'미번역이 남은 미완료 결과(.ko.partial.txt)라 재정비하지 않습니다'
+        if not path.name.lower().endswith('.txt'):
+            return None,'번역 결과가 TXT가 아닙니다'
+        # An unfinished result (.ko.partial.txt) is refined too (v2.6.7): when the translation
+        # is finished later, its refinement takes these edits and edits only the new paragraphs.
         problem=refinement_route_problem(self.secrets)
         if problem:
             return None,problem
@@ -4673,7 +4676,8 @@ class MainWindow(QMainWindow):
                     if target is not None:
                         if left:
                             self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
-                                                 +' · 결과 TXT에는 원문 그대로 들어 있고 재정비는 그대로 진행합니다')
+                                                 +' · 결과 TXT에는 원문 그대로 들어 있고 재정비는 그대로 진행합니다'
+                                                 +' (나중에 번역을 마치고 다시 재정비하면 새로 번역된 문단만 다듬음)')
                         self.on_worker_issue('번역 완료 → 한국어 소설 재정비를 자동으로 시작합니다 · '+target.name)
                         QTimer.singleShot(0,lambda p=target,n=f'번역 걸린 시간 {took}':self._start_auto_refinement(p,n))
                         return

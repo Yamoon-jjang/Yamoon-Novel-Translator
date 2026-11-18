@@ -8,8 +8,9 @@
 - A single file that finished (after its automatic retries) opens the refinement window with the
   .ko.txt result, which starts by itself: no completion window, no shutdown question then; the
   shutdown question comes after the refinement result is saved (the window's own hook).
-- An unfinished result (.ko.partial.txt) is not refined: one log line, then the usual
-  shutdown question / completion notice, which closes by itself.
+- An unfinished result (.ko.partial.txt) is refined too (v2.6.7 보완): the finished translation
+  later takes those edits (test_v267_partial_carry.py). A result that cannot be refined (too
+  large, engines) is skipped with one log line; the notice then closes by itself.
 - In the refinement window an automatic start never asks: the long-run estimate is skipped,
   a retry of preserved paragraphs is accepted, and anything that could lose earlier work
   (an existing result, an earlier run with another model) skips the run and says why.
@@ -205,14 +206,15 @@ def test_folder_refines_each_file_before_the_next_one(qt_app, env, monkeypatch):
         w.close()
 
 
-def test_folder_skips_an_unfinished_file_and_goes_on(qt_app, env, monkeypatch):
+def test_folder_refines_an_unfinished_file_too_and_goes_on(qt_app, env, monkeypatch):
     root, cfg, rec = env
     w, started, order = _run_folder(qt_app, monkeypatch, root, rec, {
         '1.txt': [('partial', 2, 0), ('partial', 2, 0)], '2.txt': [('completed', 0, 0)]}, names=('1.txt', '2.txt'))
     try:
         assert _wait(qt_app, lambda: rec['timed'] or rec['infos']), rec
-        assert [p.name for p, *_ in rec['refine']] == ['2.ko.txt']
-        assert '재정비 건너뜀 · 1.txt · 미번역이 남은 미완료 결과' in w.error_view.toPlainText()
+        assert [p.name for p, *_ in rec['refine']] == ['1.ko.partial.txt', '2.ko.txt']
+        assert [s.source_path.name for s in started] == ['1.txt', '1.txt', '2.txt']   # retried first
+        assert '재정비 건너뜀' not in w.error_view.toPlainText()
         assert rec['infos'] == [] and rec['timed'][0][0] == '폴더 번역 완료 · 일부 남음'   # closes by itself
     finally:
         w.close()
@@ -310,22 +312,27 @@ def test_turned_on_during_the_run_is_used_at_the_end(qt_app, env, monkeypatch):
         w.close()
 
 
-def test_unfinished_result_is_skipped_and_the_notice_closes_itself(qt_app, env, monkeypatch):
+def test_unfinished_result_is_refined_after_the_retries(qt_app, env, monkeypatch):
     root, cfg, rec = env
+    _set(cfg, confirm_shutdown_after_finish=True)                       # asked by the 재정비 window later
     w, started = _run(qt_app, monkeypatch, root, rec, [('partial', 2, 0), ('partial', 2, 0)])
     try:
-        assert _wait(qt_app, lambda: rec['timed']), rec
-        assert rec['refine'] == [] and rec['infos'] == []
-        title, text = rec['timed'][0]
-        assert title == '번역 완료 · 일부 남음' and '재정비 자동 시작 건너뜀' in text and '.ko.partial.txt' in text
-        assert '재정비 자동 시작 건너뜀 · 미번역이 남은 미완료 결과' in w.error_view.toPlainText()
+        assert _wait(qt_app, lambda: rec['refine']), rec
+        assert len(started) == 2                                        # the automatic retry ran first
+        assert rec['refine'][0][0].name == 'book.ko.partial.txt'
+        assert rec['infos'] == [] and rec['timed'] == [] and rec['asked'] == []
+        log = w.error_view.toPlainText()
+        assert '미번역 남음 · ' in log and '새로 번역된 문단만 다듬음' in log
+        assert '번역 완료 → 한국어 소설 재정비를 자동으로 시작합니다 · book.ko.partial.txt' in log
     finally:
         w.close()
 
 
-def test_unfinished_result_with_shutdown_on_is_asked_at_the_translation_end(qt_app, env, monkeypatch):
+def test_a_skipped_refinement_still_asks_about_the_pc_at_the_translation_end(qt_app, env, monkeypatch):
+    import novel_translator.refinement_runtime as rr
     root, cfg, rec = env
     _set(cfg, confirm_shutdown_after_finish=True); rec['answer'] = False
+    monkeypatch.setattr(rr, 'MAX_REFINEMENT_BYTES', 1)
     w, started = _run(qt_app, monkeypatch, root, rec, [('partial', 2, 0), ('partial', 2, 0)])
     try:
         assert _wait(qt_app, lambda: rec['asked'] and rec['timed'])
@@ -511,5 +518,43 @@ def test_batch_skip_is_logged_once_by_the_folder_run(qt_app, monkeypatch, tmp_pa
         assert _wait(qt_app, lambda: d.auto_outcome[0])
         assert d.auto_outcome[0] == 'skipped' and '중지한 기록' in d.auto_outcome[1]
         assert host.issues == [] and host.asked == [] and workers == []
+    finally:
+        d.close()
+
+
+def test_auto_window_refines_an_unfinished_result_without_a_question(qt_app, monkeypatch, tmp_path):
+    from test_v26_shutdown_prompt import _Host
+    host = _Host(False)
+    def prepare(rd, src):
+        pass
+    d, boxes, workers = _auto_dialog(monkeypatch, tmp_path, host, prepare)
+    part = tmp_path/'소설.ko.partial.txt'; part.write_text('어색한 첫 문단입니다.\n\n他静静地看着窗外的雨。\n', encoding='utf-8')
+    d._set_source(part)
+    try:
+        d.show()
+        assert _wait(qt_app, lambda: workers)
+        assert boxes == [] and '새로 번역된 문단만 다듬음' in d.log_view.toPlainText()
+        assert d.output.name == '소설.ko.partial.refined.txt'
+        _wait(qt_app, lambda: d.worker is None)
+    finally:
+        d.close()
+
+
+def test_manual_unfinished_question_says_the_edits_are_kept(qt_app, monkeypatch, tmp_path):
+    from test_v26_shutdown_prompt import _Host
+    import novel_translator.ui.refinement_run_dialog as rd
+    host = _Host(False)
+    d, boxes, workers = _auto_dialog(monkeypatch, tmp_path, host)
+    try:
+        d.show(); assert _wait(qt_app, lambda: workers); _wait(qt_app, lambda: d.worker is None)
+        texts = []
+        monkeypatch.setattr(rd.QMessageBox, 'exec', lambda self: texts.append((self.text(), self.defaultButton() is self.button(rd.QMessageBox.No))) or rd.QMessageBox.No)
+        part = tmp_path/'소설.ko.partial.txt'; part.write_text('어색한 첫 문단입니다.\n', encoding='utf-8')
+        d._set_source(part); workers.clear()
+        d._start()
+        assert workers == [] and len(texts) == 1
+        text, default_no = texts[0]
+        assert '새로 번역된 문단만 다듬습니다' in text and default_no          # still asked, [아니오] default
+        assert '새로 번역된 문단만 다듬습니다' in d.status.text()
     finally:
         d.close()
