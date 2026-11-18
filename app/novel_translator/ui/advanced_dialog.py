@@ -39,6 +39,13 @@ class AdvancedSettingsDialog(QDialog):
                                          '[아니오]를 누르면 종료하지 않습니다. 사용자가 중지했거나 오류로 멈춘 작업에서는 뜨지 않습니다.\n'
                                          '처음에는 꺼져 있고, 켜 두면 끌 때까지 켜진 채로 기억합니다.')
         root.addWidget(self.confirm_shutdown)
+        self.auto_refine=QCheckBox('번역이 끝나면 한국어 소설 재정비 자동 시작 (로컬 LLM)')
+        self.auto_refine.setToolTip('번역 화면의 [끝나면 재정비 자동 시작]과 같은 설정입니다. 번역 중에는 번역 화면에서 바꿀 수 있습니다.\n'
+                                    '번역이 끝까지 끝나면 재정비 창을 열고 결과 TXT를 바로 다듬기 시작합니다(확인 창 없음).\n'
+                                    'PC 종료 확인을 켜 두었으면 재정비 결과를 저장한 뒤에 확인 창이 뜹니다.\n'
+                                    '폴더(연속) 번역이면 파일마다 재정비까지 마친 뒤 다음 파일로 넘어갑니다.\n'
+                                    '미번역이 남은 미완료 결과(.ko.partial.txt)는 재정비하지 않습니다.')
+        root.addWidget(self.auto_refine)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('저장');buttons.button(QDialogButtonBox.Cancel).setText('취소')
         buttons.accepted.connect(self._save);buttons.rejected.connect(self._cancel);root.addWidget(buttons)
@@ -55,6 +62,7 @@ class AdvancedSettingsDialog(QDialog):
             for widget,key,value in zip(widgets,['chunk_factor','max_retries','timeout_seconds','context_chars'],[1,3,90,3000]):widget.setValue(row.get(key,value))
         self.prevent_sleep.setChecked(bool(cfg.get('prevent_sleep_while_running',True)))
         self.confirm_shutdown.setChecked(cfg.get('confirm_shutdown_after_finish',False) is True)
+        self.auto_refine.setChecked(cfg.get('auto_refine_after_translation',False) is True)
         kind=self.content_kind.currentData()
         self.note.setText('소설: 대사·말투·인물 관계·원문 수위를 보존합니다. 균형 기준 약 800자, 이전 문맥 3,000자.' if kind=='novel' else '일반 문서: 사실·수치·용어·목록과 문서 구조를 보존합니다. 균형 기준 약 1,200자, 이전 문맥 1,000자.')
         self.note.setToolTip('분야를 바꾸면 고급 옵션에 해당 분야의 기본값이 적용됩니다. 저장 전에는 실제 설정이 변경되지 않습니다. 모델·API 키는 변경하지 않습니다.')
@@ -82,6 +90,7 @@ class AdvancedSettingsDialog(QDialog):
             cfg['modes'][mode].update(file_concurrency=1,request_concurrency=1,chunk_factor=chunk.value(),max_retries=retry.value(),timeout_seconds=timeout.value(),context_chars=context.value())
         cfg['prevent_sleep_while_running']=self.prevent_sleep.isChecked()
         cfg['confirm_shutdown_after_finish']=self.confirm_shutdown.isChecked()
+        cfg['auto_refine_after_translation']=self.auto_refine.isChecked()
         try:save_json(self.path,cfg)
         except Exception as e:
             QMessageBox.critical(self,'고급 설정 저장 실패',str(e));return

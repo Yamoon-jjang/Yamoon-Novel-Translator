@@ -120,6 +120,24 @@ def short_name(name, keep: int = 44) -> str:
 STATUS_LINES = 3
 
 
+def refinement_route_problem(secrets) -> str:
+    """'' when 한국어 소설 재정비 can run with the API settings, otherwise why not.
+    The same rules as RefinementRunDialog._fill_engines (local LLM only, both routes, a model
+    and a server address); the main window uses it for the 재정비 자동 시작 box (v2.6.7)."""
+    settings=dict(secrets or {})
+    local=dict(settings.get('local') or {})
+    analysis=dict(settings.get('extraction_engines') or {})
+    editing=dict(settings.get('refinement_editing') or {})
+    if str(analysis.get('terms') or 'auto')!='local' or str(editing.get('provider') or 'local')!='local':
+        return ('한국어 소설 재정비는 로컬 LLM만 지원합니다. '
+                'API 설정에서 용어·말투 분석 엔진과 문학적 윤문 엔진을 모두 로컬 LLM으로 선택해 주세요.')
+    if not str(analysis.get('model') or local.get('model') or '').strip() or not str(editing.get('model') or local.get('model') or '').strip():
+        return 'API 설정에서 재정비에 쓸 로컬 LLM 모델을 지정하세요.'
+    if not str(local.get('endpoint') or '').strip():
+        return 'API 설정에서 로컬 LLM 서버 주소를 지정하세요.'
+    return ''
+
+
 class _StatusLabel(QLabel):
     """A wrapped status line. Its room is reserved up front (STATUS_LINES); only a message
     longer than that (a long error) lets the window grow, never shrink."""
@@ -176,9 +194,20 @@ class RefinementWorker(QThread):
 
 
 class RefinementRunDialog(QDialog):
-    def __init__(self, host):
+    def __init__(self, host, auto_source=None, auto_note: str = '', batch: bool = False):
         super().__init__(host)
         self.host=host
+        # batch: one file of a folder run. The window closes by itself when the run ends and
+        # never asks about the PC (the folder run asks once, after its last file);
+        # auto_outcome tells the folder run how it ended ('completed', 'skipped', 'failed',
+        # 'stopped' — a user stop ends the folder run too).
+        self._batch_auto=bool(batch and auto_source)
+        self.auto_outcome=('', '')
+        self._out_override=Path(auto_source).parent if auto_source else None
+        # 번역이 끝나면 재정비 자동 시작 (v2.6.7): the finished translation is selected and the run
+        # starts by itself, with no question windows (a choice that could lose earlier work
+        # skips the run instead, and says why in the window and its log).
+        self._auto_run=False
         self.setWindowTitle('한국어 소설 재정비 · 문학적 윤문')
         self.resize(700,690)
         self.setSizeGripEnabled(True)    # the corner mark that shows the window can be resized (v2.6.2 보완)
@@ -329,6 +358,53 @@ class RefinementRunDialog(QDialog):
             if korean_share(candidate) >= KOREAN_MIN_SHARE:
                 self._set_source(candidate)
                 break
+        if auto_source:
+            self._auto_note=str(auto_note or '')
+            self._set_source(Path(auto_source))
+            QTimer.singleShot(300,self._auto_start)
+
+    def _auto_start(self):
+        """Started by the translation window (재정비 자동 시작). Runs once, and never for a
+        window that was already closed before its start."""
+        try:
+            if self.worker is not None or not self.isVisible() or self._auto_run:
+                return
+        except RuntimeError:       # the window is gone
+            return
+        self._log_line('번역 완료 → 한국어 소설 재정비 자동 시작'+(f' · {self._auto_note}' if getattr(self,'_auto_note','') else ''))
+        self._auto_run=True
+        try:
+            self._start()
+        finally:
+            self._auto_run=False
+
+    def _auto_abort(self, reason: str):
+        """An automatic start that cannot go on without a question: nothing is started or
+        deleted, the reason stays in the window and both logs, and when the PC shutdown
+        option is on the translation that did finish still gets its shutdown question."""
+        reason=str(reason).strip()
+        self.status.setText('재정비 자동 시작 건너뜀 · '+reason)
+        self.status.setToolTip(reason)
+        self._log_line('재정비 자동 시작 건너뜀 · '+reason.replace('\n',' '))
+        note=None if self._batch_auto else getattr(self.host,'on_worker_issue',None)   # a folder run logs it itself
+        if callable(note):
+            try: note('재정비 자동 시작 건너뜀 · '+reason.replace('\n',' '))
+            except Exception: pass
+        if self._batch_auto:
+            self._close_batch('skipped', reason); return
+        self._shutdown_title='번역 완료 · 재정비 건너뜀'
+        self._shutdown_summary=('번역은 완료했지만 한국어 소설 재정비는 자동으로 시작하지 못했습니다.\n'+reason)
+        QTimer.singleShot(0,self._offer_shutdown)
+
+    BATCH_CLOSE_MS = 1500
+
+    def _close_batch(self, outcome: str, detail: str = ''):
+        """Folder run: say how this file's refinement ended, then close by itself."""
+        self.auto_outcome=(outcome, str(detail or ''))
+        self._shutdown_summary=''
+        if outcome!='stopped':
+            self._log_line('다음 파일로 넘어갑니다')
+        QTimer.singleShot(self.BATCH_CLOSE_MS,self.accept)
 
     @staticmethod
     def _prefill_candidates(host):
@@ -404,7 +480,7 @@ class RefinementRunDialog(QDialog):
 
     def _set_source(self,path):
         self.source=Path(path)
-        self.output=refined_output_path(self.source, getattr(self.host,'custom_output_dir',None))
+        self.output=refined_output_path(self.source, getattr(self,'_out_override',None) or getattr(self.host,'custom_output_dir',None))
         self.source_label.setText(self.source.name)
         self.source_label.setToolTip(str(self.source))
         self._show_done(False)
@@ -507,14 +583,18 @@ class RefinementRunDialog(QDialog):
             self._set_source(Path(chosen))
 
     def _start(self):
+        auto=self._auto_run
         if not self.source or not self.source.is_file():
+            if auto: return self._auto_abort('번역 결과 TXT를 찾을 수 없습니다.')
             QMessageBox.information(self,'TXT 파일 필요','먼저 한국어 TXT 파일을 선택하세요.');return
         if self.source.stat().st_size >= MAX_REFINEMENT_BYTES:
+            if auto: return self._auto_abort(f'결과 TXT가 {MAX_REFINEMENT_LABEL} 이상이라 재정비할 수 없습니다. 나눈 TXT로 직접 실행하세요.')
             QMessageBox.warning(self,'파일 크기 초과',
                 f'한국어 재정비는 {MAX_REFINEMENT_LABEL} 미만의 TXT 파일만 지원합니다.\n'
                 '나눈 파일을 선택하세요. 중·일·영 번역에는 이 제한이 없습니다.')
             return
         if is_unfinished_translation(self.source):
+            if auto: return self._auto_abort('미번역이 남은 미완료 결과(.ko.partial.txt)입니다. 번역을 마친 뒤 재정비하세요.')
             box=QMessageBox(QMessageBox.Question,'미완료 번역 결과',
                 '선택한 TXT는 아직 끝나지 않은 번역 결과(.ko.partial.txt)입니다.\n'
                 '번역을 마저 끝내면 내용이 바뀌어, 지금 다듬은 결과를 이어 쓰지 못하고 재정비를 다시 해야 합니다.\n\n'
@@ -523,6 +603,7 @@ class RefinementRunDialog(QDialog):
             if box.exec()!=QMessageBox.Yes:
                 return
         if korean_share(self.source) < KOREAN_MIN_SHARE:
+            if auto: return self._auto_abort('결과 TXT에 한국어 문장이 적어 재정비 대상으로 보기 어렵습니다.')
             answer=QMessageBox.question(self,'한국어 TXT 확인',
                 '선택한 파일은 한국어 문장이 적어 번역 전 원문으로 보입니다.\n'
                 '한국어 소설 재정비는 이미 한국어로 번역된 TXT를 다듬는 기능입니다.\n\n'
@@ -532,9 +613,11 @@ class RefinementRunDialog(QDialog):
         try:
             self.output.parent.mkdir(parents=True,exist_ok=True)
         except OSError as exc:
+            if auto: return self._auto_abort(f'결과 폴더를 만들거나 쓸 수 없습니다.\n{self.output.parent}\n{exc}')
             QMessageBox.warning(self,'결과 폴더 사용 불가',f'결과 폴더를 만들거나 쓸 수 없습니다.\n{self.output.parent}\n{exc}'); return
         self._fill_engines()
         if not self._routes_ready:
+            if auto: return self._auto_abort(self._route_error or 'API 설정에서 분석 및 윤문 엔진을 지정하세요.')
             QMessageBox.warning(self,'API 엔진 설정 확인',self._route_error or 'API 설정에서 분석 및 윤문 엔진을 지정하세요.')
             return
         edit=self._editing_route
@@ -543,10 +626,15 @@ class RefinementRunDialog(QDialog):
         if self.output.exists():
             retry=retry_status(self.source,self.output,edit[0],edit[1])
             if not retry:
+                if auto: return self._auto_abort(f'같은 이름의 재정비 결과 파일이 이미 있어 덮어쓰지 않습니다.\n{self.output}')
                 QMessageBox.warning(self,'결과 파일 존재','같은 이름의 결과 파일이 이미 있습니다. 원본과 이전 결과를 보호하기 위해 덮어쓰지 않습니다. 기존 결과의 이름을 변경한 뒤 다시 시작하세요.');return
-            answer=QMessageBox.question(self,'보존한 문단만 다시 시도',
-                f'이 TXT의 이전 재정비 결과가 있습니다.\n그때 교정하지 못하고 원문으로 보존한 문단 {retry}개만 다시 시도해, '
-                f'같은 결과 파일을 갱신할까요?\n\n이미 다듬은 문단은 그대로 두고 다시 요청하지 않습니다.\n{self.output}')
+            if auto:
+                answer=QMessageBox.Yes      # only the preserved paragraphs; nothing done is lost
+                self._log_line(f'이전 재정비 결과가 있어 원문으로 보존한 문단 {retry}개만 다시 시도합니다')
+            else:
+                answer=QMessageBox.question(self,'보존한 문단만 다시 시도',
+                    f'이 TXT의 이전 재정비 결과가 있습니다.\n그때 교정하지 못하고 원문으로 보존한 문단 {retry}개만 다시 시도해, '
+                    f'같은 결과 파일을 갱신할까요?\n\n이미 다듬은 문단은 그대로 두고 다시 요청하지 않습니다.\n{self.output}')
             if answer!=QMessageBox.Yes:
                 return
             update_existing=True
@@ -555,6 +643,9 @@ class RefinementRunDialog(QDialog):
             # never start over silently (its finished paragraphs would be set aside).
             done,engine=resume_conflict(self.source,edit[0],edit[1],
                                         analysis=(analysis[0],analysis[1]) if analysis else None)
+            if done and auto:
+                return self._auto_abort(f'이 TXT는 이전에 [{engine}]로 {done:,}문단까지 다듬다가 중지한 기록이 있어, '
+                                        '지우지 않으려고 자동 시작을 건너뜁니다. [재정비 시작]을 직접 누르면 선택할 수 있습니다.')
             if done:
                 answer=QMessageBox.question(self,'이어서 할 수 없는 이전 진행',
                     f'이 TXT는 이전에 [{engine}]로 {done:,}문단까지 다듬다가 중지했습니다.\n'
@@ -564,7 +655,7 @@ class RefinementRunDialog(QDialog):
                     QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
                 if answer!=QMessageBox.Yes:
                     return
-        if not update_existing and not self._confirm_long_run(edit[1]):
+        if not update_existing and not auto and not self._confirm_long_run(edit[1]):
             return
         # The worker receives the provider's options dict, not this dialog.
         self.worker=RefinementWorker(self.source,self.output,*edit[:3],edit[3],analysis=analysis,
@@ -593,6 +684,7 @@ class RefinementRunDialog(QDialog):
         self._show_done(False)
         self._live_rows.clear(); self.live.clear()
         self._shutdown_summary=''
+        self._run_end=('failed','작업이 결과 없이 끝났습니다')
         # A refinement runs as long as a translation: the PC must not go to sleep meanwhile.
         set_translation_awake(_sleep_prevention_wanted())
         self.worker.start()
@@ -758,6 +850,7 @@ class RefinementRunDialog(QDialog):
             self.stats_info.setText(self._stats_text())
 
     def _finished(self,result):
+        self._run_end=(str(result.get('status') or ''), '')
         if result['status']=='completed':
             changed=result.get('changed',result["done"])
             identical=result.get('identical',0)
@@ -789,6 +882,7 @@ class RefinementRunDialog(QDialog):
                                 '동일 TXT와 엔진으로 다시 실행하면 완료한 문단부터 이어지고, 소요 시간도 합산됩니다.')
 
     def _failed(self,message):
+        self._run_end=('failed', str(message))
         line='===== 재정비 오류 · '+str(message)
         self._log_line(line)
         if self.output:
@@ -808,6 +902,9 @@ class RefinementRunDialog(QDialog):
         self._fill_engines()
         self.cancel.setText('닫기')
         self.start.setEnabled(self._can_start())
+        if self._batch_auto:
+            end,detail=getattr(self,'_run_end',('failed','작업이 결과 없이 끝났습니다'))
+            self._close_batch(end if end in ('completed','stopped','failed') else 'stopped', detail); return
         if getattr(self,'_shutdown_summary',''):
             QTimer.singleShot(0,self._offer_shutdown)
 
@@ -818,7 +915,8 @@ class RefinementRunDialog(QDialog):
         offer=getattr(self.host,'_offer_shutdown',None)
         if not summary or offer is None or (self.worker and self.worker.isRunning()):
             return
-        if offer('재정비 완료', summary, parent=self, log=False):
+        title=getattr(self,'_shutdown_title','') or '재정비 완료'; self._shutdown_title=''
+        if offer(title, summary, parent=self, log=False):
             self.accept()
             QTimer.singleShot(300,self.host._shutdown_now)
 

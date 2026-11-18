@@ -119,6 +119,8 @@ def validate_resources() -> list[str]:
         issues.append('app.json: prevent_sleep_while_running은 true/false여야 함')
     if not isinstance(app_cfg.get('confirm_shutdown_after_finish', False), bool):
         issues.append('app.json: confirm_shutdown_after_finish는 true/false여야 함')
+    if not isinstance(app_cfg.get('auto_refine_after_translation', False), bool):
+        issues.append('app.json: auto_refine_after_translation은 true/false여야 함')
     rate=(app_cfg.get('rate_limiter') or {})
     try:
         start=float(rate.get('start_rpm',4)); mn=float(rate.get('min_rpm',2)); mx=float(rate.get('max_rpm',12)); step=int(rate.get('successes_before_step_up',30))

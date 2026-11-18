@@ -20,6 +20,17 @@ def shutdown_offer_enabled() -> bool:
         return False
 
 
+AUTO_REFINE_KEY = 'auto_refine_after_translation'
+
+
+def auto_refine_enabled() -> bool:
+    """번역이 끝나면 재정비 자동 시작 (v2.6.7): off on a new install and after 설정 초기화."""
+    try:
+        return load_json(CONFIG_DIR/'app.json').get(AUTO_REFINE_KEY, False) is True
+    except Exception:
+        return False
+
+
 class ShutdownCountdownDialog(QDialog):
     def __init__(self, parent, title: str, summary: str, seconds: int = SHUTDOWN_COUNTDOWN_SECONDS):
         super().__init__(parent)
