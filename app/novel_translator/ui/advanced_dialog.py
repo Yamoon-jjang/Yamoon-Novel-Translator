@@ -44,7 +44,7 @@ class AdvancedSettingsDialog(QDialog):
                                     '번역이 끝까지 끝나면 재정비 창을 열고 결과 TXT를 바로 다듬기 시작합니다(확인 창 없음).\n'
                                     'PC 종료 확인을 켜 두었으면 재정비 결과를 저장한 뒤에 확인 창이 뜹니다.\n'
                                     '폴더(연속) 번역이면 파일마다 재정비까지 마친 뒤 다음 파일로 넘어갑니다.\n'
-                                    '미번역이 남은 미완료 결과(.ko.partial.txt)는 재정비하지 않습니다.')
+                                    '미번역이 남은 미완료 결과(.ko.partial.txt)도 재정비하며, 나중에 번역을 마치면 새로 번역된 문단만 다듬습니다.')
         root.addWidget(self.auto_refine)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('저장');buttons.button(QDialogButtonBox.Cancel).setText('취소')

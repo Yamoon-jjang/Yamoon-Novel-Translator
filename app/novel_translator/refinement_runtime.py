@@ -690,14 +690,38 @@ def _path_key(path) -> str:
         return str(path).casefold()
 
 
+UNFINISHED_SUFFIX = '.ko.partial.txt'
+FINISHED_SUFFIX = '.ko.txt'
+
+
+def is_unfinished_result(path) -> bool:
+    """A translation result this app saved while untranslated paragraphs were left."""
+    return Path(path).name.lower().endswith(UNFINISHED_SUFFIX)
+
+
+def unfinished_sibling(source) -> Path | None:
+    """book.ko.txt -> book.ko.partial.txt in the same folder: the unfinished result the
+    translation wrote before it was finished (v2.6.7). None for any other name."""
+    source = Path(source)
+    name = source.name
+    if not name.lower().endswith(FINISHED_SUFFIX) or is_unfinished_result(source):
+        return None
+    return source.with_name(name[:-len(FINISHED_SUFFIX)] + UNFINISHED_SUFFIX)
+
+
 def _carry_candidates(source: Path, checkpoint_dir: Path | None, exclude: Path):
-    """Resume files of earlier runs on this TXT's path with another text, newest first."""
+    """Resume files of earlier runs on this TXT's path with another text, newest first.
+    A finished translation (book.ko.txt) also takes the runs on its unfinished result
+    (book.ko.partial.txt) in the same folder (v2.6.7): finishing the translation changes
+    only the paragraphs that were left untranslated."""
     root = Path(checkpoint_dir or DATA_DIR / 'refinement_jobs')
     try:
         files = sorted(root.glob('text-*.json'), key=lambda f: f.stat().st_mtime, reverse=True)
     except OSError:
         return
     me = _path_key(source)
+    sibling = unfinished_sibling(source)
+    accepted = {me} | ({_path_key(sibling)} if sibling is not None else set())
     for f in files[:CARRY_SCAN]:
         if f == exclude:
             continue
@@ -707,7 +731,7 @@ def _carry_candidates(source: Path, checkpoint_dir: Path | None, exclude: Path):
             continue
         if old.get('schema') != 1 or not isinstance(old.get('para'), list):
             continue    # files of builds before v2.6.1 do not list their paragraphs
-        if _path_key(old.get('source') or '') != me:
+        if _path_key(old.get('source') or '') not in accepted:
             continue
         yield f, old
 
@@ -737,7 +761,8 @@ def _matching_runs(old_keys, new_keys):
 def _carry_from_edited(source, paragraphs, state, provider_name, model, layout,
                        checkpoint_dir, cp) -> int:
     """Take the finished edits of unchanged paragraphs from an earlier run on this path
-    (same editing engine and grouping only). Returns how many paragraphs were taken."""
+    (same editing engine and grouping only). Returns how many paragraphs were taken;
+    state['carried_from'] names the TXT they came from."""
     for f, old in _carry_candidates(source, checkpoint_dir, cp):
         engine = old.get('engine') or {}
         if (engine.get('provider') != provider_name or str(engine.get('model')) != str(model)
@@ -756,6 +781,7 @@ def _carry_from_edited(source, paragraphs, state, provider_name, model, layout,
         if not carried:
             continue
         state['completed'] = carried
+        state['carried_from'] = str(old.get('source') or '')
         for key in ('guidance', 'guidance_done', 'guidance_source'):
             if key in old:
                 state[key] = old[key]
@@ -1067,7 +1093,11 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
                    + f' · {provider_name} {model}'
                    + (f' · 이미 다듬은 {len(state["completed"]):,}문단' if state['completed'] else ''))
     publish()
-    if carried:
+    carried_from = str(state.pop('carried_from', '') or '')
+    if carried and carried_from and is_unfinished_result(carried_from):
+        event(f'미완료 번역({Path(carried_from).name})에서 다듬어 둔 {len(state["completed"]):,}문단을 이어서 사용 · 새로 번역된 문단만 다듬음'
+              ' · 끝나면 미완료본의 재정비 결과(.ko.partial.refined.txt)는 지워도 됨')
+    elif carried:
         event(f'TXT가 바뀌었지만 그대로인 {len(state["completed"]):,}문단은 이전 실행에서 다듬은 것을 이어서 사용 · 바뀐 문단만 다시 다듬음')
     elif state['completed'] and not old.get('finished'):
         event(f'이전 실행에서 다듬은 {len(state["completed"]):,}문단은 건너뛰고 이어서 진행')
@@ -1354,8 +1384,9 @@ def run_refinement(source: Path, output: Path, provider, model: str, key: str,
     atomic_write_text(report,'\n'.join(lines))
     log('===== 정비 완료 · ' + lines[0].replace('한국어 재정비 결과 · ', '') + ' · ' + lines[1]
                    + f' · 결과 {output.name}')
-    if preserved:
-        # Keep what was finished so only the preserved paragraphs are tried again later.
+    if preserved or is_unfinished_result(source):
+        # Keep what was finished so only the preserved paragraphs are tried again later, and
+        # (v2.6.7) so the finished translation of an unfinished result takes these edits.
         state['finished']=True
         state['output_sha']=_file_sha(output)
         save()
