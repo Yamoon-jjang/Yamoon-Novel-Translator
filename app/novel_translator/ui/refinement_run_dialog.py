@@ -921,7 +921,11 @@ class RefinementRunDialog(QDialog):
         self.status.setToolTip(message)
 
     def _thread_stopped(self):
-        set_translation_awake(False)
+        if not self._batch_auto:
+            set_translation_awake(False)
+        # A folder run's window does not let the PC go: the folder run goes on with the next
+        # file at once and holds it itself. Released here, Windows (idle time long passed)
+        # slept in the 1.5 seconds before the window closed (2026-11-18 22:39, v2.6.8).
         self._timer.stop()
         self.time_info.hide()      # the result line below says how long it took (its room is kept)
         self.worker=None

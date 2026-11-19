@@ -802,8 +802,15 @@ class MainWindow(QMainWindow):
         if busy:
             self._analysis_label=label or caption; self._analysis_stage=''; self._analysis_t0=time.monotonic()
             self._analysis_timer.start()
+            # Names / speech analysis is part of the work: before a single file's translation
+            # it runs while nothing else holds the PC (v2.6.8).
+            self._apply_sleep_prevention(True)
         else:
             self._analysis_timer.stop(); self._analysis_t0=None
+            # Not let go here: the next step (speech table, the translation) follows at once.
+            # Looked at again shortly after, when that step holds the PC or nothing does.
+            auto=bool(getattr(self,'_analysis_is_auto',False))
+            QTimer.singleShot(1500,lambda a=auto:self._release_awake_if_idle(a))
         if busy:
             self.start.setText(caption)
             self.start.setEnabled(False)
@@ -1022,7 +1029,7 @@ class MainWindow(QMainWindow):
                 '두 작업이 같은 로컬 LLM을 함께 쓰면 둘 다 느려지고, 절전 방지·PC 종료도 엉킬 수 있습니다.')
             return
         from .refinement_run_dialog import RefinementRunDialog
-        RefinementRunDialog(self).exec()
+        self._run_refinement_window(RefinementRunDialog(self))
 
     AUTO_REFINE_TIP=('번역이 끝까지 끝나면(미번역 자동 재시도까지 마친 뒤) 한국어 소설 재정비 창을 열고\n'
                      '번역 결과 TXT를 바로 다듬기 시작합니다. 번역 때의 확정 용어집·인물 말투표를 그대로 씁니다.\n'
@@ -1086,13 +1093,27 @@ class MainWindow(QMainWindow):
             return None,'번역 결과 TXT를 읽을 수 없습니다'
         return path,''
 
+    def _start_retry_round(self):
+        """An automatic retry round of a single file (the PC was kept awake for it)."""
+        try:
+            self.start_translation()
+        finally:
+            if not self._job_busy():
+                self._apply_sleep_prevention(False)     # it did not start: nothing holds the PC
+
     def _start_auto_refinement(self, path, note: str):
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.wait(10000)      # the finished signal can arrive a moment before the thread ends
-        if self._job_busy():
-            self.on_worker_issue('재정비 자동 시작 건너뜀 · 번역 작업이 아직 진행 중입니다'); return
-        from .refinement_run_dialog import RefinementRunDialog
-        RefinementRunDialog(self, auto_source=path, auto_note=note).exec()
+        try:
+            if self.worker is not None and self.worker.isRunning():
+                self.worker.wait(10000)      # the finished signal can arrive a moment before the thread ends
+            if self._job_busy():
+                self.on_worker_issue('재정비 자동 시작 건너뜀 · 번역 작업이 아직 진행 중입니다'); return
+            from .refinement_run_dialog import RefinementRunDialog
+            self._run_refinement_window(RefinementRunDialog(self, auto_source=path, auto_note=note))
+        finally:
+            # The window held the PC from its start and let it go at its end; this only covers a
+            # window that never started (kept awake for the hand-over until now).
+            if not self._job_busy():
+                self._apply_sleep_prevention(False)
 
     def _finish_notice(self, title: str, text: str):
         """The usual completion message; with 재정비 자동 시작 on it closes by itself."""
@@ -1212,7 +1233,7 @@ class MainWindow(QMainWindow):
         kind=entry.get('kind')
         if kind=='refine':
             from .refinement_run_dialog import RefinementRunDialog
-            RefinementRunDialog(self,preset_source=entry.get('path'),preset_output=entry.get('output')).exec()
+            self._run_refinement_window(RefinementRunDialog(self,preset_source=entry.get('path'),preset_output=entry.get('output')))
             return
         if kind=='single':
             self._open_txt_path(str(entry['path']))
@@ -3863,7 +3884,10 @@ class MainWindow(QMainWindow):
     def _extracting(self) -> bool:
         return bool(self._term_thread and self._term_thread.isRunning())
 
-    def _set_running_ui(self, running: bool):
+    def _set_running_ui(self, running: bool, keep_awake: bool = False):
+        """keep_awake: the job hands straight over to the next one (a retry round, the 재정비
+        자동 시작 window), so the PC is never released in between. Windows sleeps at once when a
+        request is dropped after the idle time has passed, even for a moment (v2.6.8)."""
         if not running and (getattr(self,'_batch_folder',None) is not None or getattr(self,'_batch_scope',None)):
             self._end_batch_scope()   # a folder run ended: the tables show the folder's own again
         if not running: QTimer.singleShot(0,self._update_preview_hint)
@@ -3877,7 +3901,30 @@ class MainWindow(QMainWindow):
             if not running:
                 self._user_paused=False; self.pause_btn.setText('일시정지')
         self._job_active=bool(running)
-        self._apply_sleep_prevention(bool(running))
+        self._apply_sleep_prevention(bool(running) or bool(keep_awake))
+
+    def _release_awake_if_idle(self, auto_chain: bool = False):
+        """After an analysis step: let the PC go only when no part of the work holds it.
+        A step of an automatic chain that waits on a window closing by itself (the name
+        collision check, 3 minutes) is waited for, since the translation starts after it."""
+        try:
+            if self._job_busy() or getattr(self,'_refining',False):
+                return
+            if auto_chain:
+                from PySide6.QtWidgets import QApplication
+                if QApplication.activeModalWidget() is not None:
+                    QTimer.singleShot(1500,lambda:self._release_awake_if_idle(True)); return
+            self._apply_sleep_prevention(False)
+        except RuntimeError:
+            pass        # the window is gone
+
+    def _run_refinement_window(self, dlg):
+        """Every 재정비 window opened from here: while it runs it holds the PC itself."""
+        self._refining=True
+        try:
+            return dlg.exec()
+        finally:
+            self._refining=False
 
     @staticmethod
     def _apply_sleep_prevention(awake: bool):
@@ -4810,14 +4857,19 @@ class MainWindow(QMainWindow):
             if self._last_worker_status=='stopped':self.status.setText(f'중지 완료 · 부분 결과 저장됨 · 경과 {self._human_duration(self._last_job_seconds or 0)} · 다시 시작하면 이어서 진행')
             return
         if self.input_mode=='single':
-            self.start.setText('번역 시작 / 계속'); self._set_running_ui(False); self._force_restart=False; self._update_ready_state()
-            took=self._human_duration(self._last_job_seconds or 0)
             status=self._last_worker_status
             left=status in ('completed','partial') and (status=='partial' or self._last_leftover)
             remaining=int(self._last_failed or 0)+int(self._last_leftover or 0)
             prev=getattr(self,'_retry_prev_remaining',None)
-            if (self._completion_message and left and self._retry_rounds<self.AUTO_RETRY_ROUNDS
-                    and (prev is None or remaining<prev)):
+            retry=bool(self._completion_message and left and self._retry_rounds<self.AUTO_RETRY_ROUNDS
+                       and (prev is None or remaining<prev))
+            # What comes next is known before the PC is released: a retry round or the 재정비
+            # 자동 시작 window takes over at once, so the PC stays awake through the hand-over.
+            refine_next=bool(not retry and self._completion_message and self._auto_refine_wanted()
+                             and self._auto_refine_target()[0] is not None)
+            self.start.setText('번역 시작 / 계속'); self._set_running_ui(False,keep_awake=retry or refine_next); self._force_restart=False; self._update_ready_state()
+            took=self._human_duration(self._last_job_seconds or 0)
+            if retry:
                 # No dialog: the untranslated parts are tried again at once, in the same log,
                 # and the clock goes on, so the main run and its retries read as one job.
                 self._retry_rounds+=1; self._retry_prev_remaining=remaining
@@ -4826,7 +4878,7 @@ class MainWindow(QMainWindow):
                 self.on_worker_issue(f'↻ {head} · 미번역 '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
                                      +f' · 남은 부분만 이어서 자동으로 다시 번역 ({self._retry_rounds}/{self.AUTO_RETRY_ROUNDS}회) · 지금까지 {took}')
                 self._auto_retrying=True
-                QTimer.singleShot(0,self.start_translation)
+                QTimer.singleShot(0,self._start_retry_round)
                 return
             rounds=self._retry_rounds; self._retry_rounds=0; self._retry_prev_remaining=None
             self.on_worker_issue(f'작업 끝 · 걸린 시간 {took}'+(f' (본문 번역 + 미번역 재시도 {rounds}회 포함)' if rounds else ''))
@@ -4840,6 +4892,7 @@ class MainWindow(QMainWindow):
                     # once and asks about the PC after its own result is saved.
                     target,why=self._auto_refine_target()
                     if target is not None:
+                        if not refine_next: self._apply_sleep_prevention(True)   # (found only now)
                         if left:
                             self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
                                                  +' · 결과 TXT에는 원문 그대로 들어 있고 재정비는 그대로 진행합니다'
@@ -4902,7 +4955,7 @@ class MainWindow(QMainWindow):
         from .refinement_run_dialog import RefinementRunDialog
         dlg=RefinementRunDialog(self, auto_source=target, auto_note=f'폴더 파일 {self.batch_index+1:,}/{len(self.batch_files):,}', batch=True)
         try:
-            dlg.exec()
+            self._run_refinement_window(dlg)
             outcome,detail=getattr(dlg,'auto_outcome',('',''))
         finally:
             self._apply_sleep_prevention(True)      # the window released it when its run ended
