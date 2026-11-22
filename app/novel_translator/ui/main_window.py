@@ -752,7 +752,7 @@ class MainWindow(QMainWindow):
         except Exception: self.use_common.setChecked(True)
         self.common_btn=QPushButton('공용 용어집'); self.common_btn.clicked.connect(self._open_common_terms)
         cr.addWidget(self.use_common); cr.addWidget(self.common_btn); cr.addStretch(1); tv.addLayout(cr)
-        self.tabs.addTab(terms,'확정 용어집'); self.terms_tab=terms; self._common_pulled=[]
+        self.terms_tab=self._scroll_page(terms); self.tabs.addTab(self.terms_tab,'확정 용어집'); self._common_pulled=[]
         for sig in (self.term_table.model().rowsInserted, self.term_table.model().rowsRemoved, self.term_table.model().modelReset):
             sig.connect(lambda *_: self._update_terms_tab_title())
         self._auto_terms_sha=''; self._auto_terms_passed=False; self._auto_terms_force=False
@@ -2423,7 +2423,7 @@ class MainWindow(QMainWindow):
             # Explicit replacement does not override manual or reviewed locks.
             changed=self._merge_terms(res,replace=True)
         added+=changed
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self.term_table.parentWidget()))
+        self.tabs.setCurrentWidget(self.terms_tab)
         msg=(f'확정 용어 {len(added)}개를 새로 추가하거나 변경했습니다.' if added
              else '새로 추가하거나 바꿀 인명·용어가 없습니다.')
         self.status.setText(msg)
@@ -2596,6 +2596,17 @@ class MainWindow(QMainWindow):
             self._auto_terms_passed=False; self._update_ready_state()   # a check after the extraction stopped the start
 
     # ------------------------------------------------------------ 인물 말투표
+    def _scroll_page(self, page):
+        # 확정 용어집 · 인물 말투 (v2.6.10): the tab area may be shorter than these pages need
+        # (help text + table + two button rows). Qt then drew the buttons over the table. Like
+        # 언어별 설정, the page sits in a scroll area: a big window shows it exactly as before
+        # (the table grows), a small one gets a scroll bar instead of overlapping widgets.
+        from PySide6.QtWidgets import QScrollArea
+        area=QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame); area.setWidget(page)
+        # Keep the tab's own (white) background: a scroll area paints its window colour.
+        area.setStyleSheet('QScrollArea{background:transparent;}'); area.viewport().setAutoFillBackground(False); page.setAutoFillBackground(False)
+        return area
+
     def _build_speech_tab(self):
         from ..speech_levels import LEVELS, LEVEL_HINTS
         tab=QWidget(); v=QVBoxLayout(tab)
@@ -2619,7 +2630,7 @@ class MainWindow(QMainWindow):
         except Exception: self.auto_speech.setChecked(True)
         for w in (self.speech_add,self.speech_delete,self.speech_generate,self.auto_speech): row.addWidget(w)
         row.addStretch(1); v.addLayout(row)
-        self.tabs.addTab(tab,'인물 말투'); self.speech_tab=tab
+        self.speech_tab=self._scroll_page(tab); self.tabs.addTab(self.speech_tab,'인물 말투')
         for sig in (self.speech_table.model().rowsInserted, self.speech_table.model().rowsRemoved, self.speech_table.model().modelReset):
             sig.connect(lambda *_: self._update_speech_tab_title())
         self._speech_tried=set(); self._speech_fail=''; self._auto_notes=[]; self._analysis_lines=[]
@@ -3421,7 +3432,7 @@ class MainWindow(QMainWindow):
         suggest={k:v for k,v in (getattr(self,'_name_suggestions',{}) or {}).items() if k in wanted}
         self._name_suggestions={}
         dlg=NameCollisionDialog(groups,counts,held,timeout=180 if auto else 0,parent=self,**({'suggestions':suggest} if suggest else {}))
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self.term_table.parentWidget()))
+        self.tabs.setCurrentWidget(self.terms_tab)
         shown=', '.join(f"{'·'.join(s)} → {k}" for k,s in groups[:6])+(' …' if len(groups)>6 else '')
         if dlg.exec()!=QDialog.DialogCode.Accepted or not dlg.changes:
             why='3분 동안 선택이 없어' if getattr(dlg,'timed_out',False) else '선택에 따라'

@@ -188,7 +188,7 @@ def audit_ui(root):
             window.show()
             for width,height in [(1120,780),(960,700)]:
                 window.resize(width,height)
-                window.tabs.setCurrentWidget(window.term_table.parentWidget())
+                window.tabs.setCurrentWidget(window.terms_tab)
                 app.processEvents()
                 assert window.tabs.height()>=260, window.tabs.height()
                 assert window.term_table.height()>=150, window.term_table.height()

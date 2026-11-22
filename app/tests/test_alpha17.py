@@ -642,7 +642,7 @@ def test_panes_stay_scrollable_but_read_only_while_translating(qt_app,sandbox,mo
             assert pane.isEnabled(), 'must stay enabled so it can scroll'
         assert w.term_table.editTriggers()==QAbstractItemView.NoEditTriggers
         assert w.book_memory.isReadOnly() and w.preview.isReadOnly()
-        w.tabs.setCurrentIndex(w.tabs.indexOf(w.term_table.parentWidget())); w.resize(1000,700); w.show(); qt_app.processEvents()
+        w.tabs.setCurrentWidget(w.terms_tab); w.resize(1000,700); w.show(); qt_app.processEvents()
         sb=w.term_table.verticalScrollBar(); assert sb.isEnabled() and sb.maximum()>0
         sb.setValue(sb.maximum()); assert sb.value()==sb.maximum()
         assert not w.term_add.isEnabled() and not w.term_extract.isEnabled()
