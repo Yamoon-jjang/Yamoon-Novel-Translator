@@ -114,7 +114,10 @@ def test_glossary_characters_are_allowed():
 
 def test_two_or_more_characters_count_as_before():
     assert leftover_needs_fix('그는 窗 밖을 보았다. 雨가 내렸다.')
-    assert leftover_needs_fix('성(性)과 성(曾)')   # two glosses in one paragraph: unchanged rule (2 or more)
+    # v2.6.11: glosses in brackets right after a Korean word are written on purpose and no
+    # longer count (they made the same paragraphs come back as "미번역" on every run).
+    assert not leftover_needs_fix('성(性)과 성(曾)')
+    assert leftover_needs_fix('성 性과 성 曾')   # the same characters without brackets still count
 
 
 # ---------------------------------------------------------------- through the real worker
@@ -182,7 +185,7 @@ def test_a_glued_character_the_repair_cannot_fix_is_reported(tmp_path):
     w, events = _worker(tmp_path, text, prov)
     w.run()
     assert w.leftover_count == 1
-    assert any('한자·가나가 남은 문단 1개' in e for e in events)
+    assert any('한자·가나·영어 조각이 남은 문단 1개' in e for e in events)
     assert '철钳처럼' in _rows(tmp_path)[0]['translation'], 'the translation itself is kept as it was'
 
 
@@ -204,4 +207,4 @@ def test_a_gloss_in_brackets_is_not_reported(tmp_path):
     w, events = _worker(tmp_path, text, prov)
     w.run()
     assert w.leftover_count == 0
-    assert not any('한자·가나가 남은 문단' in e for e in events)
+    assert not any('한자·가나·영어 조각이 남은 문단' in e for e in events)

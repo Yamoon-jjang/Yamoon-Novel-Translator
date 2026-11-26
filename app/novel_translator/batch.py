@@ -6,9 +6,37 @@ GENERATED_SUFFIXES = ('.ko.txt', '.ko.partial.txt', '.ko.failed.txt', '.ko.pdf',
 SUMMARY_NAME = '번역_요약.txt'
 SOURCE_SUFFIXES = ('.txt', '.pdf', '.epub')   # a folder run translates TXT, PDF and EPUB files
 
+# An earlier folder run's summary, kept when a new run writes 번역_요약.txt (v2.6.11).
+_OLD_SUMMARY = re.compile(r'^번역_요약_\d{8}-\d{6}(?:_\d+)?\.txt$')
+KEEP_OLD_SUMMARIES = 5
+
+
 def is_generated_txt(path: Path) -> bool:
     low=path.name.lower()
-    return low.endswith(GENERATED_SUFFIXES) or path.name == SUMMARY_NAME
+    return low.endswith(GENERATED_SUFFIXES) or path.name == SUMMARY_NAME or bool(_OLD_SUMMARY.match(path.name))
+
+
+def keep_summary_aside(summary: Path) -> Path | None:
+    """Before a folder run writes 번역_요약.txt, the one already there (an earlier run into the
+    same result folder) is renamed 번역_요약_날짜-시각.txt instead of being overwritten.
+    Only the newest few old summaries are kept. Never raises."""
+    try:
+        summary=Path(summary)
+        if not summary.is_file():
+            return None
+        from datetime import datetime
+        stamp=datetime.fromtimestamp(summary.stat().st_mtime).strftime('%Y%m%d-%H%M%S')
+        target=summary.with_name(f'번역_요약_{stamp}.txt'); n=1
+        while target.exists():
+            target=summary.with_name(f'번역_요약_{stamp}_{n}.txt'); n+=1
+        summary.replace(target)
+        old=sorted((p for p in summary.parent.iterdir() if _OLD_SUMMARY.match(p.name)), key=lambda p: p.name, reverse=True)
+        for extra in old[KEEP_OLD_SUMMARIES:]:
+            try: extra.unlink()
+            except OSError: pass
+        return target
+    except Exception:
+        return None
 
 def discover_txt_files(root: Path, include_subfolders: bool=False, excluded_root: Path|None=None) -> list[Path]:
     # Preserve the caller's lexical path (including a possible Windows 8.3 alias)

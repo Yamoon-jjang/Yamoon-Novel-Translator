@@ -51,7 +51,7 @@ def test_folder_file_is_retried_until_finished(qt_app,sandbox,monkeypatch):
         assert '(1/2회)' in log and '(2/2회)' in log
         assert infos[-1][0]=='폴더 번역 완료'                                  # nothing left: the plain report
         summary=w.last_result_path.read_text(encoding='utf-8')
-        assert '완료 2개 · 부분 완료 0개' in summary and '남은 미번역 상세' not in summary
+        assert '완료 2개 · 부분 완료 0개' in summary and '남은 곳 상세' not in summary
         assert w.pending_view.toPlainText()==''                             # the finished file's list is gone
     finally: w.close()
 

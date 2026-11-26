@@ -22,7 +22,7 @@ from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalMod
 from .advanced_dialog import AdvancedSettingsDialog
 from ..translation_settings import canonical_kind, CONTENT_LABELS, default_settings
 from .worker import TranslationWorker
-from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES
+from ..batch import discover_txt_files, output_dir_for, should_continue_after_result, SOURCE_SUFFIXES, keep_summary_aside
 from ..workspace import WorkspaceStore
 from .. import resume_work
 from ..language_options import option_spec
@@ -3779,8 +3779,14 @@ class MainWindow(QMainWindow):
     def _tick_clock(self):
         if self._job_t0 is None: return
         el=self._job_elapsed(); text=f'경과 {self._clock_text(el)}'
+        retry_eta=self._retry_eta_seconds() if not self._job_paused_at else None
         if self._job_paused_at:
             text+=' · 일시정지'
+        elif retry_eta:
+            # Retrying the untranslated parts (v2.6.11): paragraphs left x seconds per paragraph.
+            text+=f' · 미번역 재시도 남은 예상 약 {self._clock_text(retry_eta)}'
+        elif getattr(self.worker,'eta_trouble_only',False) and getattr(self.worker,'eta_paras',None):
+            pass   # not measured yet: no number rather than a wrong one
         elif (self.input_mode=='folder' and self.batch_files) or getattr(self.worker,'eta_left',None) is None:
             f=self._job_fraction(); f0=self._prog_start if self._prog_start is not None else 0.0
             if f-f0>=0.02 and el>=15 and f<1.0:
@@ -3815,6 +3821,28 @@ class MainWindow(QMainWindow):
         recent=samples[-self.ETA_RECENT:]
         per=0.5*sum(samples)/len(samples)+0.5*sum(recent)/len(recent)
         return per*len(left)
+
+    def _retry_eta_seconds(self):
+        """A run that only retries untranslated parts: paragraphs still to send x seconds per
+        paragraph. Measured once a few paragraphs are done; before that a third of this book's
+        usual chunk time (one paragraph costs about a third of a whole chunk)."""
+        w=self.worker
+        paras=getattr(w,'eta_paras',None); left=getattr(w,'eta_left',None)
+        if not paras or not left or not getattr(w,'eta_trouble_only',False):
+            return None
+        remaining=sum(paras.get(i,1) for i in left)
+        done=int(getattr(w,'eta_paras_done',0) or 0); spent=sum(getattr(w,'eta_all',None) or [])
+        hist=list(self._eta_hist) if getattr(self,'_eta_src','') and self._eta_src==str(getattr(w,'source_path','') or '') else []
+        seed=(sum(hist)/len(hist)/3.0) if len(hist)>=3 else None
+        if done>=3 or (done and seed is None):
+            per=spent/done
+            if seed is not None and done<10:   # still few: lean on the book's own speed too
+                per=(per*done+seed*(10-done))/10
+        elif seed is not None:
+            per=seed
+        else:
+            return None
+        return per*remaining if remaining and per>0 else None
 
     def _eta_keep_history(self, worker):
         """An automatic resume of the same book starts a new worker: its estimate goes on
@@ -4760,6 +4788,8 @@ class MainWindow(QMainWindow):
                     # The worker hands over the list (no .ko.failed.txt any more); an older
                     # build's file is read only if the worker has none.
                     detail=getattr(self.worker,'pending_report','') or legacy.read_text(encoding='utf-8-sig')
+                    extra=getattr(self.worker,'leftover_report','') if self._last_leftover else ''
+                    if extra: detail=detail.rstrip('\n')+'\n\n'+extra
                     if self.input_mode=='folder':
                         # Folder: one list per file, kept for the whole run (not overwritten).
                         self._batch_pending_reports[str(self.source_path)]=detail
@@ -4770,8 +4800,18 @@ class MainWindow(QMainWindow):
                     self.on_worker_issue((pend(int(failed_count or 0)) if callable(pend) else f'미완료 {failed_count}개')+' · 상세 목록은 미완료 목록 탭에서 확인')
                 except Exception:
                     if not self.error_view.toPlainText().strip(): self.error_view.setPlainText(f'미완료 청크 {failed_count}개. 자세한 오류 목록은 결과 폴더를 확인하세요.')
-            elif self.input_mode=='folder' and self._batch_pending_reports.pop(str(self.source_path),None) is not None:
-                self._show_batch_pending()   # a retry finished this file: its list goes
+            elif self.input_mode=='folder':
+                # All chunks finished. Paragraphs that still hold Han / kana / a stray Latin
+                # fragment are listed with their place (v2.6.11: the list used to go empty while
+                # the log said parts were left); a file with none drops its list.
+                left_report=getattr(self.worker,'leftover_report','') if self._last_leftover else ''
+                if left_report:
+                    self._batch_pending_reports[str(self.source_path)]=left_report; self._show_batch_pending()
+                elif self._batch_pending_reports.pop(str(self.source_path),None) is not None:
+                    self._show_batch_pending()   # a retry finished this file: its list goes
+            else:
+                left_report=getattr(self.worker,'leftover_report','') if self._last_leftover else ''
+                self.pending_view.setPlainText(left_report)
             if self.input_mode=='folder' and not self._batch_retry_pending and status not in {'paused'} and not should_continue_after_result(self.batch_relation.currentData(),status):
                 # Continuous-volume queues must not advance across a missing section.
                 # Paused/stopped states already request a stop elsewhere; this also
@@ -4913,7 +4953,18 @@ class MainWindow(QMainWindow):
                         return
                     self.on_worker_issue('재정비 자동 시작 건너뜀 · '+why)
                     msg+=f'\n\n재정비 자동 시작 건너뜀 · {why}'
-                if left:
+                if left and not int(self._last_failed or 0):
+                    # Every paragraph is translated; only a few still hold Han / kana / a stray
+                    # Latin fragment after the automatic retries. Not "press 다시 시작" (that only
+                    # sent the same paragraphs again and again): the places are listed instead (v2.6.11).
+                    self.on_worker_issue('번역 완료 · 확인할 곳 '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
+                                         +' · 자동 재시도 뒤에도 그대로라 위치를 미완료 목록 탭에 적었습니다 (문맥상 맞으면 그대로 두어도 됨)')
+                    text=('번역 결과를 저장했습니다. 모든 문단이 번역되었습니다.\n'+self._untranslated_summary()
+                          +'\n\n자동으로 다시 번역해도 그대로 남은 곳이라, 위치(문단 번호 · 앞뒤 글)를 미완료 목록 탭에 적었습니다.'
+                          +'\n결과 파일에서 찾아 확인하고, 문맥상 맞는 표기면 그대로 두어도 됩니다.\n\n'+msg)
+                    if self._offer_shutdown('번역 완료 · 확인할 곳 있음', text): return
+                    self._finish_notice('번역 완료 · 확인할 곳 있음',text)
+                elif left:
                     why=('자동 재시도로도 줄지 않아 멈췄습니다(같은 엔진이 계속 막는 부분일 수 있음). ' if rounds and prev is not None and remaining>=prev
                          else f'자동 재시도 {rounds}회 뒤에도 남았습니다. ' if rounds else '')
                     self.on_worker_issue('미번역 남음 · '+self._untranslated_summary().replace('\n',' ').replace('· ','',1)
@@ -5009,7 +5060,7 @@ class MainWindow(QMainWindow):
     def _untranslated_summary(self) -> str:
         parts=[]
         if self._last_failed: parts.append(f'· 원문으로 남은 부분이 있는 청크 {self._last_failed:,}개')
-        if self._last_leftover: parts.append(f'· 한자·가나가 남은 문단 {self._last_leftover:,}개')
+        if self._last_leftover: parts.append(f'· 한자·가나·영어 조각이 남은 문단 {self._last_leftover:,}개')
         return '\n'.join(parts)
 
     def _unattended_cfg(self) -> dict:
@@ -5088,9 +5139,15 @@ class MainWindow(QMainWindow):
             lines.append(f'{st}\t{rel}\t{path}'+(('\t'+self._batch_left_note(p)) if str(p) in self._batch_left else ''))
         lines += ['',f'완료 {completed}개 · 부분 완료 {partial}개 · 오류/미처리 {failed}개']
         left_files=[p for p in self.batch_files if str(p) in self._batch_left]
-        if left_files:
-            lines += [f'자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일 {len(left_files)}개 · 남은 부분은 결과 파일에 원문 그대로 들어 있습니다',
+        # Files with paragraphs still in the source language, and files that are fully translated
+        # but have a few places to check (Han / kana / a stray Latin fragment) - v2.6.11.
+        src_left=[p for p in left_files if self._batch_left[str(p)][0]]
+        mark_left=[p for p in left_files if not self._batch_left[str(p)][0]]
+        if src_left:
+            lines += [f'자동 재시도 뒤에도 번역되지 않은 부분이 남은 파일 {len(src_left)}개 · 남은 부분은 결과 파일에 원문 그대로 들어 있습니다',
                       '[번역 시작 / 계속]으로 같은 폴더를 다시 시작하면 남은 부분만 다시 번역합니다(API 설정에서 다른 엔진을 켜 두면 더 잘 됩니다)']
+        if mark_left:
+            lines += [f'번역은 다 됐지만 확인할 곳(한자·가나·영어 조각)이 남은 파일 {len(mark_left)}개 · 자동으로 다시 번역해도 그대로라 아래에 위치를 적었습니다(문맥상 맞으면 그대로 두어도 됨)']
         took=self._human_duration(self._job_elapsed())
         lines += [f'걸린 시간: {took} (일시정지 시간 제외)']
         usage=self._batch_usage_lines()
@@ -5112,15 +5169,27 @@ class MainWindow(QMainWindow):
                 except Exception: rel=p.name
                 lines.append(f'{rel}\t{refined[str(p)]}')
         if left_files:
-            lines += ['','남은 미번역 상세 (청크 번호 · 원문으로 남은 문단 번호 P······)']
+            lines += ['','남은 곳 상세 (청크 번호 · 문단 번호 P······ · 남은 글자 · 앞뒤 글)']
             for p in left_files:
                 try: rel=p.relative_to(self.batch_root)
                 except Exception: rel=p.name
                 rows=[l for l in (self._batch_pending_reports.get(str(p)) or '').splitlines() if l.startswith('청크 ')]
                 lines += ['',f'── {rel} ──']+(rows or [self._batch_left_note(p)])
-        summary=outroot/'번역_요약.txt'; atomic_write_text(summary,'\n'.join(map(str,lines))+'\n'); self.last_result_path=summary; self.open_result.setEnabled(True); self.cleanreader_btn.setEnabled(True)
+        summary=outroot/'번역_요약.txt'; keep_summary_aside(summary)
+        atomic_write_text(summary,'\n'.join(map(str,lines))+'\n'); self.last_result_path=summary; self.open_result.setEnabled(True); self.cleanreader_btn.setEnabled(True)
         self.start.setText('번역 시작 / 계속'); self.start.setEnabled(True); self._set_running_ui(False); self._force_restart=False; self.status.setText(f'폴더 번역 완료 · 완료 {completed} · 부분 {partial} · 오류 {failed} · 걸린 시간 {took}')
-        if left_files:
+        if left_files and not src_left:
+            # Every file is fully translated; only places to check are left (v2.6.11): no
+            # "press 다시 시작" - that just sent the same paragraphs again.
+            names='\n'.join(f'· {p.name} · {self._batch_left_note(p)}' for p in mark_left[:8])+(f'\n· … 외 {len(mark_left)-8}개' if len(mark_left)>8 else '')
+            self.error_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • 폴더 번역 끝 · 모든 문단 번역됨 · 확인할 곳이 남은 파일 {len(mark_left)}개 · 위치는 미완료 목록 탭과 번역_요약.txt')
+            text=(f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')
+                +f'\n\n모든 문단이 번역되었습니다. 자동으로 다시 번역해도 한자·가나·영어 조각이 그대로 남은 곳이 있는 파일:\n{names}'
+                +'\n\n위치(문단 번호 · 앞뒤 글)는 미완료 목록 탭과 요약 파일에 있습니다. 문맥상 맞는 표기면 그대로 두어도 됩니다.'
+                +f'\n\n요약: {summary}')
+            if self._offer_shutdown('폴더 번역 완료 · 확인할 곳 있음', text): return
+            self._finish_notice('폴더 번역 완료 · 확인할 곳 있음',text)
+        elif left_files:
             names='\n'.join(f'· {p.name} · {self._batch_left_note(p)}' for p in left_files[:8])+(f'\n· … 외 {len(left_files)-8}개' if len(left_files)>8 else '')
             self.error_view.appendPlainText(f'[{time.strftime("%H:%M:%S")}] • 폴더 번역 끝 · 미번역 남음 · 자동 재시도 뒤에도 남은 파일 {len(left_files)}개 · 상세는 미완료 목록 탭과 번역_요약.txt')
             text=(f'{self._count_kinds(self.batch_files)} 순차 처리가 끝났습니다.\n완료 {completed} · 부분 완료 {partial} · 오류/미처리 {failed}\n걸린 시간: {took}'+(('\n'+usage[0]) if usage else '')
@@ -5137,7 +5206,7 @@ class MainWindow(QMainWindow):
         failed,leftover,rounds,stalled=self._batch_left.get(str(p),(0,0,0,False))
         parts=[]
         if failed: parts.append(f'원문으로 남은 부분이 있는 청크 {failed:,}개')
-        if leftover: parts.append(f'한자·가나가 남은 문단 {leftover:,}개')
+        if leftover: parts.append(f'한자·가나·영어 조각이 남은 문단 {leftover:,}개')
         why=('자동 재시도로도 줄지 않음' if stalled else f'자동 재시도 {rounds}회 뒤') if rounds else ''
         return '남은 부분: '+' · '.join(parts)+(f' ({why})' if why else '')
 

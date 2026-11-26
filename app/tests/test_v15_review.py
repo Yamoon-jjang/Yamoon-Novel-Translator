@@ -554,7 +554,7 @@ def test_rerun_retranslates_paragraphs_with_leftover_han(tmp_path):
     w,_,events=make_worker(tmp_path,text,first,chunk_limits=(500,1,1000)); _no_repair(); w.run()
     r=rows(tmp_path)[0]
     assert r['status']=='COMPLETED' and '段落' in r['translation']
-    assert any('한자·가나가 남은 문단 1개' in e for e in events), 'the summary tells the user'
+    assert any('한자·가나·영어 조각이 남은 문단 1개' in e for e in events), 'the summary tells the user'
     second=ScriptedProvider(lambda p,s,b: '중간 문단은 깨끗하다')
     w,_,events=make_worker(tmp_path,text,second,chunk_limits=(500,1,1000)); _no_repair(); w.run()
     assert len(second.requests)==1
@@ -1048,7 +1048,7 @@ def test_completed_with_leftover_script_also_retries(qt_app,sandbox,monkeypatch)
     try:
         w._open_txt_path(str(_single_file(root))); w.start_translation()
         assert _wait(qt_app,lambda: infos)
-        assert len(started)==2 and '한자·가나가 남은 문단 3개' in w.error_view.toPlainText()
+        assert len(started)==2 and '한자·가나·영어 조각이 남은 문단 3개' in w.error_view.toPlainText()
     finally:
         _wait(qt_app,lambda: not (w.worker and w.worker.isRunning())); w.close()
 

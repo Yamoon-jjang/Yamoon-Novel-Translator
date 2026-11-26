@@ -63,11 +63,12 @@ def normalize_translation_output(text: str, source: str | None = None) -> str:
     opened={int(x) for x in re.findall(r'(?m)^<P(\d{6})>',out)}
     if opened and re.search(r'[<＜]/P[0-9０-９]{1,6}[>＞]',out):
         def _close(m):
-            return '' if int(m.group(1)) in opened else m.group(0)
+            return _gap(m) if int(m.group(1)) in opened else m.group(0)   # v2.6.11: never glue two words
         out=re.sub(r'[ \t]*[<＜]/P([0-9０-９]{1,6})[>＞][ \t]*',_close,out)
         out=re.sub(r'\n{3,}','\n\n',out)
     if source:
         out=_recover_displaced_ids(out, source)
+        out=_repair_id_residue(out, source)
         ids=paragraph_ids(source)
         # A single paragraph needs no inferred boundaries. Never assign missing
         # IDs in a multi-paragraph response or accept an apparent refusal.
@@ -445,8 +446,17 @@ def leftover_script(body: str, allowed: str = '') -> list[str]:
     return [ch for ch in _LEFTOVER_RE.findall(body) if ch not in ok]
 
 
+# A Hanja gloss in brackets right after a Korean word ("무림(武林)", "강호（江湖）"): the
+# translation writes it on purpose, like the one-character "성(性)" that was always allowed.
+# Two or more characters used to count as untranslated, so every run sent the paragraph
+# again and it came back the same - an endless "미번역 남음" (v2.6.11). Han only: kana in
+# brackets is a reading left from the source and still counts.
+_HANJA_GLOSS = re.compile(r'(?<=[가-힣])[ \t]?[(（][\u3400-\u9fff\uf900-\ufaff]{1,12}[)）]')
+
+
 def _leftover_view(body: str) -> str:
-    return re.sub(r'［＃[^］\r\n]{1,200}］', '', _ELONGATION_ONE.sub('', body))   # Aozora markup kept on purpose
+    body = re.sub(r'［＃[^］\r\n]{1,200}］', '', _ELONGATION_ONE.sub('', body))   # Aozora markup kept on purpose
+    return _HANJA_GLOSS.sub('', body)
 
 
 # One Chinese character / kana glued to a Hangul syllable inside a word ("철钳처럼", "윤滑",
@@ -466,6 +476,115 @@ def leftover_needs_fix(body: str, allowed: str = '') -> bool:
         return False
     ok = set(allowed or '')
     return any(ch not in ok for ch in _GLUED_LEFTOVER.findall(_leftover_view(body)))
+
+
+# ---------------------------------------------------------------- 뜻 없는 영어 조각 (v2.6.11)
+# A local model now and then drops a meaningless Latin fragment ("ber", "ing") into a Korean
+# paragraph of a Chinese / Japanese book. Counted only when the fragment has a small letter,
+# stands apart from digits (5km, 3x), is not in the paragraph's own source (the book's own
+# English), not in the confirmed glossary, and not a usual abbreviation. English books and
+# paragraphs with web addresses are never checked.
+_LATIN_WORD = re.compile(r'(?<![A-Za-z0-9_.])[A-Za-z]{2,6}(?![A-Za-z0-9_])')
+_LATIN_OK = frozenset("""
+ok vs lv hp mp sp exp mr mrs ms dr st jr sr pc tv sns cctv pd ceo vip dna id pk ko
+cm mm km kg mg ml cc kcal kb mb gb tb hz khz mhz ghz db ph bpm rpm mph kph am pm
+ex no etc oh ah eh uh um hm hmm wow ha haha hehe la www
+""".split())
+
+
+def stray_latin(src_para: str, body: str, source_language: str = '', allowed: str = '') -> list[str]:
+    if source_language not in ('zh', 'ja') or not body or not _HANGUL_RE.search(body):
+        return []
+    if re.search(r'https?:|www\.|@|\.(?:com|net|org)\b', body, re.I):
+        return []
+    import unicodedata
+    src = unicodedata.normalize('NFKC', src_para or '').casefold()
+    ok = unicodedata.normalize('NFKC', allowed or '').casefold()
+    view = re.sub(r'<[^<>\n]{1,40}>|［＃[^］\r\n]{1,200}］|⟦[^⟧]{0,20}⟧', ' ', body)
+    out = []
+    for m in _LATIN_WORD.finditer(view):
+        w = m.group(0)
+        if not any(c.islower() for c in w):
+            continue   # SKILL, OK, VIP: an abbreviation written on purpose
+        if w[0].isupper() and len(w) > 3:
+            continue   # Ning, Lily: a name written in Latin letters, not a stray fragment
+        low = w.casefold()
+        if low in _LATIN_OK or low in src or (ok and low in ok):
+            continue
+        out.append(w)
+    return out
+
+
+# ---------------------------------------------------------------- 문단 번호 찌꺼기 (v2.6.11)
+# A paragraph ID the model wrote in a broken form the tag parser cannot see - "P017860:"
+# with no angle brackets, or "</P001454:" with a colon for ">" - stayed in the Korean text
+# and showed in the result file. Only IDs of this request are touched, never a form the
+# source text itself contains.
+_BARE_ID = re.compile(r'(?m)^[ \t]*(?:\*\*)?P([0-9]{6})(?:\*\*)?[ \t]*(?:[:：][ \t]*)?(?:\n|$|(?=\S))')
+_OPEN_BROKEN = re.compile(r'[ \t]*[<＜][ \t]*P([0-9]{6})(?:[ \t]+[>＞]|(?![0-9>＞]))[ \t]*(?:[:：][ \t]*)?')
+_CLOSE_BROKEN = re.compile(r'[ \t]*[<＜][ \t]*/[ \t]*P([0-9]{6})[ \t]*(?:[>＞][ \t]*(?:[:：])?|[:：])?[ \t]*')
+
+
+def _gap(m) -> str:
+    """What an ID piece leaves behind: one space between two words, nothing at a line end."""
+    s, a, b = m.string, m.start(), m.end()
+    left = s[a - 1] if a > 0 else '\n'; right = s[b] if b < len(s) else '\n'
+    spaced = m.group(0)[:1] in ' \t' and m.group(0)[-1:] in ' \t'
+    return ' ' if spaced and left not in '\n' and right not in '\n' else ''
+
+
+def _repair_id_residue(out: str, source: str) -> str:
+    expected = [int(x) for x in ID_LINE_RE.findall(source or '')]
+    if not expected or 'P' not in out:
+        return out
+    exp = set(expected)
+    prose = TAG_RE.sub('', source)
+    present = {int(x) for x in ID_LINE_RE.findall(out)}
+    # Closing forms in any shape: never part of a translation.
+    out = _CLOSE_BROKEN.sub(lambda m: m.group(0) if int(m.group(1)) not in exp or m.group(0).strip() in prose
+                            else _gap(m), out)
+    # Opening forms without brackets / with a colon: the ID itself when it is missing as a
+    # proper line (once), otherwise a duplicate that goes.
+    hits = {}
+    for rx in (_BARE_ID, _OPEN_BROKEN):
+        for m in rx.finditer(out):
+            pid = int(m.group(1))
+            if pid in exp and m.group(0).strip() not in prose:
+                hits.setdefault(pid, []).append((m.start(), m.end()))
+    spans = []
+    for pid, ms in hits.items():
+        restore = pid not in present and len(ms) == 1
+        spans += [(a, b, pid, restore) for a, b in ms]
+    for a, b, pid, restore in sorted(spans, reverse=True):
+        before = out[:a]; after = out[b:]
+        if restore:
+            before = before.rstrip(' \t')
+            if before and not before.endswith('\n'):
+                before += '\n\n'
+            out = before + f'<P{pid:06d}>\n' + after.lstrip(' \t\n')
+        else:
+            out = before + (' ' if before[-1:] not in ('', '\n', ' ', '\t') and after[:1] not in ('', '\n', ' ', '\t')
+                            and re.match(r'[ \t]', out[a:b]) else '') + after
+    return re.sub(r'\n{3,}', '\n\n', out)
+
+
+def strip_id_residue(body: str, pid: int, source: str = '') -> str:
+    """A saved paragraph's Korean without leftover ID pieces of itself or a close neighbour
+    ("P017860:" on its own line, "…했다.</P001454:"). Used where the result is shown or
+    written, so books translated before v2.6.11 come out clean without translating again."""
+    if not body or 'P' not in body:
+        return body
+    near = lambda m: abs(int(m.group(1)) - int(pid)) <= 3 and m.group(0).strip() not in (source or '')
+    t = _CLOSE_BROKEN.sub(lambda m: _gap(m) if near(m) else m.group(0), body)
+    t = _OPEN_BROKEN.sub(lambda m: _gap(m) if near(m) else m.group(0), t)
+    t = re.sub(r'(?m)^[ \t]*P([0-9]{6})[ \t]*[:：]?[ \t]*(?:\n|$)',
+               lambda m: '' if near(m) else m.group(0), t)
+    t = re.sub(r'(?m)^[ \t]*P([0-9]{6})[ \t]*[:：][ \t]*', lambda m: '' if near(m) else m.group(0), t)
+    if t == body:
+        return body
+    lead = re.match(r'[ \t\u3000]*', body).group(0)   # keep the paragraph's own indent
+    t = t.strip('\r\n')
+    return t if t.startswith(lead) else lead + t.lstrip(' \t\u3000')
 
 
 # ---------------------------------------------------------------- 문단 밀림 감지

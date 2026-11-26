@@ -3,7 +3,7 @@ import os, re, hashlib
 from pathlib import Path
 from datetime import datetime
 from .textio import directory_writable, atomic_write_text
-from .validation import parse_tagged_translation
+from .validation import parse_tagged_translation, strip_id_residue
 from .punctuation import korean_punctuation, _LETTERS
 from .hidden_marks import restore as restore_marks
 
@@ -207,7 +207,8 @@ def render_snapshot(chunks, rows, source_path: Path, preferred_dir: Path, fallba
             if korean_punct and not _has_letters(body):
                 body=korean_punctuation(body,quote_style)   # punctuation-only line, e.g. “。。。。。”
         elif paragraph.pid in translated_by_pid:
-            body=html_line_breaks(translated_by_pid[paragraph.pid])
+            # Leftover ID pieces ("P017860:", "</P001454:") never reach the reader (v2.6.11).
+            body=html_line_breaks(strip_id_residue(translated_by_pid[paragraph.pid],paragraph.pid,paragraph.text))
             if korean_punct:
                 body=korean_punctuation(body,quote_style)
             # The source's invisible marks (zero-width characters) are written back into the
