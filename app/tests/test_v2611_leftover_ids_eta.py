@@ -337,3 +337,27 @@ def test_removing_an_id_piece_never_glues_two_words():
         assert parse_tagged_translation(normalize_translation_output(raw, src))[1454] == '그가 웃었다. 그리고', raw
     assert _parsed('<P001454>\n그가 웃었다.\n\n<P001455 >\n그녀가 떠났다.', src) == {1454: '그가 웃었다.', 1455: '그녀가 떠났다.'}
     assert strip_id_residue('웃었다. </P001454> 그리고', 1454) == '웃었다. 그리고'
+
+
+# ---------------------------------------------------------------- 3b. field names the model wrote out
+def test_a_field_name_in_the_korean_is_a_stray_fragment():
+    src = '“你妙法门这次无故插手阳山剑宗与苍鹰派之事……”'
+    body = '"그대 묘법문이 이번에 아무 이유 없이 양산검종과 창응파의 일에 끼어든 것은……", own_name:'
+    assert stray_latin(src, body, 'zh') == ['own_name']
+    assert stray_latin('他', '그는 speaker: 말했다', 'zh') == ['speaker']
+    assert stray_latin('输入user_id', '그는 user_id를 입력했다', 'zh') == []          # the book's own text
+    for body in ('그는 Note: 이라 썼다', '그는 between 이라', '⟦NT_SKIP⟧', '그는 OK라고'):
+        assert stray_latin('他', body, 'zh') == [], body
+
+
+def test_a_saved_paragraph_with_a_field_name_is_translated_again(tmp_path):
+    text = '他冷冷地说道。\n\n她笑了。'
+    w, _ = _worker(tmp_path, text, _Provider({'他冷': '그가 차갑게 말했다. own_name:', '她笑': '그녀가 웃었다.'}))
+    w.run()
+    assert w.leftover_count == 1 and 'own_name' in w.leftover_report
+    prov2 = _Provider({'他冷': '그가 차갑게 말했다.', '她笑': '(보내면 안 됨)'})
+    w2, _ = _worker(tmp_path, text, prov2)
+    w2.run()
+    assert w2.leftover_count == 0
+    final = _rows(tmp_path)[0]['translation']
+    assert 'own_name' not in final and '그녀가 웃었다.' in final

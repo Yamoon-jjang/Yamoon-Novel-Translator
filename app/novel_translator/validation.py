@@ -484,7 +484,8 @@ def leftover_needs_fix(body: str, allowed: str = '') -> bool:
 # stands apart from digits (5km, 3x), is not in the paragraph's own source (the book's own
 # English), not in the confirmed glossary, and not a usual abbreviation. English books and
 # paragraphs with web addresses are never checked.
-_LATIN_WORD = re.compile(r'(?<![A-Za-z0-9_.])[A-Za-z]{2,6}(?![A-Za-z0-9_])')
+# A word of Latin letters, underscores allowed ("own_name"), not touching digits or a dot.
+_LATIN_WORD = re.compile(r'(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z_]{1,39}(?![A-Za-z0-9_])')
 _LATIN_OK = frozenset("""
 ok vs lv hp mp sp exp mr mrs ms dr st jr sr pc tv sns cctv pd ceo vip dna id pk ko
 cm mm km kg mg ml cc kcal kb mb gb tb hz khz mhz ghz db ph bpm rpm mph kph am pm
@@ -504,12 +505,19 @@ def stray_latin(src_para: str, body: str, source_language: str = '', allowed: st
     out = []
     for m in _LATIN_WORD.finditer(view):
         w = m.group(0)
-        if not any(c.islower() for c in w):
-            continue   # SKILL, OK, VIP: an abbreviation written on purpose
+        low = w.casefold()
+        if low in src or (ok and low in ok) or not any(c.islower() for c in w):
+            continue   # the book's own English / a glossary rendering / SKILL, OK, VIP
+        keyish = view[m.end():m.end() + 1] in (':', '：') and w[0].islower()
+        if '_' in w.strip('_') or keyish:
+            # A field name the model wrote out of its instructions ("own_name:", "speaker:"),
+            # never part of Korean prose (v2.6.11 보완).
+            out.append(w); continue
+        if len(w) > 6 or '_' in w:
+            continue
         if w[0].isupper() and len(w) > 3:
             continue   # Ning, Lily: a name written in Latin letters, not a stray fragment
-        low = w.casefold()
-        if low in _LATIN_OK or low in src or (ok and low in ok):
+        if low in _LATIN_OK:
             continue
         out.append(w)
     return out
