@@ -111,6 +111,21 @@ def _salvage_table(src: sqlite3.Connection, dst: sqlite3.Connection, table: str)
     return copied, lost
 
 
+def _rename_when_free(src: Path, dst: Path, tries: int = 20) -> None:
+    """Windows refuses to rename a file some connection still holds. A connection closed while
+    a cursor of a failed query is still alive (kept by an exception's traceback) stays open
+    until that cursor is freed, so free such leftovers first and wait a little (a virus
+    scanner may also hold the file for a moment)."""
+    import gc
+    for n in range(tries):
+        try:
+            src.replace(dst); return
+        except PermissionError:
+            if n == tries - 1:
+                raise
+            gc.collect(); time.sleep(0.25)
+
+
 def recover_database(path: Path) -> dict:
     """Repair a damaged translation database. Run only when no job uses it.
 
@@ -134,7 +149,7 @@ def recover_database(path: Path) -> dict:
     n = 1
     while backup.exists():
         backup = path.with_name(f'{path.name}.corrupt_{stamp}_{n}.bak'); n += 1
-    path.replace(backup)
+    _rename_when_free(path, backup)
     for side in ('-wal', '-shm'):
         extra = Path(str(path) + side)
         if extra.exists():

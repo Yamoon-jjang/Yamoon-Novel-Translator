@@ -69,10 +69,13 @@ def test_damage_is_noticed_and_recovered(tmp_path):
     _damage(path)
     st.clear_damage_notice(path)
     db = Database(path)
-    with pytest.raises(sqlite3.DatabaseError):
+    failed = False
+    try:
         with db.connect() as con:
             con.execute('SELECT group_concat(translation) FROM chunks').fetchall()
-    assert st.damage_noticed(path)
+    except sqlite3.DatabaseError:
+        failed = True        # (the error and its traceback go here, as in the program)
+    assert failed and st.damage_noticed(path)
     ok, detail = st.check_integrity(path)
     assert not ok and detail
 
@@ -122,6 +125,25 @@ def test_not_a_database_file_is_recovered_to_an_empty_db(tmp_path):
     assert res['damaged'] and Path(res['backup']).exists()
     assert st.check_integrity(path) == (True, 'ok')
     assert Database(path).latest_terms_for_source('0' * 64, 'zh-ko') == {}
+
+
+def test_rename_waits_for_a_held_file(tmp_path, monkeypatch):
+    """Windows: the damaged file may be held for a moment (a closed connection whose failed
+    cursor is not freed yet, a virus scanner): the rename is retried, not given up at once."""
+    src = tmp_path / 'a.db'; src.write_bytes(b'x'); dst = tmp_path / 'b.bak'
+    calls = {'n': 0}
+    real = Path.replace
+
+    def flaky(self, target):
+        calls['n'] += 1
+        if calls['n'] < 3:
+            raise PermissionError(32, 'in use')
+        return real(self, target)
+
+    monkeypatch.setattr(Path, 'replace', flaky)
+    monkeypatch.setattr(st.time, 'sleep', lambda s: None)
+    st._rename_when_free(src, dst)
+    assert calls['n'] == 3 and dst.exists() and not src.exists()
 
 
 def test_check_reads_while_a_writer_is_open(tmp_path):
