@@ -16,7 +16,7 @@ from ..hidden_marks import strip as strip_marks
 from ..chunking import split_paragraphs,make_chunks,mark_translatable
 from ..secure_store import SecretStore
 from ..config import DATA_DIR, CONFIG_DIR, load_json, save_json
-from ..storage import Database
+from ..storage import Database, damage_noticed, recover_database, check_integrity, note_damage
 from ..api_keys import normalize_key_records, normalize_secret_payload
 from .api_dialog import ApiDialog, initial_engine_order, ENGINE_LABELS, LocalModelsThread, ClickModelCombo, NoWheelCombo
 from .advanced_dialog import AdvancedSettingsDialog
@@ -385,6 +385,31 @@ class WheelGuard(QObject):
         return False
 
 
+
+class DbCheckThread(QThread):
+    """Full check of the translation DB in the background (v2.7.0). Read-only, so a
+    translation started meanwhile is not disturbed. done(ok, detail): (True,'') sound;
+    (False, what is wrong) damaged; (False,'') not finished (closed, locked, missing)."""
+    done=Signal(bool,str)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent); self.path=Path(path); self._cons=[]; self._cancelled=False
+
+    def cancel(self):
+        self._cancelled=True
+        for con in list(self._cons):
+            try: con.interrupt()
+            except Exception: pass
+
+    def run(self):
+        try:
+            ok,detail=check_integrity(self.path,self._cons)
+        except Exception:
+            ok,detail=False,''
+        if self._cancelled:
+            ok,detail=False,''
+        self.done.emit(bool(ok),'' if ok else str(detail))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -435,6 +460,9 @@ class MainWindow(QMainWindow):
         self._batch_retry_pending=False; self._last_leftover=0; self._last_failed=0; self._retry_rounds=0
         self._reset_batch_retry_state()
         self._resume_timer=QTimer(self); self._resume_timer.setInterval(1000); self._resume_timer.timeout.connect(self._resume_tick)
+        # Translation DB health (v2.7.0): a damage error met anywhere is repaired once no job runs.
+        self._db_guard_timer=QTimer(self); self._db_guard_timer.setInterval(3000); self._db_guard_timer.timeout.connect(self._db_damage_tick); self._db_guard_timer.start()
+        self._db_check_thread=None
         self._term_cache={}
         self._build_ui(); self._apply_interactive_cursors(); self._apply_profile(self.pm.active.id); self._update_ready_state()
         if self.secret_store.last_error:
@@ -989,8 +1017,9 @@ class MainWindow(QMainWindow):
         try:
             from ..runtime_audit import self_test_report, secret_store_self_test
             ok1, report1=self_test_report(); ok2, report2=secret_store_self_test()
-            ok=ok1 and ok2
-            body=report1+'\n\n'+report2+'\n\n※ 실제 인터넷/API 연결은 “API 설정 → 선택 키 연결 테스트”에서 확인합니다.'
+            ok3, report3=self._db_check_report()
+            ok=ok1 and ok2 and ok3
+            body=report1+'\n\n'+report2+'\n\n'+report3+'\n\n※ 실제 인터넷/API 연결은 “API 설정 → 선택 키 연결 테스트”에서 확인합니다.'
             if ok:
                 QMessageBox.information(self,'환경 점검 정상',body)
                 self.status.setText('환경 점검 정상 · 실제 API 연결은 API 설정에서 테스트 가능')
@@ -1000,6 +1029,32 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self,'환경 점검 실패',f'{type(e).__name__}: {e}')
 
+
+    def _db_check_report(self) -> tuple[bool, str]:
+        """[환경 점검]: full check of the translation DB on demand (v2.7.0). A damaged file
+        is noted and repaired right after the report (no job runs while this is open)."""
+        path=DATA_DIR/'translations.db'
+        if not path.exists():
+            return True,'TRANSLATION_DB=PASS (아직 번역 기록 없음)'
+        from PySide6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            size=path.stat().st_size
+            ok,detail=check_integrity(path)
+        except Exception as e:
+            return True,f'TRANSLATION_DB=SKIP (검사하지 못함 · {type(e).__name__}: {e})'
+        finally:
+            QApplication.restoreOverrideCursor()
+        if ok:
+            try:
+                cfg=load_json(CONFIG_DIR/'app.json') if (CONFIG_DIR/'app.json').exists() else {}
+                cfg['db_checked_at']=int(time.time()); save_json(CONFIG_DIR/'app.json',cfg)
+            except Exception:
+                pass
+            return True,f'TRANSLATION_DB=PASS (번역 기록 DB {size/1e6:,.1f}MB 정밀 검사 정상)'
+        note_damage(path,detail)
+        QTimer.singleShot(0,self._db_damage_tick)
+        return False,f'TRANSLATION_DB=FAIL (손상 발견 · 바로 복구합니다)\n{detail[:300]}'
 
     def open_advanced(self):
         if self.worker and self.worker.isRunning():
@@ -4685,6 +4740,8 @@ class MainWindow(QMainWindow):
         if self.input_mode=='folder' and getattr(self,'_batch_rename',None) and not self._force_restart:
             self._batch_try_rename(p,raw,chunks,key_records,model)
         self._batch_rename=None
+        if damage_noticed(DATA_DIR/'translations.db'):
+            self._repair_translation_db()   # no worker runs at this moment (v2.7.0)
         self.worker=self._make_worker(p,raw,chunks,key_records,model)
         if self.input_mode=='folder' and getattr(self,'_batch_job_terms',None) is not None and not self._force_restart:
             self._batch_keep_previous(self.worker,raw)
@@ -5261,6 +5318,7 @@ class MainWindow(QMainWindow):
             self._close_after_worker=True; self._stop_batch=True; self.worker.stop(); self.start.setEnabled(False); self.status.setText('종료를 위해 현재 요청 정리 중…'); event.ignore();return
         t=getattr(self,'_local_models_thread',None)
         if t is not None and t.isRunning(): t.wait(10000)   # short local model-list request (a few seconds at most)
+        self._stop_db_check(); self._db_guard_timer.stop()
         self._save_window_state()
         # The window goes away first (v2.5.7): shrinking a large translation record can take
         # a few seconds, and a window still on screen then looks frozen.
@@ -5274,6 +5332,102 @@ class MainWindow(QMainWindow):
         if getattr(self,'_shutdown_on_close',False):
             self._shutdown_on_close=False
             request_system_shutdown()
+
+    # ------------------------------------------------ translation DB health (v2.7.0)
+    # The whole-file check no longer runs when a book is opened (it read the entire
+    # translation record from disk, 5~10 s with a large one). Damage still shows up as an
+    # SQLite error the moment a damaged page is used; it is confirmed and repaired here once
+    # no job runs, and a full check runs in the background about once a week.
+    DB_CHECK_DAYS = 7
+    _db_repairing = False
+
+    def _db_damage_tick(self):
+        if not damage_noticed(DATA_DIR/'translations.db'):
+            return
+        if self._job_busy() or MainWindow._db_repairing:
+            return
+        t=getattr(self,'_db_check_thread',None)
+        if t is not None and t.isRunning():
+            return
+        self._repair_translation_db()
+
+    def _repair_translation_db(self):
+        """Confirm the damage with the full check, keep the damaged file and copy everything
+        readable into a new database. Never raises; the result goes to the log and a
+        non-blocking notice (nobody may be at the PC during a folder run)."""
+        path=DATA_DIR/'translations.db'
+        seen=damage_noticed(path)
+        if not seen or MainWindow._db_repairing:
+            return
+        MainWindow._db_repairing=True      # one repair at a time (the note below lets events run)
+        shown=False
+        try:
+            self._log_line(f'번역 기록 DB 오류 감지 · {seen} · 정밀 검사로 확인합니다')
+            self._stop_db_check()    # Windows cannot rename a file another connection holds open
+            shown=self._busy_note_show('번역 기록(DB)을 점검하고 있습니다…\n손상이 확인되면 읽을 수 있는 기록을 새 DB로 옮깁니다.')
+            res=recover_database(path)
+        except Exception as e:
+            from ..storage import clear_damage_notice
+            clear_damage_notice(path)    # never loop on a repair that cannot run
+            self._log_line(f'번역 기록 DB 복구 실패 · {type(e).__name__}: {e} · 번역 결과 TXT 파일은 그대로입니다')
+            self.status.setText('번역 기록 DB를 복구하지 못했습니다 · 작업 기록을 확인하세요')
+            return
+        finally:
+            if shown: self._busy_note_hide()
+            MainWindow._db_repairing=False
+        if not res.get('damaged'):
+            self._log_line('번역 기록 DB 정밀 검사 · 이상 없음 (일시적인 오류였습니다)')
+            return
+        backup=Path(res.get('backup') or '')
+        text=('번역 기록 DB(이어 번역 · 번역 기억)가 손상되어 복구했습니다.\n\n'
+              f'옮긴 기록: 작업 {res.get("projects",0):,}개 · 번역 청크 {res.get("chunks",0):,}개 · 용어 {res.get("terms",0):,}개'
+              +(f'\n읽지 못해 잃은 곳: {res.get("lost",0):,}곳' if res.get('lost') else '')+
+              f'\n손상된 원래 파일은 지우지 않고 보존했습니다: {backup.name}\n\n'
+              '번역 결과 TXT 파일은 DB와 별개라 그대로입니다. 기록을 잃은 책은 [번역 시작 / 계속]을 누르면\n'
+              '남은 기록부터 이어서(잃은 부분은 다시) 번역합니다.')
+        self._log_line('번역 기록 DB 복구 · '+text.replace('\n\n',' · ').replace('\n',' · '))
+        self.status.setText('번역 기록 DB가 손상되어 복구했습니다 · 작업 기록을 확인하세요')
+        box=QMessageBox(QMessageBox.Warning,'번역 기록 DB 복구',text,QMessageBox.Ok,self)
+        box.setAttribute(Qt.WA_DeleteOnClose); box.open()   # never waits for a click
+
+    def start_background_db_check(self):
+        """Program start (real program only): a full check of the translation DB about once a
+        week, read-only in a background thread, while no job runs."""
+        path=DATA_DIR/'translations.db'
+        if not path.exists():
+            return
+        try:
+            last=float(load_json(CONFIG_DIR/'app.json').get('db_checked_at') or 0)
+        except Exception:
+            last=0.0
+        if time.time()-last < self.DB_CHECK_DAYS*86400:
+            return
+        if self._job_busy():
+            QTimer.singleShot(10*60*1000,self.start_background_db_check)   # later, when idle
+            return
+        t=getattr(self,'_db_check_thread',None)
+        if t is not None and t.isRunning():
+            return
+        self._db_check_thread=DbCheckThread(path,self)
+        self._db_check_thread.done.connect(self._background_db_check_done)
+        self._db_check_thread.start()
+
+    def _background_db_check_done(self, ok: bool, detail: str):
+        path=DATA_DIR/'translations.db'
+        if ok:
+            try:
+                cfg=load_json(CONFIG_DIR/'app.json') if (CONFIG_DIR/'app.json').exists() else {}
+                cfg['db_checked_at']=int(time.time()); save_json(CONFIG_DIR/'app.json',cfg)
+            except Exception:
+                pass
+        elif detail:
+            note_damage(path,detail)      # repaired by _db_damage_tick once no job runs
+        # (an interrupted / locked check records nothing: it simply runs again next start)
+
+    def _stop_db_check(self):
+        t=getattr(self,'_db_check_thread',None)
+        if t is not None and t.isRunning():
+            t.cancel(); t.wait(15000)
 
     DB_KEEP_DAYS = 90
 

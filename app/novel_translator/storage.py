@@ -4,8 +4,166 @@ import re
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
+import time
 
-_INTEGRITY_CHECKED: set[str] = set()
+# v2.7.0: the whole-file check (PRAGMA quick_check) no longer runs when the database is first
+# opened in a session. It read every page of the file, so the first book opened after a start
+# waited for the whole translation record (hundreds of MB) to come off the disk. SQLite still
+# reports a damaged page the moment it is read or written ("database disk image is
+# malformed"); such an error is noted here, confirmed with the full check and repaired by
+# recover_database() once no job runs. A full check also runs in the background now and then.
+
+# Paths (resolved, as str) where a damage-looking SQLite error was met in this session.
+_DAMAGE_SEEN: dict[str, str] = {}
+
+_DAMAGE_WORDS = ('malformed', 'not a database', 'file is encrypted', 'disk image', 'database corrupt')
+
+
+def is_damage_error(exc: BaseException) -> bool:
+    """True for the SQLite errors a damaged file gives (not for 'locked', 'busy', 'no such table'…)."""
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    text = str(exc).lower()
+    return any(w in text for w in _DAMAGE_WORDS)
+
+
+def _key(path: Path) -> str:
+    try:
+        return str(Path(path).resolve())
+    except Exception:
+        return str(path)
+
+
+def note_damage(path: Path, message: str) -> None:
+    _DAMAGE_SEEN.setdefault(_key(path), str(message)[:300])
+
+
+def damage_noticed(path: Path) -> str:
+    """The error text when a damage-looking error was met for this database in this session."""
+    return _DAMAGE_SEEN.get(_key(path), '')
+
+
+def clear_damage_notice(path: Path) -> None:
+    _DAMAGE_SEEN.pop(_key(path), None)
+
+
+def check_integrity(path: Path, interrupt_holder: list | None = None) -> tuple[bool, str]:
+    """Full check of the whole file (reads every page: seconds for a large file).
+    Read-only, so it can run while a translation writes (WAL). (True,'ok') when sound,
+    (False, what is wrong) when damaged. Other errors (locked, interrupted, missing file) raise."""
+    path = Path(path)
+    con = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True, timeout=30)
+    if interrupt_holder is not None:
+        interrupt_holder.append(con)
+    try:
+        con.execute('PRAGMA busy_timeout=30000')
+        rows = [str(r[0]) for r in con.execute('PRAGMA quick_check(20)').fetchall()]
+    except sqlite3.DatabaseError as e:
+        if is_damage_error(e):
+            return False, str(e)
+        raise
+    finally:
+        con.close()
+    if rows == ['ok']:
+        return True, 'ok'
+    return False, '\n'.join(rows)
+
+
+_SALVAGE_TABLES = ('projects', 'terms', 'chunks')
+
+
+def _salvage_table(src: sqlite3.Connection, dst: sqlite3.Connection, table: str) -> tuple[int, int]:
+    """Copy the readable rows of one table, walking by rowid so one damaged page loses only
+    the rows on it. (copied, lost-ranges)."""
+    cols = [r[1] for r in dst.execute(f'PRAGMA table_info({table})').fetchall()]
+    have = set()
+    try:
+        have = {r[1] for r in src.execute(f'PRAGMA table_info({table})').fetchall()}
+    except sqlite3.DatabaseError:
+        return 0, 1
+    use = [c for c in cols if c in have]
+    if 'id' not in use:
+        return 0, 1
+    sel = ','.join(use); marks = ','.join('?' * len(use))
+    try:
+        hi = src.execute(f'SELECT max(id) FROM {table}').fetchone()[0] or 0
+    except sqlite3.DatabaseError:
+        return 0, 1          # the table itself cannot be walked
+    copied = lost = 0
+    step = 500; start = 0
+    while start <= hi:
+        end = start + step
+        try:
+            rows = src.execute(f'SELECT {sel} FROM {table} WHERE id>=? AND id<? ORDER BY id', (start, end)).fetchall()
+        except sqlite3.DatabaseError:
+            rows = []
+            for i in range(start, end):
+                try:
+                    r = src.execute(f'SELECT {sel} FROM {table} WHERE id=?', (i,)).fetchone()
+                except sqlite3.DatabaseError:
+                    lost += 1; continue
+                if r is not None:
+                    rows.append(r)
+        if rows:
+            dst.executemany(f'INSERT OR IGNORE INTO {table}({sel}) VALUES({marks})', [tuple(r) for r in rows])
+            copied += len(rows)
+        start = end
+    return copied, lost
+
+
+def recover_database(path: Path) -> dict:
+    """Repair a damaged translation database. Run only when no job uses it.
+
+    1. Confirm with the full check: a sound file is left as it is (false alarm).
+    2. Keep the damaged file (and its -wal/-shm) as translations.db.corrupt_<time>.bak.
+    3. Build a new database and copy every readable job, glossary and translated chunk.
+    Returns {'damaged': bool, 'detail', 'backup', 'projects', 'terms', 'chunks', 'lost'}."""
+    path = Path(path)
+    result = {'damaged': False, 'detail': '', 'backup': '', 'projects': 0, 'terms': 0, 'chunks': 0, 'lost': 0}
+    if not path.exists():
+        clear_damage_notice(path); return result
+    try:
+        ok, detail = check_integrity(path)
+    except sqlite3.DatabaseError as e:
+        ok, detail = (False, str(e)) if is_damage_error(e) else (True, '')
+    if ok:
+        clear_damage_notice(path); return result
+    result['damaged'] = True; result['detail'] = detail
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    backup = path.with_name(f'{path.name}.corrupt_{stamp}.bak')
+    n = 1
+    while backup.exists():
+        backup = path.with_name(f'{path.name}.corrupt_{stamp}_{n}.bak'); n += 1
+    path.replace(backup)
+    for side in ('-wal', '-shm'):
+        extra = Path(str(path) + side)
+        if extra.exists():
+            try: extra.replace(Path(str(backup) + side))
+            except OSError: pass
+    result['backup'] = str(backup)
+    fresh = Database(path)          # empty database with the current schema
+    try:
+        src = sqlite3.connect(f'{backup.resolve().as_uri()}?mode=ro', uri=True, timeout=30)
+    except sqlite3.DatabaseError:
+        src = None
+    if src is not None:
+        try:
+            with fresh.connect() as dst:
+                dst.execute('PRAGMA foreign_keys=OFF')
+                for table in _SALVAGE_TABLES:
+                    copied, lost = _salvage_table(src, dst, table)
+                    result[table] = copied; result['lost'] += lost
+                # Rows whose job did not survive are of no use.
+                dst.execute('DELETE FROM chunks WHERE project_id NOT IN (SELECT id FROM projects)')
+                dst.execute('DELETE FROM terms WHERE project_id NOT IN (SELECT id FROM projects)')
+                result['chunks'] = int(dst.execute('SELECT COUNT(*) FROM chunks').fetchone()[0])
+                result['terms'] = int(dst.execute('SELECT COUNT(*) FROM terms').fetchone()[0])
+                dst.execute("UPDATE chunks SET status='PENDING', error_type=NULL, error_message=NULL WHERE status IN ('REQUESTING','RECEIVED','VALIDATING')")
+        finally:
+            src.close()
+    clear_damage_notice(path)
+    return result
+
 # Bumped when a one-time data upgrade is added to Database.__init__.
 DATA_VERSION = 1
 
@@ -111,25 +269,27 @@ class Database:
             # Tiny partial index: only in-flight chunks are in it, so the crash recovery below
             # never scans the whole table.
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_inflight ON chunks(status) WHERE status IN ('REQUESTING','RECEIVED','VALIDATING')")
-            key=str(self.path.resolve())
-            if key not in _INTEGRITY_CHECKED:
-                # Once per session. quick_check finds damaged pages/records like integrity_check
-                # but skips the slow cross-check of index contents.
-                check = con.execute('PRAGMA quick_check').fetchone()[0]
-                if str(check).lower() != 'ok':
-                    raise sqlite3.DatabaseError(f'SQLite integrity_check failed: {check}')
-                _INTEGRITY_CHECKED.add(key)
+            # (No whole-file check here since v2.7.0: see the note at the top of this file.)
             con.execute("UPDATE chunks SET status='PENDING', error_type=NULL, error_message=NULL WHERE status IN ('REQUESTING','RECEIVED','VALIDATING')")
 
     @contextmanager
     def connect(self):
-        con = sqlite3.connect(self.path, timeout=30)
-        con.execute('PRAGMA busy_timeout=30000')
-        con.row_factory = sqlite3.Row
-        con.execute('PRAGMA foreign_keys=ON')
         try:
+            con = sqlite3.connect(self.path, timeout=30)
+            con.execute('PRAGMA busy_timeout=30000')
+        except sqlite3.DatabaseError as e:
+            if is_damage_error(e): note_damage(self.path, e)
+            raise
+        con.row_factory = sqlite3.Row
+        try:
+            con.execute('PRAGMA foreign_keys=ON')
             yield con
             con.commit()
+        except sqlite3.DatabaseError as e:
+            # A damaged page shows up as soon as it is read or written: remember it so the
+            # program confirms and repairs the file once no job runs (v2.7.0).
+            if is_damage_error(e): note_damage(self.path, e)
+            raise
         finally:
             con.close()
 

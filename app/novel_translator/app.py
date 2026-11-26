@@ -123,4 +123,7 @@ def main():
     # never in the self-tests, which build the window without this start).
     from PySide6.QtCore import QTimer
     QTimer.singleShot(700, w.offer_previous_work)
+    # 번역 기록 DB 정밀 검사 (v2.7.0): about once a week, in the background, a while after the
+    # start so it never competes with opening the first book.
+    QTimer.singleShot(120_000, w.start_background_db_check)
     return app.exec()
