@@ -14,7 +14,7 @@ from ..chunking import split_chunk_for_retry, Chunk, Paragraph, estimate_tokens 
 from ..translation_settings import canonical_kind
 from ..prompting import PROMPT_VERSION, build_system_prompt, build_user_prompt
 from ..user_guidelines import load_user_guidelines
-from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, leftover_needs_fix, LOCAL_SAFE_PARAGRAPHS
+from ..validation import parse_tagged_translation, has_meta_leak, meta_leak, untranslated_residue, leftover_script, leftover_needs_fix, LOCAL_SAFE_PARAGRAPHS, stray_latin, strip_id_residue
 from ..rendering import render_snapshot, html_line_breaks
 from ..punctuation import korean_punctuation
 from ..hidden_marks import strip as strip_marks, restore as restore_marks
@@ -72,7 +72,7 @@ class TranslationWorker(QThread):
         self._local_warned=False
         self._chunk_label=''; self._pending_traces=[]; self._chunk_prev=''
         self._timing={'chunks':0,'seconds':0.0,'recovered_chunks':0,'recovered_seconds':0.0,'started':time.monotonic()}
-        self.eta_left=None; self.eta_samples=[]; self.eta_all=[]; self.eta_trouble_only=False   # remaining-time estimate
+        self.eta_left=None; self.eta_samples=[]; self.eta_all=[]; self.eta_trouble_only=False; self.leftover_report=''; self.eta_paras={}; self.eta_paras_done=0   # remaining-time estimate
         # Observability only. These counters never influence translation decisions.
         self.recovery_metrics={'reframe_attempts':0,'reframe_successes':0,'split_attempts':0,'split_successes':0}
         self._para_text={p.pid:p.text for p in self.all_paragraphs}
@@ -389,6 +389,29 @@ class TranslationWorker(QThread):
         self.eta_all.append(float(seconds))
         if ordinary:
             self.eta_samples.append(float(seconds))
+        paras=getattr(self,'eta_paras',None)
+        if paras:
+            self.eta_paras_done=getattr(self,'eta_paras_done',0)+paras.get(index,1)
+
+    def _eta_paragraphs(self, partial_map: dict, kept_map: dict) -> dict:
+        """Chunks of a retry run -> about how many paragraphs each sends again."""
+        out={}
+        for c in self.chunks:
+            if c.index not in self.eta_left:
+                continue
+            n=len([p for p in c.paragraphs if getattr(p,'translatable',True)])
+            if c.index in partial_map:
+                kept=kept_map.get(c.index) or ()
+                if kept:
+                    n=len(kept)
+                else:
+                    try:
+                        w=self._partial_retry_chunk(c, partial_map[c.index], (), ())
+                        n=len(w.paragraphs) if w is not None else 1
+                    except Exception:
+                        pass
+            out[c.index]=max(1,n)
+        return out
 
     def timing_summary(self) -> str:
         t=self._timing
@@ -595,7 +618,44 @@ class TranslationWorker(QThread):
             body=out.get(para.pid)
             if body and re.sub(r'\s+','',body)!=re.sub(r'\s+','',para.text) and leftover_needs_fix(body, allowed):
                 bad.add(para.pid)
-        return bad
+        return bad | self._stray_pids(chunk, text, out)
+
+    def _leftover_report(self, translations: dict, pids: set, limit: int = 300) -> str:
+        """Lines for the 미완료 목록 tab (v2.6.11): which paragraph, what is left in it and the
+        Korean around it, so it can be found in the result file. Before, a book whose chunks were
+        all finished showed an empty list while the log said untranslated parts were left."""
+        from ..validation import leftover_script
+        allowed=''.join(self.terms.values()) if getattr(self,'terms',None) else ''
+        lang=getattr(getattr(self,'profile',None),'source_language','')
+        rows=[]
+        for c in self.chunks:
+            if c.index not in translations: continue
+            out=parse_tagged_translation(translations[c.index])
+            for p in c.paragraphs:
+                if p.pid not in pids or not out.get(p.pid): continue
+                body=strip_id_residue(out[p.pid], p.pid, p.text)
+                found=list(dict.fromkeys(leftover_script(body, allowed)))+stray_latin(p.text, body, lang, allowed)
+                key=found[0] if found else ''
+                at=body.find(key) if key else 0
+                snip=re.sub(r'\s+',' ',body[max(0,at-25):at+25]).strip()
+                rows.append(f'청크 {c.index+1}\tP{p.pid:06d}\t남은 글자: '+' '.join(dict.fromkeys(found))[:40]+f'\t…{snip}…')
+                if len(rows)>=limit: break
+            if len(rows)>=limit: break
+        more=len(pids)-len(rows)
+        head=['한자·가나·영어 조각이 남은 문단 (번역은 끝남 · 자동으로 다시 번역해도 그대로 남은 곳)',
+              '※ 결과 파일에서 "…" 사이의 글을 찾아 확인하세요. 문맥상 맞는 표기면 그대로 두어도 됩니다.','']
+        return '\n'.join(head+rows+([f'… 외 {more:,}곳'] if more>0 else []))+'\n'
+
+    def _stray_pids(self, chunk, text: str, parsed=None) -> set[int]:
+        """Translated paragraphs with a meaningless Latin fragment ("ber", "ing") that is not in
+        their source (v2.6.11): translated again like a paragraph with leftover Han characters."""
+        lang=getattr(getattr(self,'profile',None),'source_language','')
+        if lang not in ('zh','ja'):
+            return set()
+        allowed=''.join(self.terms.values()) if getattr(self,'terms',None) else ''
+        out=parsed if parsed is not None else parse_tagged_translation(text or '')
+        return {p.pid for p in chunk.paragraphs
+                if out.get(p.pid) and getattr(p,'translatable',True) and stray_latin(p.text, out[p.pid], lang, allowed)}
 
     @staticmethod
     def _bracket_pids(chunk, text: str) -> set[int]:
@@ -663,6 +723,7 @@ class TranslationWorker(QThread):
         Returns (base, kept for full re-translation, handled pids, pids still partly source)."""
         out=parse_tagged_translation(base or ''); kept=set(kept or ()); handled=set(); still=set()
         leftover=self._leftover_pids(chunk, base)
+        stray=self._stray_pids(chunk, base, out)
         norm=lambda t: re.sub(r'\s+','',t or '')
         pieces=[]   # (pid, run)
         for para in chunk.paragraphs:
@@ -713,6 +774,8 @@ class TranslationWorker(QThread):
                 continue
             body=out.get(para.pid,''); src=escape_protocol_literals(strip_marks(para.text))
             allowed=''.join(self.terms.values())
+            if para.pid in stray and not leftover_needs_fix(body, allowed):
+                kept.add(para.pid); continue   # a stray Latin fragment: the paragraph is translated again (v2.6.11)
             before=len(leftover_script(body, allowed)); tried=False
             for name,orch in (engines if getattr(self,'_repair_enabled',True) else []):
                 if name in self._down: continue
@@ -731,6 +794,8 @@ class TranslationWorker(QThread):
                 if not leftover_needs_fix(body, allowed):
                     break
             out[para.pid]=body
+            if para.pid in stray:
+                kept.add(para.pid); continue   # Han fixed or not, the stray fragment needs a new translation
             if not leftover_needs_fix(body, allowed) or (tried and len(para.text) > 400):
                 handled.add(para.pid); kept.discard(para.pid)   # fixed, or too long to re-translate for a few characters
             else:
@@ -754,7 +819,8 @@ class TranslationWorker(QThread):
                 if k in kept:
                     continue
                 if t and self._norm_para(t)!=self._norm_para(body) and not meta_leak(body,t) and not untranslated_residue(body,t,self.profile.source_language) \
-                        and not leftover_needs_fix(t, ''.join(self.terms.values())) and not stale_bracket_prose(body,t):
+                        and not leftover_needs_fix(t, ''.join(self.terms.values())) and not stale_bracket_prose(body,t) \
+                        and not stray_latin(body, t, self.profile.source_language, ''.join(self.terms.values())):
                     # Keyed by the paragraph's place AND its text: the same book keeps its paragraph
                     # numbers (they come from the source text alone), so a resumed or re-chunked job
                     # finds every paragraph it translated. A short line repeated elsewhere in the book
@@ -1188,7 +1254,7 @@ class TranslationWorker(QThread):
         out=[]
         for p in paragraphs:
             if p.pid not in parsed: continue
-            body=html_line_breaks(parsed[p.pid].strip())
+            body=html_line_breaks(strip_id_residue(parsed[p.pid],p.pid,p.text).strip())
             if punct: body=korean_punctuation(body,quotes)
             out.append(restore_marks(p.text,body))
         return '\n'.join(out)
@@ -1451,7 +1517,7 @@ class TranslationWorker(QThread):
                 done_map.pop(i, None)
             if leftover_retry:
                 n = sum(len(b) for _, b in leftover_retry.values())
-                self.issue.emit(f'이어 번역 · 한자·가나가 남은 문단 {n}개(청크 {len(leftover_retry)}개)를 다시 번역합니다')
+                self.issue.emit(f'이어 번역 · 한자·가나·영어 조각이 남은 문단 {n}개(청크 {len(leftover_retry)}개)를 다시 번역합니다')
             bracket_retry = {} if self.restart_existing else \
                 {i: (t, bad) for i, t in done_map.items() if i in by_index and (bad := self._bracket_pids(by_index[i], t))}
             for i, (t, bad) in bracket_retry.items():
@@ -1539,6 +1605,10 @@ class TranslationWorker(QThread):
             self.eta_left = {c.index for c in self.chunks if c.index not in translations}
             self.eta_trouble_only = bool(self.eta_left) and self.eta_left <= known_trouble
             self.eta_samples = []; self.eta_all = []
+            # A run of only the untranslated parts sends a few paragraphs per chunk, not whole
+            # chunks: its remaining time is counted in paragraphs (v2.6.11).
+            self.eta_paras = self._eta_paragraphs(partial_map, kept_map) if self.eta_trouble_only else {}
+            self.eta_paras_done = 0
             saved_view: list[str] = []
             for i, c in enumerate(self.chunks):
                 if c.index not in translations:
@@ -1734,9 +1804,10 @@ class TranslationWorker(QThread):
                 self.issue.emit('작업 요약 · '+summary.replace('\n',' · '))
             left=[p for c in self.chunks if c.index in translations for p in sorted(self._leftover_pids(c, translations[c.index]))]
             self.leftover_count=len(left)   # read by the window to offer / run one retry of the untranslated parts
+            self.leftover_report=self._leftover_report(translations, set(left)) if left else ''
             if left:
-                self.issue.emit(f'한자·가나가 남은 문단 {len(left)}개 ('+', '.join(f'P{x:06d}' for x in left[:8])+(' …' if len(left)>8 else '')+
-                                ') · 그 문단만 다시 번역할 수 있습니다')
+                self.issue.emit(f'한자·가나·영어 조각이 남은 문단 {len(left)}개 ('+', '.join(f'P{x:06d}' for x in left[:8])+(' …' if len(left)>8 else '')+
+                                ') · 그 문단만 다시 번역할 수 있습니다 · 목록은 미완료 목록 탭')
                 fallback_note += '\n'+summary
             if failed:
                 self.result_ready.emit('partial',str(out),len(failed))
